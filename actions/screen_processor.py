@@ -254,8 +254,9 @@ class _VisionSession:
                         tg.create_task(self._recv_loop())
                         tg.create_task(self._play_loop())
 
-            except* Exception as eg:
-                for exc in eg.exceptions:
+            except (Exception, BaseException) as eg:
+                excs = getattr(eg, "exceptions", [eg])
+                for exc in excs:
                     print(f"[Vision] ⚠️  Session error: {exc}")
             finally:
                 self._session = None
