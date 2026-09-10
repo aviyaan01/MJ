@@ -1,0 +1,51 @@
+name: MJ Continuous Integration
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11"]
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Validate Python Syntax Across Project
+      run: |
+        python -c "
+        import glob, py_compile, sys
+        errs = []
+        for f in glob.glob('./**/*.py', recursive=True):
+            if any(x in f for x in ('.venv', 'node_modules', '__pycache__')): continue
+            try:
+                py_compile.compile(f, doraise=True)
+            except Exception as e:
+                errs.append((f, str(e)))
+        if errs:
+            print(f'Failed to compile {len(errs)} files:')
+            for f, err in errs:
+                print(f'{f}: {err}')
+            sys.exit(1)
+        print('All Python files compiled cleanly!')
+        "
+
+    - name: Run Automated Test Suite
+      run: |
+        python -m unittest discover tests -v

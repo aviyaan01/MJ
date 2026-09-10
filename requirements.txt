@@ -1,0 +1,53 @@
+# ==============================================================================
+# MJ AI Assistant — Requirements Manifest (PEP 508 Platform Compatible)
+# Windows: Installs complete desktop assistant, PyQt6 HUD, audio & wake word stack
+# Vercel / Linux: Installs lightweight web dashboard & serverless API (< 250MB)
+# ==============================================================================
+
+# ── Shared Cloud & Web Dashboard Dependencies ──────────────────────────────────
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+cryptography>=41.0.0
+python-multipart>=0.0.6
+qrcode[pil]>=7.4.2
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+duckduckgo-search>=6.0.0
+google-genai>=0.1.0
+pillow>=10.0.0
+psutil>=5.9.0
+numpy>=1.24.0
+
+# ── Cloud LLM & Audio Fallbacks ────────────────────────────────────────────────
+openai>=1.0.0
+elevenlabs>=0.2.26
+youtube-transcript-api>=0.6.0
+python-pptx>=0.6.21
+
+# ── Desktop Voice, GUI & Automation (Windows Only) ────────────────────────────
+PyQt6>=6.5.0; sys_platform == "win32"
+PyQt6-WebEngine>=6.5.0; sys_platform == "win32"
+sounddevice>=0.4.6; sys_platform == "win32"
+SpeechRecognition>=3.10.0; sys_platform == "win32"
+PyAudio>=0.2.13; sys_platform == "win32"
+pyautogui>=0.9.54; sys_platform == "win32"
+pyperclip>=1.8.2; sys_platform == "win32"
+pygetwindow>=0.0.9; sys_platform == "win32"
+opencv-python>=4.8.0; sys_platform == "win32"
+mss>=9.0.1; sys_platform == "win32"
+send2trash>=1.8.2; sys_platform == "win32"
+playwright>=1.40.0; sys_platform == "win32"
+
+# ── Windows Platform System Controls ──────────────────────────────────────────
+comtypes>=1.2.0; sys_platform == "win32"
+pycaw>=20230407; sys_platform == "win32"
+win10toast>=0.9; sys_platform == "win32"
+pywinauto>=0.6.8; sys_platform == "win32"
+pywin32>=306; sys_platform == "win32"
+wmi>=1.5.1; sys_platform == "win32"
+
+# ── Desktop Offline Voice & Verification (Optional Heavy Extensions) ──────────
+openwakeword>=0.6.0; sys_platform == "win32"
+faster-whisper>=1.0.0; sys_platform == "win32"
+resemblyzer>=0.1.4; sys_platform == "win32"
+pynvml>=11.5.0; sys_platform == "win32"

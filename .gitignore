@@ -1,0 +1,73 @@
+# ==============================================================================
+# Project MJ — Git Ignore Configuration
+# ==============================================================================
+
+# ── Environment Variables & Sensitive Credentials ──────────────────────────────
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+!.env.example
+config/api_keys.json
+
+# ── TLS / SSL Certificates & Private Keys ──────────────────────────────────────
+config/certs/*.key
+config/certs/*.crt
+config/certs/*.pem
+*.key
+*.pem
+*.crt
+
+# ── User Memory, Voiceprints & Runtime State ───────────────────────────────────
+memory/long_term.json
+memory/cmr_records.json
+memory/reminders.json
+memory/analytics.json
+memory/agent_town.json
+memory/voiceprint.npy
+
+# ── Local Setup Markers ────────────────────────────────────────────────────────
+.mj_setup_complete
+.ultron_setup_complete
+
+# ── Python Bytecode, Caches & Environments ─────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+env/
+venv/
+ENV/
+
+# ── Node.js / VS Code Extension Build Artifacts ────────────────────────────────
+**/node_modules/
+node_modules/
+vscode-extension/node_modules/
+vscode-extension/out/
+*.vsix
+
+# ── PyInstaller & Inno Setup Build Artifacts ───────────────────────────────────
+build/
+dist/
+Release/
+*.spec
+installer.iss
+build_release.py
+
+# ── Temporary Data, Uploads & Logs ─────────────────────────────────────────────
+uploads/
+titanic_data/
+scratch/
+*.log
+
+# ── OS & IDE Metadata ──────────────────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

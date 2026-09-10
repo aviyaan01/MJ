@@ -1,0 +1,21 @@
+{
+    "venvPath": ".",
+    "venv": ".venv",
+    "include": [
+        "."
+    ],
+    "exclude": [
+        "**/__pycache__",
+        ".venv"
+    ],
+    "reportMissingImports": "none",
+    "reportAttributeAccessIssue": "none",
+    "reportOptionalMemberAccess": "none",
+    "reportOptionalSubscript": "none",
+    "reportOptionalIterable": "none",
+    "reportArgumentType": "none",
+    "reportReturnType": "none",
+    "reportCallIssue": "none",
+    "reportPossiblyUnboundVariable": "none",
+    "reportOptionalCall": "none"
+}
