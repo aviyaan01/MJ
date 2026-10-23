@@ -981,6 +981,13 @@ class UltronLive:
         )
         return r or "Routine processed."
 
+    async def _handle_proactive_watcher(self, args, loop):
+        from actions.proactive_watcher import proactive_watcher
+        r = await loop.run_in_executor(
+            None, lambda: proactive_watcher(parameters=args, player=self.ui)
+        )
+        return r or "Done."
+
     async def _handle_advanced_settings(self, args, loop):
         r = await loop.run_in_executor(
             None, lambda: advanced_settings(parameters=args, player=self.ui)
@@ -1091,6 +1098,7 @@ class UltronLive:
         "flight_finder": _handle_flight_finder,
         "system_status": _handle_system_status,
         "routine_manager": _handle_routine_manager,
+        "proactive_watcher": _handle_proactive_watcher,
         "calendar_manager": _handle_calendar_manager,
         "smart_home": _handle_smart_home,
         "remember_fact": handle_remember_fact,

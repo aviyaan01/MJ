@@ -563,7 +563,31 @@ def computer_control(
                     print(f"[ComputerControl] [!] No '{field}' in memory, using random: {value}")
                 except Exception:
                     pass
-            return value
+        if action in ("macro", "run_macro", "routine", "workspace_mode"):
+            routine_name = params.get("name") or params.get("routine") or params.get("mode") or ""
+            from actions.routine import routine_manager
+            return routine_manager(
+                parameters={
+                    "action": "execute",
+                    "name": routine_name,
+                    "steps": params.get("steps"),
+                },
+                player=player,
+            )
+
+        if action in ("proactive_watcher", "watch_task", "check_spikes", "system_guard", "heavy_process"):
+            from actions.proactive_watcher import proactive_watcher
+            watcher_action = params.get("sub_action") or params.get("watcher_action") or ("watch" if "watch" in action else "check_spikes")
+            return proactive_watcher(
+                parameters={
+                    "action": watcher_action,
+                    "task_name": params.get("task_name") or params.get("task"),
+                    "screen_text": params.get("screen_text") or params.get("text"),
+                    "pid": params.get("pid"),
+                    "name": params.get("name"),
+                },
+                player=player,
+            )
 
         return f"Unknown action: '{action}'"
 

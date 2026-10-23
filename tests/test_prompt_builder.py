@@ -64,6 +64,35 @@ class TestPromptBuilder(unittest.TestCase):
         self.assertIn('"Brave open koro"', prompt)
         self.assertIn("### REFERENCE OS INTERACTION EXAMPLES (FROM JEDI DATASET):", prompt)
 
+    def test_mj_prompts_master_prompt_modules(self):
+        from mj_prompts import MASTER_SYSTEM_PROMPT
+        expected_modules = [
+            "[VISION & GROUNDING]",
+            "[WEB & OFFICE]",
+            "[MESSAGING]",
+            "[CODING & VSCODE]",
+            "[FILE & OS]",
+            "[CROSS-APP & CLIPBOARD]",
+            "[SELF-HEALING]",
+            "[PRIVACY SHIELD]",
+            "[SKILL & MACRO MEMORY]",
+            "[PROACTIVE WATCHER]",
+        ]
+        for mod in expected_modules:
+            self.assertIn(mod, MASTER_SYSTEM_PROMPT)
+
+    def test_get_mj_prompt_with_jedi(self):
+        from mj_prompts import get_mj_prompt_with_jedi
+        prompt = get_mj_prompt_with_jedi(
+            user_command="Start Coding Mode",
+            jsonl_path=str(self.jsonl_file)
+        )
+        self.assertIn("You are MJ (ULTRON)", prompt)
+        self.assertIn("### JEDI OS DATASET REFERENCE EXAMPLES:", prompt)
+        self.assertIn('"example_id": 0', prompt)
+        self.assertIn('### USER COMMAND:\n"Start Coding Mode"', prompt)
+
 
 if __name__ == "__main__":
     unittest.main()
+

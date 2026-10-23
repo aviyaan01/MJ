@@ -320,7 +320,7 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "type | smart_type | click | smart_click | double_click | right_click | hotkey | press | scroll | move | copy | paste | cross_app_transfer | clipboard_bridge | self_healing_click | check_frozen | restart_frozen | loop_breaker | privacy_shield | local_env | screenshot | wait | clear_field | dismiss_popup | focus_window | screen_find | screen_click | random_data | user_data"},
+                "action":      {"type": "STRING", "description": "type | smart_type | click | smart_click | double_click | right_click | hotkey | press | scroll | move | copy | paste | cross_app_transfer | clipboard_bridge | self_healing_click | check_frozen | restart_frozen | loop_breaker | privacy_shield | local_env | macro | screenshot | wait | clear_field | dismiss_popup | focus_window | screen_find | screen_click | random_data | user_data"},
                 "text":        {"type": "STRING", "description": "Text to type or paste"},
                 "x":           {"type": "INTEGER", "description": "X coordinate"},
                 "y":           {"type": "INTEGER", "description": "Y coordinate"},
@@ -565,37 +565,84 @@ TOOL_DECLARATIONS = [
     {
         "name": "routine_manager",
         "description": (
-            "Manages automated multi-step routines. Use when the user wants to create, "
-            "list, delete, or manually execute saved automations that trigger at a scheduled time "
-            "(24h 'HH:MM') or via a spoken trigger phrase (e.g. 'leaving now'). "
-            "When creating a routine, confirm the steps back to the user in one sentence before saving."
+            "Skill & Macro Memory runtime: learns, saves, and executes multi-step workspace routines and macros as single commands. "
+            "Step 1: Executes full sequences of actions for routines such as 'Start Coding Mode', 'Start Gaming Mode', or 'Prepare Project Setup'. "
+            "Step 2: Saves successful multi-step action sequences into Conversational Memory & local JSON storage as a reusable skill. "
+            "Step 3: Directly loads and executes saved macros without needing to plan from scratch."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "action": {
                     "type": "STRING",
-                    "description": "create | list | delete | run_now"
+                    "description": "execute | run_now | learn | save | create | list | delete | get | presets"
                 },
                 "name": {
                     "type": "STRING",
-                    "description": "Routine name (e.g. 'morning_music', 'leaving_home')"
+                    "description": "Routine name (e.g. 'Start Coding Mode', 'Start Gaming Mode', 'Prepare Project Setup', 'morning_music')"
                 },
                 "trigger_type": {
                     "type": "STRING",
-                    "description": "time | phrase"
+                    "description": "phrase (default) | time"
                 },
                 "trigger_value": {
                     "type": "STRING",
-                    "description": "Time in 'HH:MM' (24h format, e.g. '07:00') or spoken trigger phrase (e.g. 'leaving now')"
+                    "description": "Spoken trigger phrase (e.g. 'start coding mode', 'coding mode') or 24h time 'HH:MM'"
                 },
                 "steps": {
                     "type": "STRING",
                     "description": (
                         "JSON-encoded array of steps e.g. "
-                        "'[{\"tool\": \"open_app\", \"args\": {\"app_name\": \"spotify\"}}, {\"tool\": \"youtube_video\", \"args\": {\"query\": \"lofi music\"}}]'. "
-                        "Uses existing tool names: open_app, close_app, computer_settings, youtube_video, web_search, etc."
+                        "'[{\"tool\": \"open_app\", \"args\": {\"app_name\": \"vscode\"}}, {\"tool\": \"youtube_video\", \"args\": {\"query\": \"lofi music\"}}]'. "
+                        "Supports all system tools: open_app, close_app, code_helper, computer_settings, youtube_video, browser_control, dev_agent, etc."
                     )
+                },
+                "description": {
+                    "type": "STRING",
+                    "description": "Readable description of what this macro/routine achieves."
+                }
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "proactive_watcher",
+        "description": (
+            "Proactive Watcher & System Guard co-pilot: monitors long-running tasks and protects against critical system spikes. "
+            "Step 1: Monitors terminal progress or progress bars for long processes (model training, large file download, server deployment, dataset fetching) via Screen Vision. "
+            "Step 2: Proactively notifies when finished ('Boss, your task is finished') or errored ('Boss, the script stopped with an error—should I fix it?'). "
+            "Step 3: Detects critical CPU/RAM spikes (>90%), identifies the heavy background process causing lag, and prompts user before terminating it."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "description": "watch | inspect | check_spikes | terminate | status | stop"
+                },
+                "task_name": {
+                    "type": "STRING",
+                    "description": "Name or description of long-running task (e.g. 'model training', 'large file download', 'server deployment', 'dataset fetching')"
+                },
+                "task_type": {
+                    "type": "STRING",
+                    "description": "training | download | deployment | dataset | build | generic"
+                },
+                "screen_text": {
+                    "type": "STRING",
+                    "description": "Optional terminal or screen text to inspect for progress, completion, or fatal errors"
+                },
+                "pid": {
+                    "type": "INTEGER",
+                    "description": "PID of heavy background process to terminate on user instruction"
+                },
+                "name": {
+                    "type": "STRING",
+                    "description": "Name of process to terminate (e.g. 'chrome.exe', 'photoshop.exe')"
+                },
+                "confirmed": {
+                    "type": "BOOLEAN",
+                    "description": "Explicit confirmation to terminate the identified heavy process"
                 }
             },
             "required": ["action"]
