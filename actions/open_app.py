@@ -1,3 +1,5 @@
+import os
+from pathlib import Path
 import platform
 import shutil
 import subprocess
@@ -31,9 +33,11 @@ _APP_ALIASES: dict[str, dict[str, str]] = {
     "spotify":            {"Windows": "Spotify",                 "Darwin": "Spotify",              "Linux": "spotify"},
     "vlc":                {"Windows": "vlc",                     "Darwin": "VLC",                  "Linux": "vlc"},
     "netflix":            {"Windows": "Netflix",                 "Darwin": "Netflix",              "Linux": "firefox"},
-    "vscode":             {"Windows": "code",                    "Darwin": "Visual Studio Code",   "Linux": "code"},
-    "visual studio code": {"Windows": "code",                    "Darwin": "Visual Studio Code",   "Linux": "code"},
-    "code":               {"Windows": "code",                    "Darwin": "Visual Studio Code",   "Linux": "code"},
+    "vscode":             {"Windows": "vscode",                  "Darwin": "Visual Studio Code",   "Linux": "code"},
+    "vs code":            {"Windows": "vscode",                  "Darwin": "Visual Studio Code",   "Linux": "code"},
+    "visual studio code": {"Windows": "vscode",                  "Darwin": "Visual Studio Code",   "Linux": "code"},
+    "code":               {"Windows": "vscode",                  "Darwin": "Visual Studio Code",   "Linux": "code"},
+    "cursor":             {"Windows": "cursor",                  "Darwin": "Cursor",               "Linux": "cursor"},
     "terminal":           {"Windows": "wt",                      "Darwin": "Terminal",             "Linux": "x-terminal-emulator"},
     "cmd":                {"Windows": "cmd.exe",                 "Darwin": "Terminal",             "Linux": "bash"},
     "powershell":         {"Windows": "powershell.exe",          "Darwin": "Terminal",             "Linux": "bash"},
@@ -77,9 +81,49 @@ def _normalize(raw: str) -> str:
 
     return raw  
 
-def _launch_windows(app_name: str) -> bool:
-    import os
+KNOWN_EXES = {
+    "brave": [
+        Path(os.environ.get("ProgramFiles", "C:\\Program Files")) / "BraveSoftware" / "Brave-Browser" / "Application" / "brave.exe",
+        Path(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")) / "BraveSoftware" / "Brave-Browser" / "Application" / "brave.exe",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "BraveSoftware" / "Brave-Browser" / "Application" / "brave.exe",
+    ],
+    "vscode": [
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Microsoft VS Code" / "Code.exe",
+        Path(os.environ.get("ProgramFiles", "C:\\Program Files")) / "Microsoft VS Code" / "Code.exe",
+        Path(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")) / "Microsoft VS Code" / "Code.exe",
+    ],
+    "code": [
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Microsoft VS Code" / "Code.exe",
+        Path(os.environ.get("ProgramFiles", "C:\\Program Files")) / "Microsoft VS Code" / "Code.exe",
+        Path(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")) / "Microsoft VS Code" / "Code.exe",
+    ],
+    "cursor": [
+        Path("D:\\cursor\\Cursor.exe"),
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "cursor" / "Cursor.exe",
+    ],
+}
 
+
+def get_known_exes(app_name: str) -> list[Path]:
+    key = app_name.lower().replace(".exe", "").strip()
+    return KNOWN_EXES.get(key, [])
+
+
+def _launch_windows(app_name: str) -> bool:
+    # 1. Check known application paths FIRST for precision matching
+    app_key = app_name.lower().replace(".exe", "").strip()
+    candidates = get_known_exes(app_key)
+    if candidates:
+        for candidate in candidates:
+            if candidate.exists():
+                try:
+                    subprocess.Popen([str(candidate)])
+                    time.sleep(1.0)
+                    return True
+                except Exception:
+                    pass
+
+    # 2. Try generic start command
     try:
         subprocess.Popen(
             f'start "" "{app_name}"',
@@ -257,7 +301,12 @@ def open_app(
     player=None,
     session_memory=None,
 ) -> str:
-    app_name = (parameters or {}).get("app_name", "").strip()
+    if isinstance(parameters, str):
+        app_name = parameters.strip()
+    elif isinstance(parameters, dict):
+        app_name = str(parameters.get("app_name") or parameters.get("name") or "").strip()
+    else:
+        app_name = ""
 
     if not app_name:
         return "No application name provided."

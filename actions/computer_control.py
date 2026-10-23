@@ -149,9 +149,11 @@ def _smart_type(text: str, clear_first: bool = True) -> str:
         _clear_field()
         time.sleep(0.1)
 
-    if len(text) > 20 and _PYPERCLIP:
+    # [MODULE: CROSS-APP PIPELINE & CLIPBOARD BRIDGE] Step 1:
+    # Instead of re-typing text slowly with typewrite, write directly to clipboard and press Ctrl+V for instant, zero-typo pasting.
+    if _PYPERCLIP and len(text) > 0:
         pyperclip.copy(text)
-        time.sleep(0.1)
+        time.sleep(0.08)
         paste_key = "command" if get_os() == "mac" else "ctrl"
         pyautogui.hotkey(paste_key, "v")
         return f"Smart-typed (clipboard): {text[:60]}{'…' if len(text) > 60 else ''}"
@@ -234,6 +236,8 @@ def _clear_field() -> str:
     select_key = "command" if get_os() == "mac" else "ctrl"
     pyautogui.hotkey(select_key, "a")
     time.sleep(0.1)
+    pyautogui.press("backspace")
+    time.sleep(0.05)
     pyautogui.press("delete")
     return "Field cleared"
 
@@ -295,7 +299,7 @@ def _focus_window(title: str) -> str:
 def _screen_find(description: str) -> tuple[int, int] | None:
     api_key = get_api_key('gemini_api_key')
     if not api_key:
-        print("[ComputerControl] ⚠️ No API key for screen_find")
+        print("[ComputerControl] [!] No API key for screen_find")
         return None
 
     try:
@@ -334,7 +338,7 @@ def _screen_find(description: str) -> tuple[int, int] | None:
             return int(match.group(1)), int(match.group(2))
 
     except Exception as e:
-        print(f"[ComputerControl] ⚠️ screen_find failed: {e}")
+        print(f"[ComputerControl] [!] screen_find failed: {e}")
 
     return None
 
@@ -395,21 +399,75 @@ def computer_control(
     if player:
         player.write_log(f"[Computer] {action}")
 
-    print(f"[ComputerControl] ▶ {action}  {params}")
+    try:
+        from actions.privacy_shield import sanitize_log_message
+        print(f"[ComputerControl] > {action}  {sanitize_log_message(str(params))}")
+    except Exception:
+        try:
+            print(f"[ComputerControl] > {action}  {params}")
+        except Exception:
+            pass
 
     try:
 
         if action == "type":
-            return _type(params.get("text", ""))
+            res = _type(params.get("text", ""))
+            if params.get("press_enter") or params.get("enter") or params.get("send"):
+                time.sleep(0.2)
+                _press("enter")
+            return res
 
         if action == "smart_type":
-            return _smart_type(
+            x = params.get("x")
+            y = params.get("y")
+            desc = params.get("description", "")
+            field_name = params.get("field", "")
+            # Privacy Shield Guard: never auto-fill passwords without explicit instruction
+            try:
+                from actions.privacy_shield import is_password_or_credential_field
+                if is_password_or_credential_field(desc, field_name):
+                    confirmed = params.get("confirmed") or params.get("explicit_instruction") or params.get("allow_credential")
+                    if not confirmed:
+                        return (
+                            "[PRIVACY SHIELD GUARD] Auto-fill blocked: Target field appears to be a password or private credential. "
+                            "To protect your security, MJ will not auto-fill or modify credentials without your explicit instruction in this turn."
+                        )
+            except Exception:
+                pass
+
+            if (x is None or y is None) and desc:
+                coords = _screen_find(desc)
+                if coords:
+                    x, y = coords[0], coords[1]
+            if x is not None and y is not None:
+                _click(x, y, "left", 1)
+                time.sleep(0.2)
+            res = _smart_type(
                 params.get("text", ""),
                 clear_first=params.get("clear_first", True),
             )
+            if params.get("press_enter") or params.get("enter") or params.get("send"):
+                time.sleep(0.2)
+                _press("enter")
+            return res
 
-        if action in ("click", "left_click"):
-            return _click(params.get("x"), params.get("y"), "left", 1)
+        if action in ("click", "left_click", "smart_click"):
+            x = params.get("x")
+            y = params.get("y")
+            desc = params.get("description", "")
+            if (x is None or y is None) and desc:
+                coords = _screen_find(desc)
+                if coords:
+                    time.sleep(0.15)
+                    _click(coords[0], coords[1], "left", 1)
+                    return f"Smart-clicked '{desc}' at {coords}"
+                return f"Element not found on screen: '{desc}'"
+            return _click(x, y, "left", 1)
+
+        if action in ("dismiss_popup", "close_popup"):
+            _press("escape")
+            time.sleep(0.3)
+            return "Attempted popup dismissal via Escape key."
 
         if action == "double_click":
             return _click(params.get("x"), params.get("y"), "left", 2)
@@ -446,6 +504,18 @@ def computer_control(
         if action == "paste":
             return _clipboard_paste(params.get("text", ""))
 
+        if action in ("clipboard_bridge", "cross_app_transfer", "transfer_text", "clipboard_transfer", "scratchpad_set", "scratchpad_get"):
+            from actions.clipboard_bridge import clipboard_bridge as cb
+            return cb(params)
+
+        if action in ("self_healing", "self_healing_click", "check_frozen", "check_frozen_apps", "restart_frozen", "restart_frozen_app", "offer_restart", "loop_breaker"):
+            from actions.self_healing import self_healing as sh
+            return sh(params, player=player)
+
+        if action in ("privacy_shield", "redact", "mask_credentials", "sanitize", "local_env"):
+            from actions.privacy_shield import privacy_shield as ps
+            return ps(params, player=player)
+
         if action == "screenshot":
             return _screenshot(params.get("path"))
 
@@ -477,7 +547,10 @@ def computer_control(
         if action == "random_data":
             dt     = params.get("type", "name")
             result = _random_data(dt)
-            print(f"[ComputerControl] 🎲 random {dt} → {result}")
+            try:
+                print(f"[ComputerControl] random {dt} -> {result}")
+            except Exception:
+                pass
             return result
 
         if action == "user_data":
@@ -486,11 +559,17 @@ def computer_control(
             value   = profile.get(field, "")
             if not value:
                 value = _random_data(field)
-                print(f"[ComputerControl] ⚠️ No '{field}' in memory, using random: {value}")
+                try:
+                    print(f"[ComputerControl] [!] No '{field}' in memory, using random: {value}")
+                except Exception:
+                    pass
             return value
 
         return f"Unknown action: '{action}'"
 
     except Exception as e:
-        print(f"[ComputerControl] ❌ {action}: {e}")
+        try:
+            print(f"[ComputerControl] [ERR] {action}: {e}")
+        except Exception:
+            pass
         return f"computer_control '{action}' failed: {e}"

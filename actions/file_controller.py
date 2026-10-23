@@ -1,3 +1,4 @@
+import fnmatch
 import os
 import shutil
 from datetime import datetime
@@ -217,8 +218,157 @@ def delete_file(path: str, name: str = "") -> str:
         return f"Could not delete: {e}"
 
 
-def move_file(path: str, name: str = "", destination: str = "") -> str:
+def _get_safe_destination(dest_dir: Path, filename: str) -> tuple[Path, bool]:
+    """
+    Step 2: Verify destination folder exists and handle duplicate file names safely
+    without overwriting data by appending (1), (2), etc.
+    Returns (safe_path, was_renamed).
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    target = dest_dir / filename
+    if not target.exists():
+        return target, False
+
+    stem = Path(filename).stem
+    suffix = Path(filename).suffix
+    counter = 1
+    while True:
+        candidate = dest_dir / f"{stem} ({counter}){suffix}"
+        if not candidate.exists():
+            return candidate, True
+        counter += 1
+
+
+def organize_files(
+    path: str = "downloads",
+    destination: str = "",
+    extension: str = "",
+    pattern: str = "",
+    by_type: bool = False
+) -> str:
+    """
+    [MODULE: FILE & OS SYSTEM MANAGEMENT]
+    Step 1: For file organization (e.g., moving all PDFs in Downloads to a new folder),
+    DO NOT drag files one by one with the mouse. Use file_controller Python background
+    operations for instant execution.
+    Step 2: Verify that destination folders exist and handle duplicate file names safely.
+    Step 4: Report the exact count of moved/modified files back to the user.
+    """
     try:
+        src_dir = _resolve_path(path)
+        if not _is_safe_path(src_dir):
+            return f"Access denied: {src_dir}"
+        if not src_dir.exists():
+            return f"Source path not found: {path}"
+        if not src_dir.is_dir():
+            return f"Source is not a directory: {path}"
+
+        norm_ext = extension.strip().lower()
+        if norm_ext and not norm_ext.startswith("."):
+            norm_ext = f".{norm_ext}"
+
+        # Categorize by file type if requested or when no explicit destination/extension is given
+        if by_type or (not destination and not norm_ext and not pattern):
+            type_map = {
+                "Documents": {".pdf", ".doc", ".docx", ".txt", ".xls", ".xlsx", ".ppt", ".pptx", ".csv", ".odt", ".ods", ".odp"},
+                "Images":    {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg", ".ico", ".heic"},
+                "Videos":    {".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv", ".webm", ".m4v"},
+                "Music":     {".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", ".m4a"},
+                "Archives":  {".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz"},
+                "Code":      {".py", ".js", ".ts", ".html", ".css", ".json", ".xml", ".cpp", ".java", ".cs", ".go", ".rs", ".sh"},
+            }
+            moved = []
+            renamed_count = 0
+            for item in sorted(src_dir.iterdir()):
+                if item.is_dir() or item.name.startswith("."):
+                    continue
+                if item.name in type_map or item.name == "Others":
+                    continue
+
+                item_ext = item.suffix.lower()
+                target_folder_name = "Others"
+                for folder, exts in type_map.items():
+                    if item_ext in exts:
+                        target_folder_name = folder
+                        break
+
+                dest_dir = src_dir / target_folder_name
+                safe_dst, was_renamed = _get_safe_destination(dest_dir, item.name)
+                if was_renamed:
+                    renamed_count += 1
+                shutil.move(str(item), str(safe_dst))
+                moved.append(f"{item.name} -> {target_folder_name}/{safe_dst.name}")
+
+            report = f"Organized {src_dir.name}/: {len(moved)} file(s) moved across categories."
+            if renamed_count > 0:
+                report += f" ({renamed_count} duplicate file(s) safely renamed to prevent overwriting)."
+            return report
+
+        # Organize by specific destination folder and/or extension/pattern
+        if not destination:
+            folder_hint = norm_ext.lstrip(".") if norm_ext else "Organized"
+            dest_dir = src_dir / folder_hint.upper()
+        else:
+            dest_dir = _resolve_path(destination)
+
+        if not _is_safe_path(dest_dir):
+            return f"Access denied (destination): {dest_dir}"
+
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        matching_files: list[Path] = []
+        for item in sorted(src_dir.iterdir()):
+            if item.is_dir() or item.name.startswith("."):
+                continue
+            if norm_ext and item.suffix.lower() != norm_ext:
+                continue
+            if pattern:
+                if not fnmatch.fnmatch(item.name.lower(), pattern.lower()):
+                    continue
+            matching_files.append(item)
+
+        if not matching_files:
+            filter_desc = f"with extension '{norm_ext}'" if norm_ext else (f"matching '{pattern}'" if pattern else "")
+            return f"No files {filter_desc} found in {src_dir.name}/."
+
+        moved_count = 0
+        renamed_count = 0
+        details = []
+
+        for item in matching_files:
+            safe_dst, was_renamed = _get_safe_destination(dest_dir, item.name)
+            if was_renamed:
+                renamed_count += 1
+            shutil.move(str(item), str(safe_dst))
+            moved_count += 1
+            if len(details) < 8:
+                rename_flag = " (renamed to avoid overwrite)" if was_renamed else ""
+                details.append(f"  - {item.name} -> {safe_dst.name}{rename_flag}")
+
+        msg = f"Successfully moved {moved_count} file(s) from {src_dir.name}/ to {dest_dir.name}/."
+        if renamed_count > 0:
+            msg += f"\nSafe collision avoidance: {renamed_count} duplicate name(s) renamed without overwriting."
+        if details:
+            msg += "\n" + "\n".join(details)
+            if moved_count > len(details):
+                msg += f"\n  ... and {moved_count - len(details)} more."
+
+        return msg
+    except Exception as e:
+        return f"Could not organize files: {e}"
+
+
+def move_file(path: str, name: str = "", destination: str = "", extension: str = "") -> str:
+    try:
+        # Check for bulk wildcard / extension move
+        if (name and ("*" in name or "?" in name)) or extension:
+            return organize_files(
+                path=path,
+                destination=destination,
+                extension=extension,
+                pattern=name if ("*" in name or "?" in name) else ""
+            )
+
         base   = _resolve_path(path)
         src    = (base / name) if name else base
         dst    = _resolve_path(destination) if destination else None
@@ -233,11 +383,17 @@ def move_file(path: str, name: str = "", destination: str = "") -> str:
             return f"Access denied (destination): {dst}"
 
         if dst.is_dir():
-            dst = dst / src.name
+            target_dst, was_renamed = _get_safe_destination(dst, src.name)
+        else:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if dst.exists():
+                target_dst, was_renamed = _get_safe_destination(dst.parent, dst.name)
+            else:
+                target_dst, was_renamed = dst, False
 
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(src), str(dst))
-        return f"Moved: {src.name} → {dst.parent.name}/"
+        shutil.move(str(src), str(target_dst))
+        rename_note = " (renamed to avoid overwrite)" if was_renamed else ""
+        return f"Moved: {src.name} -> {target_dst.parent.name}/{target_dst.name}{rename_note}"
 
     except Exception as e:
         return f"Could not move: {e}"
@@ -259,16 +415,21 @@ def copy_file(path: str, name: str = "", destination: str = "") -> str:
             return f"Access denied (destination): {dst}"
 
         if dst.is_dir():
-            dst = dst / src.name
-
-        dst.parent.mkdir(parents=True, exist_ok=True)
+            target_dst, was_renamed = _get_safe_destination(dst, src.name)
+        else:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if dst.exists():
+                target_dst, was_renamed = _get_safe_destination(dst.parent, dst.name)
+            else:
+                target_dst, was_renamed = dst, False
 
         if src.is_dir():
-            shutil.copytree(str(src), str(dst))
+            shutil.copytree(str(src), str(target_dst))
         else:
-            shutil.copy2(str(src), str(dst))
+            shutil.copy2(str(src), str(target_dst))
 
-        return f"Copied: {src.name} → {dst.parent.name}/"
+        rename_note = " (renamed to avoid overwrite)" if was_renamed else ""
+        return f"Copied: {src.name} -> {target_dst.parent.name}/{target_dst.name}{rename_note}"
 
     except Exception as e:
         return f"Could not copy: {e}"
@@ -527,7 +688,21 @@ def file_controller(
             return delete_file(path, name=name)
 
         elif action == "move":
-            return move_file(path, name=name, destination=params.get("destination", ""))
+            return move_file(
+                path,
+                name=name,
+                destination=params.get("destination", ""),
+                extension=params.get("extension", "")
+            )
+
+        elif action in ("organize", "organize_files", "bulk_move", "organize_folder"):
+            return organize_files(
+                path=path,
+                destination=params.get("destination", ""),
+                extension=params.get("extension", ""),
+                pattern=params.get("pattern", name),
+                by_type=params.get("by_type", False),
+            )
 
         elif action == "copy":
             return copy_file(path, name=name, destination=params.get("destination", ""))

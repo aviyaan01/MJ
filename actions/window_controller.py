@@ -68,9 +68,10 @@ def close_all_user_windows() -> str:
                 try:
                     win.activate()
                     time.sleep(0.08)
-                    pyautogui.hotkey("alt", "f4")
-                    closed_count += 1
-                    time.sleep(0.08)
+                    if _PYAUTOGUI:
+                        pyautogui.hotkey("alt", "f4")
+                        closed_count += 1
+                        time.sleep(0.08)
                 except Exception:
                     pass
         except Exception as e:
@@ -97,7 +98,7 @@ def close_all_user_windows() -> str:
         except Exception:
             pass
 
-    return f"Closed {closed_count} application window(s)." if closed_count > 0 else "All application windows were closed."
+    return f"Closed {closed_count} application window(s)." if closed_count > 0 else "No application windows were found to close."
 
 
 def window_controller(

@@ -9,16 +9,26 @@ echo.
 
 cd /d "%~dp0"
 
+REM ── Check for Administrator privileges ────────────────────────────────────
+net session >nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    echo [MJ] Tip: Running as Administrator allows complete hardware and window controls.
+)
+
 REM ── Check if virtualenv exists ──────────────────────────────────────────
-if exist ".venv\Scripts\activate.bat" (
+if exist .venv\Scripts\activate.bat (
     call .venv\Scripts\activate.bat
 )
 
 echo Launching MJ AI Assistant...
-python main.py
+set "PY_CMD=python"
+if exist .venv\Scripts\python.exe (
+    set "PY_CMD=.venv\Scripts\python.exe"
+)
+
+%PY_CMD% main.py
 
 if %ERRORLEVEL% NEQ 0 (
-    echo.
-    echo MJ closed with an error (code %ERRORLEVEL%).
+    echo [MJ] Process exited with code %ERRORLEVEL%.
     pause
 )

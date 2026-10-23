@@ -62,15 +62,40 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "send_message",
-        "description": "Sends a text message via WhatsApp, Telegram, or other messaging platform.",
+        "description": (
+            "Sends, edits, deletes messages or detects active chats on WhatsApp (Desktop & Web), Messenger, Facebook, LinkedIn, Telegram, Instagram, Discord. "
+            "Follows 5-step cycle: 1) Focus app/tab; 2) Search contact via Ctrl+F / search box; 3) Visually verify header name via Screen Vision to avoid wrong recipient; 4) Send message; 5) Edit/delete last message using Up Arrow / context menu. "
+            "Use 'send' to send a new message. "
+            "Use 'edit' to edit/replace the last sent message. "
+            "Use 'delete' to delete the last sent message for everyone. "
+            "Use 'detect_chat' to check which contact or chat window is currently active/open. "
+            "Use this whenever the user says 'message dao', 'msg pathao', 'take bolo', 'edit koro', 'delete koro', 'chat detect koro', etc."
+        ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "receiver":     {"type": "STRING", "description": "Recipient contact name"},
-                "message_text": {"type": "STRING", "description": "The message to send"},
-                "platform":     {"type": "STRING", "description": "Platform: WhatsApp, Telegram, etc."}
+                "action": {
+                    "type": "STRING",
+                    "description": "send (default) | edit | delete | detect_chat"
+                },
+                "message_text": {
+                    "type": "STRING",
+                    "description": "The message text to send or updated text for edit. Required for send and edit."
+                },
+                "receiver": {
+                    "type": "STRING",
+                    "description": "Recipient contact name, phone number, or 'current'/'active'/'take' for currently open chat (default: 'current')"
+                },
+                "platform": {
+                    "type": "STRING",
+                    "description": "Platform: 'whatsapp' (default), 'messenger', 'facebook', 'linkedin', 'telegram', 'instagram', 'discord', or 'current'"
+                },
+                "for_everyone": {
+                    "type": "BOOLEAN",
+                    "description": "Whether to delete for everyone (default: true) when action='delete'"
+                }
             },
-            "required": ["receiver", "message_text", "platform"]
+            "required": []
         }
     },
     {
@@ -155,8 +180,13 @@ TOOL_DECLARATIONS = [
     {
         "name": "computer_settings",
         "description": (
-            "Controls the computer: volume, brightness, window management, keyboard shortcuts, "
-            "typing text on screen, fullscreen, dark mode, WiFi, "
+            "Controls computer and OS settings directly via native Windows system calls or shortcuts: "
+            "volume (volume_up, volume_down, volume_mute, volume_set, volume_get), "
+            "brightness (brightness_up, brightness_down), "
+            "Wi-Fi (toggle_wifi, wifi), "
+            "Bluetooth (toggle_bluetooth, bluetooth, bluetooth_on, bluetooth_off), "
+            "power/sleep (sleep_computer, sleep, restart, shutdown, log_off), "
+            "window management, fullscreen, dark mode, keyboard shortcuts, typing text on screen, "
             "scrolling, tab management, zoom, screenshots, lock screen, refresh/reload page. "
             "Foreground-window close: action close_foreground_app or close_current_window "
             "(closes only the focused window — NOT a named process). "
@@ -170,9 +200,10 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "The action to perform"},
+                "action":      {"type": "STRING", "description": "The action to perform: volume_up | volume_down | volume_set | volume_get | mute | brightness_up | brightness_down | toggle_wifi | toggle_bluetooth | bluetooth_on | bluetooth_off | sleep | restart | shutdown | ..."},
                 "description": {"type": "STRING", "description": "Natural language description of what to do"},
-                "value":       {"type": "STRING", "description": "Optional value: volume level, text to type, etc."},
+                "value":       {"type": "STRING", "description": "Optional value: volume level (0-100), text to type, key name, etc."},
+                "state":       {"type": "STRING", "description": "Optional state for bluetooth/wifi: 'on' | 'off' | 'toggle'"},
                 "confirmed":   {"type": "STRING", "description": "Set by the runtime after the user says yes to a dangerous power action. Do not invent this."},
             },
             "required": []
@@ -212,17 +243,24 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "file_controller",
-        "description": "Manages files and folders anywhere on the PC: create folders (any directory/drive), create files, list, delete, move, copy, rename, read, write, find, disk usage.",
+        "description": (
+            "Manages files and folders anywhere on the PC: organize files (moving by extension, pattern, or category "
+            "instantly in the background without mouse dragging), verify destination folders and handle duplicate file "
+            "names safely without overwriting data, create folders (any directory/drive), create files, list, delete, "
+            "move, copy, rename, read, write, find, disk usage, and report exact counts of moved/modified files."
+        ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "list | create_file | create_folder | delete | move | copy | rename | read | write | find | largest | disk_usage | organize_desktop | info"},
-                "path":        {"type": "STRING", "description": "File/folder path or shortcut: desktop, downloads, documents, home, or full path like C:/..., D:/..."},
-                "destination": {"type": "STRING", "description": "Destination path for move/copy"},
+                "action":      {"type": "STRING", "description": "organize | organize_files | move | copy | list | create_file | create_folder | delete | rename | read | write | find | largest | disk_usage | organize_desktop | info"},
+                "path":        {"type": "STRING", "description": "Source file/folder path or shortcut: desktop, downloads, documents, home, or full path like C:/..., D:/..."},
+                "destination": {"type": "STRING", "description": "Destination path for move/copy/organize"},
                 "new_name":    {"type": "STRING", "description": "New name for rename"},
                 "content":     {"type": "STRING", "description": "Content for create_file/write"},
                 "name":        {"type": "STRING", "description": "File/folder name to create or search for"},
-                "extension":   {"type": "STRING", "description": "File extension to search (e.g. .pdf)"},
+                "extension":   {"type": "STRING", "description": "File extension to filter or organize (e.g. .pdf, .docx, .png)"},
+                "pattern":     {"type": "STRING", "description": "Wildcard pattern to match (e.g. *.pdf, invoice_*)"},
+                "by_type":     {"type": "BOOLEAN", "description": "Whether to organize files into categorized folders (Documents, Images, Videos, Music, Archives, Code)"},
                 "count":       {"type": "INTEGER", "description": "Number of results for largest"},
             },
             "required": ["action"]
@@ -245,15 +283,16 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "code_helper",
-        "description": "Writes, edits, explains, runs, or builds code files ANYWHERE on the computer and automatically opens them in Visual Studio Code.",
+        "description": "Writes, edits, explains, runs, or builds code files ANYWHERE on the computer and automatically opens them in Visual Studio Code. Can also edit code visible directly on screen (action='screen_edit') or fix terminal/IDE errors from screen (action='fix_error_on_screen') by reading the traceback, navigating to the file/line in VS Code, applying a clean fix, and re-running in terminal.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "write | edit | explain | run | build | open_in_vscode | auto (default: auto)"},
-                "description": {"type": "STRING", "description": "What the code should do or what change to make"},
+                "action":      {"type": "STRING", "description": "write | edit | screen_edit | fix_error_on_screen | explain | run | build | open_in_vscode | auto (default: auto)"},
+                "description": {"type": "STRING", "description": "What the code should do or what change to make or error to fix"},
                 "language":    {"type": "STRING", "description": "Programming language (default: python)"},
                 "output_path": {"type": "STRING", "description": "Where to save the file (any drive/path)"},
-                "file_path":   {"type": "STRING", "description": "Path to existing file for edit/explain/run/build/open_in_vscode"},
+                "file_path":   {"type": "STRING", "description": "Path to existing file for edit/explain/run/build/open_in_vscode/fix_error_on_screen (leave empty to auto-detect from screen/active window)"},
+                "command":     {"type": "STRING", "description": "Terminal execution command to re-run after applying fix (e.g. 'python main.py')"},
                 "code":        {"type": "STRING", "description": "Raw code string for explain"},
                 "args":        {"type": "STRING", "description": "CLI arguments for run/build"},
                 "timeout":     {"type": "INTEGER", "description": "Execution timeout in seconds (default: 30)"},
@@ -277,11 +316,11 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "computer_control",
-        "description": "Direct computer control: type, click, hotkeys, scroll, move mouse, screenshots, find elements on screen.",
+        "description": "Direct computer control: type, smart_type, click, hotkeys, scroll, move mouse, screenshots, find elements on screen, cross_app_transfer.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "type | smart_type | click | double_click | right_click | hotkey | press | scroll | move | copy | paste | screenshot | wait | clear_field | focus_window | screen_find | screen_click | random_data | user_data"},
+                "action":      {"type": "STRING", "description": "type | smart_type | click | smart_click | double_click | right_click | hotkey | press | scroll | move | copy | paste | cross_app_transfer | clipboard_bridge | self_healing_click | check_frozen | restart_frozen | loop_breaker | privacy_shield | local_env | screenshot | wait | clear_field | dismiss_popup | focus_window | screen_find | screen_click | random_data | user_data"},
                 "text":        {"type": "STRING", "description": "Text to type or paste"},
                 "x":           {"type": "INTEGER", "description": "X coordinate"},
                 "y":           {"type": "INTEGER", "description": "Y coordinate"},
@@ -295,9 +334,81 @@ TOOL_DECLARATIONS = [
                 "type":        {"type": "STRING",  "description": "Data type for random_data"},
                 "field":       {"type": "STRING",  "description": "Field for user_data: name|email|city"},
                 "clear_first": {"type": "BOOLEAN", "description": "Clear field before typing (default: true)"},
+                "press_enter": {"type": "BOOLEAN", "description": "Whether to press Enter key after typing to send/submit (default: false)"},
                 "path":        {"type": "STRING",  "description": "Save path for screenshot"},
             },
             "required": ["action"]
+        }
+    },
+    {
+        "name": "clipboard_bridge",
+        "description": (
+            "Cross-app pipeline and clipboard bridge for moving information between applications "
+            "(e.g., search topic on Brave, summarize, send on WhatsApp, or copy error from browser to VS Code). "
+            "Step 1: Writes text directly to system clipboard and triggers Ctrl+V for instant, zero-typo pasting. "
+            "Step 2: Maintains an in-memory 'Working Scratchpad' when switching windows (Alt+Tab) to preserve context. "
+            "Step 3: Verifies that the target window is active in the foreground via Screen Vision / Window API before executing Ctrl+V or Enter."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":        {"type": "STRING", "description": "transfer (default) | copy | paste | switch_and_paste | get_scratchpad | set_scratchpad | clear_scratchpad | verify_window"},
+                "text":          {"type": "STRING", "description": "Text, summary, code, or error to transfer or copy"},
+                "target_app":    {"type": "STRING", "description": "Target application name (e.g., 'whatsapp', 'vscode', 'brave', 'chrome', 'notepad')"},
+                "source_app":    {"type": "STRING", "description": "Source application where text originated"},
+                "press_enter":   {"type": "BOOLEAN", "description": "Whether to press Enter after pasting (e.g. to send message or run command)"},
+                "clear_first":   {"type": "BOOLEAN", "description": "Whether to clear input field (Ctrl+A -> Backspace) before pasting"},
+                "verify_window": {"type": "BOOLEAN", "description": "Verify that target window is active in foreground before pasting (default: true)"},
+                "key":           {"type": "STRING", "description": "Scratchpad slot key (default: 'main')"},
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "self_healing",
+        "description": (
+            "Self-healing and loop breaker system for OS automation to prevent infinite retry loops. "
+            "Step 1: Enforces strict MAX_RETRY = 3 limit for visual clicks or terminal commands. "
+            "Step 2: If clicking (X, Y) produces no visual change after 2 attempts, triggers Attempt A (scroll/dismiss modal with Esc), "
+            "Attempt B (keyboard navigation via Tab/Enter/Space), and Attempt C (background Python/CLI script). "
+            "Step 3: Detects frozen 'Not Responding' applications and cleanly restarts them via terminal (taskkill)."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":           {"type": "STRING", "description": "click (self_healing_click) | check_frozen | restart_frozen | offer_restart | run_command | reset | status"},
+                "x":                {"type": "INTEGER", "description": "X coordinate for click"},
+                "y":                {"type": "INTEGER", "description": "Y coordinate for click"},
+                "description":      {"type": "STRING", "description": "Description of UI element"},
+                "app_name":         {"type": "STRING", "description": "Name or PID of target application (e.g. 'chrome', 'notepad', 'whatsapp')"},
+                "command":          {"type": "STRING", "description": "Terminal command to run with MAX_RETRY protection"},
+                "cli_fallback_cmd": {"type": "STRING", "description": "Optional background Python/CLI command for Attempt C fallback"},
+                "keyboard_key":     {"type": "STRING", "description": "Key for Attempt B keyboard navigation (default: 'enter')"},
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "privacy_shield",
+        "description": (
+            "Privacy shield and local routing system to protect sensitive user credentials during continuous screen vision. "
+            "Step 1: If screen displays sensitive content (.env, API keys, passwords, banking portals, credentials), redacts and never echoes them aloud or stores in plain text logs. "
+            "Step 2: Routes sensitive local file manipulations and system credentials strictly through the local offline model (mj-os-agent on Ollama) rather than external cloud calls. "
+            "Step 3: Strictly guards against auto-filling or modifying passwords/API keys unless explicitly instructed by the user in the current turn."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":       {"type": "STRING", "description": "redact | check_sensitive | local_env | local_model | check_autofill"},
+                "text":         {"type": "STRING", "description": "Text to sanitize, check, or prompt"},
+                "file_path":    {"type": "STRING", "description": "File path (e.g. .env, api_keys.json)"},
+                "key":          {"type": "STRING", "description": "Key name for .env manipulation"},
+                "value":        {"type": "STRING", "description": "Value to set securely"},
+                "env_action":   {"type": "STRING", "description": "get | set | delete (for local_env action)"},
+                "user_command": {"type": "STRING", "description": "User instruction for verifying explicit permission"},
+                "field":        {"type": "STRING", "description": "Field name/description to check (e.g. 'password', 'api_key')"}
+            },
+            "required": []
         }
     },
     {
@@ -510,19 +621,28 @@ TOOL_DECLARATIONS = [
     {
         "name": "browser_manager",
         "description": (
-            "Advanced tab management specifically for Chrome and Brave browsers: "
-            "switch to specific tab (1-9), close active tab, close multiple tabs (e.g. first 2 tabs), "
-            "new tab with URL, reopen closed tab, next/prev tab navigation."
+            "Controls running web browsers (Brave, Chrome, Edge) directly on desktop with zero profile lock: "
+            "navigate to URL, search web, YouTube media playback (search + click first video), "
+            "Gmail email drafting (creates draft modal with To/Subject/Body and pauses for user review), "
+            "scroll down/up, reload/refresh page, go back/forward, toggle fullscreen, "
+            "switch tabs (1-9), close active tab, close multiple tabs, open new tab with URL, reopen closed tab, and next/prev tab navigation. "
+            "Always use this when user asks to control, scroll, navigate, play YouTube videos, compose emails, or manage tabs inside Brave or Chrome."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":     {"type": "STRING", "description": "switch_tab | close_tab | close_tabs | new_tab | reopen_tab | next_tab | prev_tab"},
+                "action":     {"type": "STRING", "description": "navigate | search | youtube_search | gmail_compose | scroll_down | scroll_up | reload | back | forward | fullscreen | switch_tab | close_tab | close_tabs | new_tab | reopen_tab | next_tab | prev_tab"},
+                "browser":    {"type": "STRING", "description": "brave | chrome | edge (default: brave)"},
+                "url":        {"type": "STRING", "description": "URL to navigate to (e.g. 'https://youtube.com', 'google.com')"},
+                "query":      {"type": "STRING", "description": "Search query for search or youtube_search action"},
+                "to":         {"type": "STRING", "description": "Recipient email address for gmail_compose"},
+                "subject":    {"type": "STRING", "description": "Email subject line for gmail_compose"},
+                "body":       {"type": "STRING", "description": "Email message body for gmail_compose"},
+                "send_now":   {"type": "BOOLEAN", "description": "Whether to immediately send email (default: false, keeps at draft stage for review)"},
                 "tab_number": {"type": "INTEGER", "description": "Tab number (1-9) for switch_tab"},
                 "count":      {"type": "INTEGER", "description": "Number of tabs to close for close_tabs"},
-                "url":        {"type": "STRING", "description": "URL to open for new_tab"},
-                "browser":    {"type": "STRING", "description": "chrome | brave (default: chrome)"},
-                "command":    {"type": "STRING", "description": "Natural language command e.g. 'close the first 2 tabs'"}
+                "amount":     {"type": "INTEGER", "description": "Number of page scrolls for scroll_down/scroll_up"},
+                "command":    {"type": "STRING", "description": "Natural language command e.g. 'Brave e youtube open koro', 'scroll down', 'gmail e draft koro'"}
             },
             "required": []
         }

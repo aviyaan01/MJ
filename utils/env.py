@@ -3,10 +3,22 @@ import os
 import platform
 import re
 import sys
+import socket
 import threading
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+if platform.system() == "Windows":
+    try:
+        _orig_getaddrinfo = socket.getaddrinfo
+        def _ipv4_first_getaddrinfo(host, port, family=0, *args, **kwargs):
+            if family == 0:
+                family = socket.AF_INET
+            return _orig_getaddrinfo(host, port, family, *args, **kwargs)
+        socket.getaddrinfo = _ipv4_first_getaddrinfo
+    except Exception:
+        pass
 
 _config_lock = threading.Lock()
 
@@ -42,6 +54,9 @@ class PlatformStr(str):
                 return True
             return super().__eq__(other) or s == o
         return super().__eq__(other)
+
+    def __hash__(self) -> int:
+        return str.__hash__(str(self))
 
 
 def get_base_dir() -> Path:

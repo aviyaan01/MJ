@@ -242,7 +242,83 @@ def add_note(text: str, key: str | None = None) -> dict:
     return {"id": key, "text": clean_text, "updated": datetime.now().strftime("%Y-%m-%d")}
 
 
-def delete_note(note_id: str) -> bool:
-    """Delete a note/task by its key ID."""
+def delete_note(note_id: str | dict) -> bool:
+    """Delete a note/task by its key ID or note dict."""
+    if isinstance(note_id, dict):
+        note_id = note_id.get("id", "")
+    if not note_id or not isinstance(note_id, str):
+        return False
     res = forget(note_id, category="notes")
     return "Forgotten:" in res
+
+
+CONVERSATION_HISTORY_PATH = BASE_DIR / "memory" / "conversation_history.jsonl"
+
+
+def record_conversation_turn(user_text: str, assistant_text: str) -> None:
+    """Persist conversation dialogue turn so MJ remembers ongoing spoken interactions."""
+    u = (user_text or "").strip()
+    a = (assistant_text or "").strip()
+    if not u and not a:
+        return
+    CONVERSATION_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "user": u,
+        "assistant": a,
+    }
+    with _lock:
+        try:
+            with open(CONVERSATION_HISTORY_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception as e:
+            print(f"[Memory] ⚠️ Could not log conversation turn: {e}")
+
+
+def get_recent_conversations(max_turns: int = 6) -> list[dict]:
+    """Retrieve the most recent conversation exchanges from persistent memory."""
+    if not CONVERSATION_HISTORY_PATH.exists():
+        return []
+    turns = []
+    with _lock:
+        try:
+            lines = CONVERSATION_HISTORY_PATH.read_text(encoding="utf-8").strip().splitlines()
+            for line in lines[-max_turns:]:
+                if line.strip():
+                    try:
+                        turns.append(json.loads(line))
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"[Memory] ⚠️ Could not read conversation history: {e}")
+    return turns
+
+
+def format_conversation_for_prompt(max_turns: int = 6) -> str:
+    """Format recent turns for LLM prompt context injection."""
+    turns = get_recent_conversations(max_turns=max_turns)
+    if not turns:
+        return ""
+    lines = [
+        "[RECENT SPOKEN CONVERSATIONS — Context of what was recently discussed with the user]",
+        "Use this context to recall previous topics, instructions, or questions seamlessly."
+    ]
+    for t in turns:
+        u = t.get("user", "")
+        a = t.get("assistant", "")
+        if u:
+            lines.append(f"User: {u}")
+        if a:
+            lines.append(f"MJ: {a}")
+    return "\n".join(lines) + "\n\n"
+
+
+def clear_conversation_history() -> str:
+    """Clear conversation history log."""
+    with _lock:
+        try:
+            if CONVERSATION_HISTORY_PATH.exists():
+                CONVERSATION_HISTORY_PATH.unlink()
+            return "Conversation history cleared."
+        except Exception as e:
+            return f"Error clearing conversation history: {e}"

@@ -73,6 +73,9 @@ from actions.system_monitor import SystemMonitor, get_system_status
 from actions.weather_report import weather_action
 from actions.web_search import web_search as web_search_action
 from actions.window_controller import window_controller
+from actions.clipboard_bridge import clipboard_bridge
+from actions.self_healing import self_healing
+from actions.privacy_shield import privacy_shield
 from actions.vscode_control import vscode_control
 from actions.youtube_video import youtube_video
 from core.tts import interrupt_playback
@@ -83,6 +86,8 @@ from memory.config_manager import (
 )
 from memory.memory_manager import (
     format_memory_for_prompt,
+    format_conversation_for_prompt,
+    record_conversation_turn,
     load_memory,
     update_memory,
 )
@@ -192,7 +197,7 @@ class UltronLive:
         self._last_target_app = ""  # pronoun/context tracking ("it", "that", "ota", "eita")
         self._last_target_app_time = 0.0
         self._unrelated_action_count = 0
-        self.vision_active = False  # Voice-toggled continuous vision (off by default to save RAM/CPU/quota)
+        self.vision_active = True  # Continuous screen vision ACTIVE by default so MJ can see the screen in real-time
         self.fallback_active = False  # True when using Whisper/ElevenLabs fallback
         self._last_user_audio: bytes | None = None  # Rolling buffer of last mic chunk for speaker verification
 
@@ -222,16 +227,31 @@ class UltronLive:
         else:
             print("\033[92m[MJ] [OK] Administrator privileges verified.\033[0m")
 
-        # 2. Visual Studio Code in PATH Check
-        code_path = shutil.which("code")
+        # 2. Visual Studio Code Detection
+        from pathlib import Path
+        vscode_candidates = [
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Microsoft VS Code" / "Code.exe",
+            Path(os.environ.get("ProgramFiles", "C:\\Program Files")) / "Microsoft VS Code" / "Code.exe",
+            Path(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")) / "Microsoft VS Code" / "Code.exe",
+        ]
+        code_path = None
+        for candidate in vscode_candidates:
+            if candidate.exists():
+                code_path = str(candidate)
+                break
+        if not code_path:
+            which_code = shutil.which("code")
+            if which_code and "cursor" not in which_code.lower():
+                code_path = which_code
+
         if not code_path:
             print("\033[93m" + "=" * 80)
-            print("  [!] WARNING: 'code' command was not found in system PATH.")
-            print("  code_helper and dev_agent will not be able to auto-launch Visual Studio Code.")
+            print("  [!] WARNING: Microsoft Visual Studio Code was not found.")
+            print("  code_helper will use available system editor.")
             print("=" * 80 + "\033[0m")
-            self.ui.write_log("WARN: 'code' not found in PATH. VS Code auto-launch disabled.")
+            self.ui.write_log("WARN: VS Code not detected.")
         else:
-            print(f"[MJ] [OK] Visual Studio Code CLI detected: {code_path}")
+            print(f"[MJ] [OK] Visual Studio Code detected: {code_path}")
 
     def _get_active_target_app(self) -> str:
         """
@@ -602,6 +622,12 @@ class UltronLive:
     def speak(self, text: str):
         if not self._loop or not self.session:
             return
+        # Privacy Shield: strictly never echo raw credentials or passwords aloud
+        try:
+            from actions.privacy_shield import sanitize_spoken_text
+            text = sanitize_spoken_text(text)
+        except Exception:
+            pass
         asyncio.run_coroutine_threadsafe(
             self.session.send_client_content(
                 turns=[{"role": "user", "parts": [{"text": text}]}], turn_complete=True
@@ -610,6 +636,11 @@ class UltronLive:
         )
 
     def speak_error(self, tool_name: str, error: str):
+        try:
+            from actions.privacy_shield import sanitize_log_message
+            error = sanitize_log_message(error)
+        except Exception:
+            pass
         short = error[:120]
         self.ui.write_log(f"ERR: {tool_name} — {short}")
         self.speak(f"Sir, {tool_name} encountered an error. {short}")
@@ -628,6 +659,7 @@ class UltronLive:
 
         memory = load_memory()
         mem_str = format_memory_for_prompt(memory)
+        conv_str = format_conversation_for_prompt(max_turns=6)
         sys_prompt = _load_system_prompt()
 
         now = datetime.now()
@@ -662,7 +694,19 @@ class UltronLive:
             "BE ENERGETIC, HELPFUL, AND DELIGHTFUL IN EVERY INTERACTION.\n\n"
         )
 
-        parts = [mj_voice_instruction, time_ctx, identity_ctx]
+        action_execution_directive = (
+            "[CRITICAL DIRECTIVE: MANDATORY TOOL EXECUTION — ZERO FAKE ACTIONS]\n"
+            "1. MANDATORY TOOL EXECUTION: You DO NOT have physical hands or magic OS control through speech alone. The ONLY way you can do ANY task on the computer is by calling a tool/function.\n"
+            "2. When the user asks you to perform an action (e.g. send a message, open an app, close an app, click, type, edit code, adjust settings, search web, play a video, etc.):\n"
+            "   YOU MUST EMIT THE FUNCTION CALL / TOOL CALL.\n"
+            "3. NEVER EVER pretend or claim in speech 'Kore diyechi', 'Done', 'Ami pathiyechi', 'Open korechi', 'Message sent' WITHOUT CALLING THE TOOL FIRST!\n"
+            "4. Claiming to have completed an action without triggering the tool call is a severe system failure. Always trigger the tool call first!\n"
+            "5. REAL-TIME SCREEN VISION IS ACTIVE: You receive live video frames of the user's computer screen continuously. You can SEE open windows, active chats, code, errors, and desktop UI in real time. Use this visual information to understand what the user is doing and what they are referring to (e.g. 'take', 'eita', 'ota')!\n\n"
+        )
+
+        parts = [action_execution_directive, mj_voice_instruction, time_ctx, identity_ctx]
+        if conv_str:
+            parts.append(conv_str)
         if mem_str:
             parts.append(mem_str)
         parts.append(sys_prompt)
@@ -896,6 +940,24 @@ class UltronLive:
         )
         return r or "Done."
 
+    async def _handle_clipboard_bridge(self, args, loop):
+        r = await loop.run_in_executor(
+            None, lambda: clipboard_bridge(parameters=args, player=self.ui)
+        )
+        return r or "Done."
+
+    async def _handle_self_healing(self, args, loop):
+        r = await loop.run_in_executor(
+            None, lambda: self_healing(parameters=args, player=self.ui)
+        )
+        return r or "Done."
+
+    async def _handle_privacy_shield(self, args, loop):
+        r = await loop.run_in_executor(
+            None, lambda: privacy_shield(parameters=args, player=self.ui)
+        )
+        return r or "Done."
+
     async def _handle_game_updater(self, args, loop):
         r = await loop.run_in_executor(
             None,
@@ -1022,6 +1084,9 @@ class UltronLive:
         "web_search": _handle_web_search,
         "file_processor": _handle_file_processor,
         "computer_control": _handle_computer_control,
+        "clipboard_bridge": _handle_clipboard_bridge,
+        "self_healing": _handle_self_healing,
+        "privacy_shield": _handle_privacy_shield,
         "game_updater": _handle_game_updater,
         "flight_finder": _handle_flight_finder,
         "system_status": _handle_system_status,
@@ -1275,6 +1340,7 @@ class UltronLive:
 
                             full_in = " ".join(in_buf).strip()
                             if full_in:
+                                self._active_user_text = full_in
                                 print(f"[Turn Complete] 👤 User said: '{full_in}'")
                                 self.ui.write_log(f"You: {full_in}")
                                 if self._dashboard:
@@ -1323,18 +1389,26 @@ class UltronLive:
 
                             full_out = " ".join(out_buf).strip()
                             if full_out:
-                                self.ui.write_log(f"{self._asst_name}: {full_out}")
+                                try:
+                                    from actions.privacy_shield import sanitize_log_message
+                                    clean_full_out = sanitize_log_message(full_out)
+                                except Exception:
+                                    clean_full_out = full_out
+                                self.ui.write_log(f"{self._asst_name}: {clean_full_out}")
                                 if self._dashboard:
                                     asyncio.create_task(
                                         self._dashboard.broadcast(
                                             {
                                                 "type": "log",
                                                 "speaker": "mj",
-                                                "text": full_out,
+                                                "text": clean_full_out,
                                                 "ts": datetime.now().isoformat(),
                                             }
                                         )
                                     )
+                                u_text = getattr(self, "_active_user_text", "")
+                                record_conversation_turn(u_text, clean_full_out)
+                                self._active_user_text = ""
                             out_buf = []
 
                             # Vision injection: model finished tool-response turn → now send the image
@@ -1480,17 +1554,17 @@ class UltronLive:
 
     async def _continuous_screen_stream(self) -> None:
         """
-        Background task: continuously captures a lightweight screen frame every 3.5 seconds
-        and streams it to Gemini Live session ONLY when self.vision_active is True.
-        Saves RAM, CPU, bandwidth, and API quota when vision is toggled off.
+        Background task: continuously captures a clear screen frame every 2.0 seconds
+        and streams it to Gemini Live session so MJ always sees what is happening on screen.
         """
         import io
         from PIL import Image
 
+        _frame_count = 0
         while True:
             try:
-                await asyncio.sleep(3.5)
-                if not getattr(self, "vision_active", False):
+                await asyncio.sleep(2.0)
+                if not getattr(self, "vision_active", True):
                     continue
                 if self.session is None or self.ui.muted:
                     continue
@@ -1498,30 +1572,43 @@ class UltronLive:
                 loop = asyncio.get_running_loop()
 
                 def _grab():
+                    img = None
                     try:
                         from PIL import ImageGrab
                         img = ImageGrab.grab()
-                        w = 640
+                    except Exception:
+                        pass
+                    if img is None:
+                        try:
+                            import pyautogui
+                            img = pyautogui.screenshot()
+                        except Exception:
+                            return None
+                    try:
+                        w = 1024
                         h = max(100, int(w * img.height / img.width))
-                        img_small = img.resize((w, h), Image.Resampling.LANCZOS)
+                        img_small = img.resize((w, h), Image.Resampling.BILINEAR)
                         buf = io.BytesIO()
-                        img_small.save(buf, format="JPEG", quality=45, optimize=True)
+                        img_small.save(buf, format="JPEG", quality=55, optimize=True)
                         return buf.getvalue()
                     except Exception:
                         return None
 
                 jpeg_bytes = await loop.run_in_executor(None, _grab)
-                if jpeg_bytes and self.session is not None and getattr(self, "vision_active", False):
+                if jpeg_bytes and self.session is not None and getattr(self, "vision_active", True):
                     try:
                         await self.session.send_realtime_input(
                             video={"data": jpeg_bytes, "mime_type": "image/jpeg"}
                         )
-                    except Exception as err:
-                        pass
+                        _frame_count += 1
+                        if _frame_count == 1 or _frame_count % 30 == 0:
+                            print(f"[Vision] 🖥️ Screen stream active (frame #{_frame_count}, {len(jpeg_bytes):,} bytes)")
+                    except Exception:
+                        await asyncio.sleep(1.0)
             except asyncio.CancelledError:
                 break
             except Exception:
-                await asyncio.sleep(3.5)
+                await asyncio.sleep(2.0)
 
     async def _run_proactive_mode(self) -> None:
         """
@@ -1870,12 +1957,19 @@ class UltronLive:
                 print(f"[MJ] Error ({type(e).__name__}): {e}")
                 traceback.print_exc()
 
+                # Routine session duration limit (GoAway signal) — reconnect cleanly instead of treating as invalid key
+                if "goaway" in err_str.lower() or "session durat" in err_str.lower():
+                    print("[MJ] 🔄 Gemini Live session expired (duration limit) — reconnecting automatically...")
+                    self.ui.write_log("SYS: Session duration reached — reconnecting...")
+                    await asyncio.sleep(1.0)
+                    continue
+
                 # Invalid / missing / broken API key — stop hammering the API, prompt re-configuration
                 if (
                     isinstance(e, ApiKeyMissing)
                     or "API key not valid" in err_str
                     or "1007" in err_str
-                    or "1008" in err_str
+                    or ("1008" in err_str and "goaway" not in err_str.lower() and "session durat" not in err_str.lower())
                     or "denied access" in err_str
                     or "not found for API version" in err_str
                 ):

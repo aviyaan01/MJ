@@ -53,7 +53,13 @@ except Exception:
         uvicorn = None
     _DEPS_OK = False
 
-_UPLOAD_OK = _DEPS_OK
+try:
+    import multipart  # python-multipart
+    _MULTIPART_OK = True
+except Exception:
+    _MULTIPART_OK = False
+
+_UPLOAD_OK = _DEPS_OK and _MULTIPART_OK
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = Path(__file__).parent / "static"

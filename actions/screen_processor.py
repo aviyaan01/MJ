@@ -38,7 +38,7 @@ _BASE        = get_base_dir()
 _CONFIG_PATH = _BASE / "config" / "api_keys.json"
 
 
-_LIVE_MODEL         = "models/gemini-3.6-flash-native-audio-preview-12-2025"
+_LIVE_MODEL         = "gemini-3.1-flash-live-preview"
 _CHANNELS           = 1
 _RECEIVE_SAMPLE_RATE = 24_000
 _CHUNK_SIZE         = 1_024
@@ -74,17 +74,36 @@ def _compress(img_bytes: bytes, source_format: str = "PNG") -> tuple[bytes, str]
         return img_bytes, f"image/{source_format.lower()}"
 
 def _capture_screen() -> tuple[bytes, str]:
+    if _MSS:
+        try:
+            with mss.mss() as sct:
+                monitors = sct.monitors          # [0] = all combined, [1..n] = real screens
+                target   = monitors[1] if len(monitors) > 1 else monitors[0]
+                shot     = sct.grab(target)
+                png      = mss.tools.to_png(shot.rgb, shot.size)
+                return _compress(png, "PNG")
+        except Exception as e:
+            print(f"[Vision] ⚠️ mss grab failed: {e} — attempting fallback")
 
-    if not _MSS:
-        raise RuntimeError("mss is not installed. Run: pip install mss")
+    try:
+        from PIL import ImageGrab
+        import io
+        img = ImageGrab.grab()
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return _compress(buf.getvalue(), "PNG")
+    except Exception as e:
+        print(f"[Vision] ⚠️ ImageGrab fallback failed: {e} — attempting pyautogui")
 
-    with mss.mss() as sct:
-        monitors = sct.monitors          # [0] = all combined, [1..n] = real screens
-        target   = monitors[1] if len(monitors) > 1 else monitors[0]
-        shot     = sct.grab(target)
-        png      = mss.tools.to_png(shot.rgb, shot.size)
-
-    return _compress(png, "PNG")
+    try:
+        import pyautogui  # type: ignore[import-untyped]
+        import io
+        img = pyautogui.screenshot()
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return _compress(buf.getvalue(), "PNG")
+    except Exception as e:
+        raise RuntimeError(f"All screen capture methods failed: {e}")
 
 
 def _cv2_backend() -> int:
@@ -254,9 +273,8 @@ class _VisionSession:
                         tg.create_task(self._recv_loop())
                         tg.create_task(self._play_loop())
 
-            except (Exception, BaseException) as eg:
-                excs = getattr(eg, "exceptions", [eg])
-                for exc in excs:
+            except* Exception as eg:
+                for exc in eg.exceptions:
                     print(f"[Vision] ⚠️  Session error: {exc}")
             finally:
                 self._session = None

@@ -196,6 +196,36 @@ def _find_opera_windows() -> str | None:
     return shutil.which("opera") or None
 
 def _find_exe_windows(prog_name: str) -> str | None:
+    p_lower = prog_name.lower()
+    if p_lower == "brave":
+        brave_paths = [
+            Path(os.environ.get("ProgramFiles", "C:\\Program Files")) / "BraveSoftware" / "Brave-Browser" / "Application" / "brave.exe",
+            Path(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")) / "BraveSoftware" / "Brave-Browser" / "Application" / "brave.exe",
+            Path(os.environ.get("LOCALAPPDATA", "")) / "BraveSoftware" / "Brave-Browser" / "Application" / "brave.exe",
+        ]
+        for bp in brave_paths:
+            if bp.exists():
+                return str(bp)
+
+    if p_lower == "chrome":
+        chrome_paths = [
+            Path(os.environ.get("ProgramFiles", "C:\\Program Files")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+            Path(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+        ]
+        for cp in chrome_paths:
+            if cp.exists():
+                return str(cp)
+
+    if p_lower in ("edge", "msedge"):
+        edge_paths = [
+            Path(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+            Path(os.environ.get("ProgramFiles", "C:\\Program Files")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+        ]
+        for ep in edge_paths:
+            if ep.exists():
+                return str(ep)
+
     try:
         import winreg
         paths_to_try = [
@@ -266,7 +296,8 @@ _ALIASES: dict[str, str] = {
 
 def _resolve_browser(name: str) -> dict | None:
     name   = _ALIASES.get(name.lower().strip(), name.lower().strip())
-    os_map = _BROWSER_SPECS.get(_OS, {})
+    os_key = "Windows" if getattr(_OS, "is_windows", False) or str(_OS).lower() in ("windows", "win32") else ("Darwin" if getattr(_OS, "is_mac", False) or str(_OS).lower() in ("darwin", "mac") else "Linux")
+    os_map = _BROWSER_SPECS.get(os_key, {})
     spec   = os_map.get(name)
     if spec is None:
         return None
@@ -1003,9 +1034,14 @@ def browser_control(
     try:
         sess = _registry.get(browser)
     except Exception as e:
-        result = f"Could not start browser session: {e}"
-        _log(player, result)
-        return result
+        print(f"[Browser] Automation session failed ({e}), falling back to native desktop browser_manager...")
+        try:
+            from actions.browser_manager import browser_manager as bm
+            return bm(parameters=params, player=player)
+        except Exception as bm_err:
+            result = f"Could not start browser session: {e} (Fallback: {bm_err})"
+            _log(player, result)
+            return result
 
     try:
         last = _registry.pop_native_url()
@@ -1050,7 +1086,12 @@ def browser_control(
     except concurrent.futures.TimeoutError:
         result = f"Browser action '{action}' timed out (60s)."
     except Exception as e:
-        result = f"Browser error ({action}): {e}"
+        print(f"[Browser] Action '{action}' failed ({e}), trying native desktop browser_manager...")
+        try:
+            from actions.browser_manager import browser_manager as bm
+            return bm(parameters=params, player=player)
+        except Exception:
+            result = f"Browser error ({action}): {e}"
 
     _log(player, result)
     return result

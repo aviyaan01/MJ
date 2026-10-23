@@ -14,6 +14,12 @@ Tune SIMILARITY_THRESHOLD (0.0–1.0) to balance security vs convenience:
 """
 
 import sys
+if hasattr(sys.stdout, 'reconfigure'):
+    try: sys.stdout.reconfigure(encoding='utf-8')
+    except Exception: pass
+if hasattr(sys.stderr, 'reconfigure'):
+    try: sys.stderr.reconfigure(encoding='utf-8')
+    except Exception: pass
 import time
 import warnings
 from pathlib import Path
@@ -72,14 +78,14 @@ def _get_encoder():
         return _encoder_cache          # already tried (may be False)
     VoiceEncoder = _load_resemblyzer()
     if VoiceEncoder is None:
-        print("[SpeakerVerifier] ⚠ resemblyzer not installed — verification inactive.")
+        print("[SpeakerVerifier] [!] resemblyzer not installed — verification inactive.")
         _encoder_cache = False
         return False
     try:
         _encoder_cache = VoiceEncoder(device="cpu", verbose=False)
-        print("[SpeakerVerifier] ✓ VoiceEncoder ready.")
+        print("[SpeakerVerifier] [OK] VoiceEncoder ready.")
     except Exception as e:
-        print(f"[SpeakerVerifier] ⚠ VoiceEncoder init failed: {e}")
+        print(f"[SpeakerVerifier] [!] VoiceEncoder init failed: {e}")
         _encoder_cache = False
     return _encoder_cache
 
@@ -256,7 +262,7 @@ def enroll_speaker(speak_fn=None) -> str:
 
     VOICEPRINT_FILE.parent.mkdir(parents=True, exist_ok=True)
     np.save(str(VOICEPRINT_FILE), embedding)
-    print(f"[SpeakerVerifier] ✓ Voiceprint saved → {VOICEPRINT_FILE}")
+    print(f"[SpeakerVerifier] [OK] Voiceprint saved -> {VOICEPRINT_FILE}")
 
     confirm = "Voice enrollment complete. I've learned your voice and will use it to verify your identity before executing sensitive commands."
     if speak_fn:
@@ -310,20 +316,20 @@ def verify_speaker_authorization(audio_data: bytes | None = None) -> tuple[bool,
 
     # ── Fast-path: nothing enrolled or no audio ───────────────────────────────
     if not is_enrolled():
-        print("[SpeakerVerifier] ⚠ No voiceprint enrolled — verification skipped (fallback_allowed).")
+        print("[SpeakerVerifier] [!] No voiceprint enrolled — verification skipped (fallback_allowed).")
         return True, "fallback_allowed"
 
     if not audio_data:
-        print("[SpeakerVerifier] ⚠ No audio_data provided — verification skipped (fallback_allowed).")
+        print("[SpeakerVerifier] [!] No audio_data provided — verification skipped (fallback_allowed).")
         return True, "fallback_allowed"
 
     if np is None:
-        print("[SpeakerVerifier] ⚠ numpy unavailable — verification skipped (fallback_allowed).")
+        print("[SpeakerVerifier] [!] numpy unavailable — verification skipped (fallback_allowed).")
         return True, "fallback_allowed"
 
     encoder = _get_encoder()
     if not encoder:
-        print("[SpeakerVerifier] ⚠ resemblyzer unavailable — verification skipped (fallback_allowed).")
+        print("[SpeakerVerifier] [!] resemblyzer unavailable — verification skipped (fallback_allowed).")
         return True, "fallback_allowed"
 
     # ── Convert incoming PCM bytes → float32 ─────────────────────────────────

@@ -46,7 +46,7 @@ def _get_macos_wifi_interface() -> str:
         pass
     return "en0" 
 
-def volume_up():
+def volume_up() -> str:
     if get_os() == "Windows":
         for _ in range(5): pyautogui.press("volumeup")
     elif get_os() == "Darwin":
@@ -56,8 +56,9 @@ def volume_up():
     else:
         subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", "+10%"],
             capture_output=True)
+    return f"Volume increased to {volume_get()}%."
 
-def volume_down():
+def volume_down() -> str:
     if get_os() == "Windows":
         for _ in range(5): pyautogui.press("volumedown")
     elif get_os() == "Darwin":
@@ -67,8 +68,9 @@ def volume_down():
     else:
         subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", "-10%"],
             capture_output=True)
+    return f"Volume decreased to {volume_get()}%."
 
-def volume_mute():
+def volume_mute() -> str:
     if get_os() == "Windows":
         pyautogui.press("volumemute")
     elif get_os() == "Darwin":
@@ -77,6 +79,7 @@ def volume_mute():
     else:
         subprocess.run(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "toggle"],
             capture_output=True)
+    return "Volume mute toggled."
 
 def volume_set(value: int):
     value = max(0, min(100, value))
@@ -124,7 +127,22 @@ def volume_get() -> int:
             return 50
     return 50
 
-def brightness_up():
+def get_brightness() -> int | None:
+    if get_os() == "Windows":
+        try:
+            res = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "(Get-WmiObject -Namespace root/wmi -Class WmiMonitorBrightness).CurrentBrightness"],
+                capture_output=True, text=True, timeout=5, **_WIN_HIDE
+            )
+            out = res.stdout.strip()
+            if out.isdigit():
+                return int(out)
+        except Exception:
+            pass
+    return None
+
+def brightness_up() -> str:
     if get_os() == "Darwin":
         subprocess.run(["osascript", "-e",
             'tell application "System Events" to key code 144'],
@@ -152,8 +170,10 @@ def brightness_up():
             )
         except Exception as e:
             print(f"[Settings] Brightness up failed on Windows: {e}")
+    b = get_brightness()
+    return f"Brightness increased to {b}%." if b is not None else "Brightness increased."
 
-def brightness_down():
+def brightness_down() -> str:
     if get_os() == "Darwin":
         subprocess.run(["osascript", "-e",
             'tell application "System Events" to key code 145'],
@@ -181,6 +201,8 @@ def brightness_down():
             )
         except Exception as e:
             print(f"[Settings] Brightness down failed on Windows: {e}")
+    b = get_brightness()
+    return f"Brightness decreased to {b}%." if b is not None else "Brightness decreased."
 
 def close_foreground_app():
     """Close the currently focused application window (Alt+F4 / Cmd+Q).
@@ -497,7 +519,7 @@ def dark_mode():
         except Exception as e:
             print(f"[Settings] dark_mode Linux failed: {e}")
 
-def toggle_wifi():
+def toggle_wifi() -> str:
     if get_os() == "Darwin":
         iface = _get_macos_wifi_interface()
         result = subprocess.run(
@@ -507,30 +529,47 @@ def toggle_wifi():
         state = "off" if "On" in result.stdout else "on"
         subprocess.run(["networksetup", "-setairportpower", iface, state],
             capture_output=True)
+        return f"Wi-Fi switched {state.upper()}."
     elif get_os() == "Windows":
         try:
-            subprocess.run(
-                ["powershell", "-Command",
+            res = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
                  "$adapter = Get-NetAdapter | Where-Object {$_.PhysicalMediaType -eq 'Native 802.11'};"
-                 "if ($adapter.Status -eq 'Up') { Disable-NetAdapter -Name $adapter.Name -Confirm:$false }"
-                 "else { Enable-NetAdapter -Name $adapter.Name -Confirm:$false }"],
-                capture_output=True, timeout=10, **_WIN_HIDE
+                 "if ($adapter.Status -eq 'Up') { Disable-NetAdapter -Name $adapter.Name -Confirm:$false; 'Wi-Fi turned OFF' }"
+                 "else { Enable-NetAdapter -Name $adapter.Name -Confirm:$false; 'Wi-Fi turned ON' }"],
+                capture_output=True, text=True, timeout=10, **_WIN_HIDE
             )
+            out = res.stdout.strip()
+            if out:
+                return out
+            return "Wi-Fi state toggled."
         except Exception as e:
             print(f"[Settings] toggle_wifi Windows failed: {e}")
+            return f"Failed to toggle Wi-Fi: {e}"
     else:
         try:
             result = subprocess.run(["nmcli", "radio", "wifi"], capture_output=True, text=True)
             state  = "off" if "enabled" in result.stdout else "on"
             subprocess.run(["nmcli", "radio", "wifi", state], capture_output=True)
+            return f"Wi-Fi switched {state.upper()}."
         except Exception as e:
             print(f"[Settings] toggle_wifi Linux failed: {e}")
+            return f"Failed to toggle Wi-Fi: {e}"
 
-def sleep_computer():
+def toggle_bluetooth(state: str = "toggle") -> str:
+    """Toggle or set Bluetooth state via actions.advanced_settings."""
+    try:
+        from actions.advanced_settings import toggle_bluetooth as adv_toggle_bt
+        return adv_toggle_bt(state=state)
+    except Exception as e:
+        return f"Bluetooth toggle failed: {e}"
+
+def sleep_computer() -> str:
     """Put the machine to sleep / suspend (not display-only, not shutdown)."""
     if get_os() == "Windows":
         try:
             subprocess.run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"], check=True)
+            return "Computer entered Sleep state."
         except Exception:
             ps_cmd = 'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::SetSuspendState([System.Windows.Forms.PowerState]::Suspend, $false, $false)'
             subprocess.run(
@@ -538,10 +577,13 @@ def sleep_computer():
                 capture_output=True,
                 **_WIN_HIDE,
             )
+            return "Computer entered Sleep state."
     elif get_os() == "Darwin":
         subprocess.run(["pmset", "sleepnow"], capture_output=True)
+        return "macOS put to sleep."
     else:
         subprocess.run(["systemctl", "suspend"], capture_output=True)
+        return "System suspended."
 
 
 def log_off():
@@ -572,15 +614,18 @@ def restart_computer():
     else:
         subprocess.run(["systemctl", "reboot"], capture_output=True)
 
-def shutdown_computer():
+def shutdown_computer() -> str:
     if get_os() == "Windows":
         subprocess.run(["shutdown", "/s", "/t", "5"], check=True)
+        return "System shutdown initiated (5s timer)."
     elif get_os() == "Darwin":
         subprocess.run(["osascript", "-e",
             'tell application "System Events" to shut down'],
             capture_output=True)
+        return "macOS shutdown initiated."
     else:
         subprocess.run(["systemctl", "poweroff"], capture_output=True)
+        return "System poweroff initiated."
 
 
 ACTION_MAP: dict[str, Any] = {
@@ -647,6 +692,11 @@ ACTION_MAP: dict[str, Any] = {
     "open_run":            open_run,
     "dark_mode":           dark_mode,
     "toggle_wifi":         toggle_wifi,
+    "wifi":                toggle_wifi,
+    "bluetooth":           toggle_bluetooth,
+    "toggle_bluetooth":    toggle_bluetooth,
+    "bluetooth_on":        lambda: toggle_bluetooth("on"),
+    "bluetooth_off":       lambda: toggle_bluetooth("off"),
     "restart":             restart_computer,
     "shutdown":            shutdown_computer,
     "sleep":               sleep_computer,
@@ -801,13 +851,22 @@ def computer_settings(
         except Exception as e:
             return f"Scroll down failed: {e}"
 
+    if action in ("bluetooth", "toggle_bluetooth", "bluetooth_toggle", "bluetooth_on", "bluetooth_off"):
+        state = "on" if action == "bluetooth_on" else ("off" if action == "bluetooth_off" else str(value or params.get("state", "toggle")))
+        return toggle_bluetooth(state=state)
+
+    if action in ("wifi", "toggle_wifi", "wifi_toggle"):
+        return toggle_wifi()
+
     func = ACTION_MAP.get(action)
     if not func:
         return f"Unknown action: '{raw_action}'."
 
     try:
         res = func()
-        if isinstance(res, (int, float, str)):
+        if isinstance(res, str) and res:
+            return res
+        if isinstance(res, (int, float)):
             return f"{action}: {res}"
         return f"Done: {action}."
     except Exception as e:
