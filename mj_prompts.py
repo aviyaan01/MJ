@@ -57,3 +57,13 @@ def get_mj_prompt_with_jedi(user_command: str, jsonl_path: str = "jedi_training_
 ### USER COMMAND:
 "{user_command}"
 """
+
+
+if __name__ == "__main__":
+    sample_command = "Downloads er shob PDF Invoices folder e move koro ebong Coding Mode on koro"
+    print("=" * 60)
+    print("MJ PROMPTS MANAGER - DEMO RUN")
+    print("=" * 60)
+    result = get_mj_prompt_with_jedi(sample_command)
+    print(result)
+

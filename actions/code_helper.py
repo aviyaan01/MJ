@@ -389,7 +389,7 @@ def _detect_active_file() -> Path | None:
     os_name = get_os()
     if os_name == "Windows":
         try:
-            import win32gui
+            import win32gui  # type: ignore[import-untyped]
             windows = []
 
             def _enum(hwnd, _):
@@ -478,8 +478,8 @@ Return ONLY the complete updated code inside a markdown code block (```language 
 
         # If user is in an active editor window, paste the edited code
         try:
-            import pyautogui
-            import pyperclip
+            import pyautogui  # type: ignore[import-untyped]
+            import pyperclip  # type: ignore[import-untyped]
             os_name = get_os()
             select_all = ("command", "a") if os_name == "mac" else ("ctrl", "a")
             pyautogui.hotkey(*select_all)
@@ -944,7 +944,7 @@ Fixed Code:"""
             try:
                 from actions.vscode_control import vscode_control
                 res_term = vscode_control({"action": "run_in_terminal", "command": rerun_cmd}, player=player)
-                terminal_output = str(res_term)
+                terminal_output = res_term
             except Exception as e:
                 terminal_output = f"Terminal dispatch error: {e}"
 

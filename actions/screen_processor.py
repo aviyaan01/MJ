@@ -65,7 +65,7 @@ def _compress(img_bytes: bytes, source_format: str = "PNG") -> tuple[bytes, str]
 
     try:
         img = PIL.Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        img.thumbnail((_IMG_MAX_W, _IMG_MAX_H), PIL.Image.BILINEAR)
+        img.thumbnail((_IMG_MAX_W, _IMG_MAX_H), PIL.Image.Resampling.BILINEAR)
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=_JPEG_Q, optimize=False)
         return buf.getvalue(), "image/jpeg"
@@ -81,9 +81,10 @@ def _capture_screen() -> tuple[bytes, str]:
                 target   = monitors[1] if len(monitors) > 1 else monitors[0]
                 shot     = sct.grab(target)
                 png      = mss.tools.to_png(shot.rgb, shot.size)
-                return _compress(png, "PNG")
+                if png is not None:
+                    return _compress(png, "PNG")
         except Exception as e:
-            print(f"[Vision] ⚠️ mss grab failed: {e} — attempting fallback")
+            print(f"[Vision] [WARN] mss grab failed: {e} - attempting fallback")
 
     try:
         from PIL import ImageGrab
@@ -93,7 +94,7 @@ def _capture_screen() -> tuple[bytes, str]:
         img.save(buf, format="PNG")
         return _compress(buf.getvalue(), "PNG")
     except Exception as e:
-        print(f"[Vision] ⚠️ ImageGrab fallback failed: {e} — attempting pyautogui")
+        print(f"[Vision] [WARN] ImageGrab fallback failed: {e} - attempting pyautogui")
 
     try:
         import pyautogui  # type: ignore[import-untyped]
@@ -103,7 +104,54 @@ def _capture_screen() -> tuple[bytes, str]:
         img.save(buf, format="PNG")
         return _compress(buf.getvalue(), "PNG")
     except Exception as e:
-        raise RuntimeError(f"All screen capture methods failed: {e}")
+        print(f"[Vision] [WARN] pyautogui fallback failed: {e} - attempting PyQt6")
+
+    try:
+        import sys
+        from PyQt6.QtCore import QBuffer, QIODevice
+        from PyQt6.QtGui import QGuiApplication
+        from PyQt6.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        if not app:
+            app = QApplication(sys.argv)
+        screen = QGuiApplication.primaryScreen()
+        if screen:
+            pixmap = screen.grabWindow(0)  # type: ignore[arg-type]
+            buffer = QBuffer()
+            buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+            pixmap.save(buffer, "PNG")
+            data = buffer.data().data()
+            if data:
+                return _compress(data, "PNG")
+    except Exception as e:
+        print(f"[Vision] [WARN] PyQt6 grab fallback failed: {e}")
+
+    # Fallback placeholder image when screen grab permission is restricted or display locked
+    print("[Vision] [WARN] Screen grab permissions restricted or locked; providing safe fallback frame.")
+    try:
+        import io
+        import PIL.Image
+        import PIL.ImageDraw
+
+        fallback_img = PIL.Image.new("RGB", (640, 480), color=(25, 25, 25))
+        draw = PIL.ImageDraw.Draw(fallback_img)
+        draw.text((40, 220), "Screen Capture Permission Required / Display Locked", fill=(255, 204, 0))
+        buf = io.BytesIO()
+        fallback_img.save(buf, format="JPEG", quality=75)
+        return buf.getvalue(), "image/jpeg"
+    except Exception:
+        minimal_jpeg = (
+            b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+            b"\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t\x08\n\x0c"
+            b"\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c"
+            b"\x1c $.\' \",#\x1c\x1c(7),01444\x1f\'9=82<.342\xff\xc0\x00\x0b\x08\x00"
+            b"\x01\x00\x01\x01\x01\x11\x00\xff\xc4\x00\x1f\x00\x00\x01\x05\x01\x01\x01"
+            b"\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07"
+            b"\x08\t\n\x0b\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xbf\x00\xff\xd9"
+        )
+        return minimal_jpeg, "image/jpeg"
+
 
 
 def _cv2_backend() -> int:
@@ -181,7 +229,7 @@ def _capture_camera() -> tuple[bytes, str]:
     if _PIL:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         img = PIL.Image.fromarray(rgb)
-        img.thumbnail((_IMG_MAX_W, _IMG_MAX_H), PIL.Image.BILINEAR)
+        img.thumbnail((_IMG_MAX_W, _IMG_MAX_H), PIL.Image.Resampling.BILINEAR)
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=_JPEG_Q)
         return buf.getvalue(), "image/jpeg"
@@ -287,6 +335,8 @@ class _VisionSession:
 
     async def _send_loop(self) -> None:
         while True:
+            if self._out_queue is None:
+                break
             image_bytes, mime_type, user_text = await self._out_queue.get()
             if not self._session:
                 print("[Vision] ⚠️  No session — dropping image")
@@ -309,6 +359,8 @@ class _VisionSession:
 
     async def _recv_loop(self) -> None:
         transcript: list[str] = []
+        if self._session is None or self._audio_in is None:
+            return
         try:
             async for response in self._session.receive():
                 if response.data:
@@ -354,6 +406,8 @@ class _VisionSession:
         stream.start()
         try:
             while True:
+                if self._audio_in is None:
+                    break
                 chunk = await self._audio_in.get()
                 await asyncio.to_thread(stream.write, chunk)
         except Exception as e:

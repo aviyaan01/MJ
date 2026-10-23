@@ -799,7 +799,15 @@ class UltronLive:
                 print(f"[Vision] 📷 Camera: {len(img_b):,} bytes")
                 _stall = "camera"
             else:
-                img_b, mime_t = await loop.run_in_executor(None, _capture_screen)
+                try:
+                    img_b, mime_t = await loop.run_in_executor(None, _capture_screen)
+                except Exception as e:
+                    print(f"[Vision] [WARN] Screen capture executor error: {e}")
+                    import io, PIL.Image
+                    fallback = PIL.Image.new("RGB", (640, 480), color=(25, 25, 25))
+                    buf = io.BytesIO()
+                    fallback.save(buf, format="JPEG", quality=75)
+                    img_b, mime_t = buf.getvalue(), "image/jpeg"
                 print(f"[Vision] 🖥️  Screen: {len(img_b):,} bytes")
                 _stall = "screen"
             self._pending_vision = (img_b, mime_t, user_text, angle)

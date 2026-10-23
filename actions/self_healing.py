@@ -36,7 +36,7 @@ except ImportError:
     _PYAUTOGUI = False
 
 try:
-    import psutil
+    import psutil  # type: ignore[import-untyped]
     _PSUTIL = True
 except ImportError:
     _PSUTIL = False
@@ -128,7 +128,31 @@ def capture_screen_image() -> Any:
         except Exception:
             pass
 
+    try:
+        import io
+        import sys
+        from PyQt6.QtCore import QBuffer, QIODevice
+        from PyQt6.QtGui import QGuiApplication
+        from PyQt6.QtWidgets import QApplication
+        import PIL.Image
+
+        app = QApplication.instance()
+        if not app:
+            app = QApplication(sys.argv)
+        screen = QGuiApplication.primaryScreen()
+        if screen:
+            pixmap = screen.grabWindow(0)  # type: ignore[arg-type]
+            buffer = QBuffer()
+            buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+            pixmap.save(buffer, "PNG")
+            data = buffer.data().data()
+            if data:
+                return PIL.Image.open(io.BytesIO(data))
+    except Exception:
+        pass
+
     return None
+
 
 
 def detect_visual_change(
@@ -540,10 +564,12 @@ def terminate_frozen_app(name_or_pid: str | int, force: bool = True) -> dict[str
     f_flag = "/F" if force else ""
 
     if os_name == "windows":
-        if isinstance(name_or_pid, int) or str(name_or_pid).isdigit():
+        if isinstance(name_or_pid, int):
+            cmd = f"taskkill {f_flag} /PID {name_or_pid} /T"
+        elif name_or_pid.isdigit():
             cmd = f"taskkill {f_flag} /PID {name_or_pid} /T"
         else:
-            name = str(name_or_pid)
+            name = name_or_pid
             if not name.lower().endswith(".exe"):
                 name = f"{name}.exe"
             cmd = f"taskkill {f_flag} /IM {name} /T"
@@ -685,6 +711,8 @@ def self_healing(
             else:
                 return "No frozen application specified and none currently detected."
         app_name = params.get("app_name")
+        if target is None:
+            return "No frozen application specified and none currently detected."
         res = restart_frozen_app(target, app_name=app_name)
         return str(res.get("message", res))
 
