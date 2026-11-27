@@ -1,5 +1,5 @@
 import { AppError, ErrorCodes, type LanguageMode } from '@mj/shared';
-import { mapUpstreamHttpError } from './xaiClient.js';
+import { mapUpstreamHttpError, normalizeToAppError } from './xaiClient.js';
 
 export interface VoiceApiConfig {
   apiKey: string;
@@ -68,11 +68,9 @@ export async function createRealtimeClientSecret(
       signal: AbortSignal.timeout(15000),
     });
   } catch (err) {
-    throw new AppError({
-      code: ErrorCodes.VOICE_SERVICE_UNAVAILABLE,
-      category: 'voice',
-      statusCode: 503,
-      cause: err,
+    throw normalizeToAppError(err, {
+      networkCode: ErrorCodes.VOICE_SERVICE_UNAVAILABLE,
+      networkCategory: 'voice',
     });
   }
 
@@ -97,7 +95,8 @@ export async function createRealtimeClientSecret(
       code: ErrorCodes.VOICE_SERVICE_UNAVAILABLE,
       category: 'voice',
       statusCode: 502,
-      message: 'xAI did not return a valid ephemeral voice token.',
+      message: 'service unavailable',
+      upstreamDiagnostic: 'xAI realtime/client_secrets returned empty secret value',
     });
   }
 
@@ -143,11 +142,9 @@ export async function synthesizeSpeech(
       signal: AbortSignal.timeout(30000),
     });
   } catch (err) {
-    throw new AppError({
-      code: ErrorCodes.VOICE_SERVICE_UNAVAILABLE,
-      category: 'voice',
-      statusCode: 503,
-      cause: err,
+    throw normalizeToAppError(err, {
+      networkCode: ErrorCodes.VOICE_SERVICE_UNAVAILABLE,
+      networkCategory: 'voice',
     });
   }
 
@@ -260,11 +257,9 @@ export async function transcribeSpeech(
       signal: AbortSignal.timeout(30000),
     });
   } catch (err) {
-    throw new AppError({
-      code: ErrorCodes.VOICE_SERVICE_UNAVAILABLE,
-      category: 'voice',
-      statusCode: 503,
-      cause: err,
+    throw normalizeToAppError(err, {
+      networkCode: ErrorCodes.VOICE_SERVICE_UNAVAILABLE,
+      networkCategory: 'voice',
     });
   }
 

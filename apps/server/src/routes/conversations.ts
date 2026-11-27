@@ -221,6 +221,9 @@ async function streamAssistantTurn(params: {
           code: appErr.code,
           category: appErr.category,
           statusCode: appErr.statusCode,
+          ...(appErr.upstreamDiagnostic
+            ? { upstreamError: appErr.upstreamDiagnostic }
+            : {}),
         },
         'Grok chat request failed',
       );

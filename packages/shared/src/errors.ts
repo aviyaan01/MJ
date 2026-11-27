@@ -60,24 +60,19 @@ export interface StructuredErrorPayload {
 }
 
 const DEFAULT_USER_MESSAGES: Record<ErrorCode, string> = {
-  INVALID_API_KEY:
-    'Your xAI API key is invalid or not configured on the server. Update XAI_API_KEY in your .env file and restart the server.',
-  UNAUTHORIZED:
-    'Authorization failed. Please unlock your session or verify server credentials.',
+  INVALID_API_KEY: 'API key invalid',
+  UNAUTHORIZED: 'permission/credits nai',
   RATE_LIMITED:
     'xAI rate limit reached. Please wait a moment and try again.',
   INSUFFICIENT_CREDITS:
-    'Insufficient xAI API credits. Check your billing balance at console.x.ai.',
+    'xAI account e credit nai. console.x.ai te billing check koro.',
   INVALID_REQUEST:
     'The request parameters were rejected by the AI service. Adjust your model or settings and try again.',
   MODEL_UNAVAILABLE:
     'The configured Grok model is unavailable or unsupported. Choose another model in Settings.',
-  UPSTREAM_ERROR:
-    'Grok is temporarily unavailable. Please try again.',
-  TIMEOUT:
-    'The request to Grok timed out. You can retry your message.',
-  NETWORK_DISCONNECTED:
-    'Network connection failed while contacting the AI service. Check your internet connection and retry.',
+  UPSTREAM_ERROR: 'service unavailable',
+  TIMEOUT: 'service unavailable',
+  NETWORK_DISCONNECTED: 'service unavailable',
   BUDGET_EXCEEDED:
     'Your configured hard spend budget cap has been reached. Raise or disable the cap in Settings -> Usage to continue.',
   DATABASE_UNAVAILABLE:
@@ -106,8 +101,7 @@ const DEFAULT_USER_MESSAGES: Record<ErrorCode, string> = {
     'Your browser audio pipeline could not initialize the required PCM audio format.',
   AUDIO_PLAYBACK_FAILED:
     'Audio playback failed in this browser. Check your speakers or audio permissions.',
-  VOICE_SERVICE_UNAVAILABLE:
-    'Grok voice service is temporarily unavailable. Please try again or switch to text mode.',
+  VOICE_SERVICE_UNAVAILABLE: 'service unavailable',
   VOICE_CONNECTION_INTERRUPTED:
     'Voice connection interrupted. Reconnecting...',
   PERMISSION_DENIED:
@@ -149,6 +143,7 @@ export interface AppErrorOptions {
   category: ErrorCategory;
   statusCode?: number;
   message?: string;
+  upstreamDiagnostic?: string;
   retryable?: boolean;
   retryAfterMs?: number;
   requestId?: string;
@@ -157,7 +152,7 @@ export interface AppErrorOptions {
 
 /**
  * Centralized structured error used across server, AI, voice, and database layers.
- * Never exposes secrets, authorization headers, or raw stack traces to clients.
+ * Never exposes secrets, authorization headers, raw upstream details, or stack traces to clients.
  */
 export class AppError extends Error {
   public readonly code: ErrorCode;
@@ -165,6 +160,8 @@ export class AppError extends Error {
   public readonly statusCode: number;
   public readonly retryable: boolean;
   public readonly retryAfterMs?: number;
+  /** Sanitized raw upstream error string for server logs only — never serialized to the UI. */
+  public readonly upstreamDiagnostic?: string;
   public requestId?: string;
 
   constructor(options: AppErrorOptions) {
@@ -176,6 +173,9 @@ export class AppError extends Error {
     this.statusCode = options.statusCode ?? inferHttpStatus(options.code);
     this.retryable = options.retryable ?? isRetryableErrorCode(options.code);
     this.retryAfterMs = options.retryAfterMs;
+    this.upstreamDiagnostic = options.upstreamDiagnostic
+      ? sanitizeDiagnosticText(options.upstreamDiagnostic)
+      : undefined;
     this.requestId = options.requestId;
   }
 

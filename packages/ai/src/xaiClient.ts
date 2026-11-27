@@ -189,7 +189,7 @@ export class XaiResponsesClient {
         if (
           appErr.code === ErrorCodes.INVALID_REQUEST &&
           bodyPayload.reasoning !== undefined &&
-          appErr.message.toLowerCase().includes('reasoning')
+          (appErr.upstreamDiagnostic ?? appErr.message).toLowerCase().includes('reasoning')
         ) {
           delete bodyPayload.reasoning;
           continue;
@@ -400,45 +400,76 @@ export async function mapUpstreamHttpError(response: Response): Promise<AppError
 
   try {
     const parsed = JSON.parse(rawBodyText) as Record<string, unknown>;
-    const errObj =
-      parsed.error && typeof parsed.error === 'object'
-        ? (parsed.error as Record<string, unknown>)
-        : parsed;
-    if (typeof errObj.message === 'string') {
-      upstreamMsg = errObj.message;
+    if (typeof parsed.error === 'string') {
+      upstreamMsg = parsed.error;
+    } else if (parsed.error && typeof parsed.error === 'object') {
+      const errObj = parsed.error as Record<string, unknown>;
+      if (typeof errObj.message === 'string') upstreamMsg = errObj.message;
+      else if (typeof errObj.error === 'string') upstreamMsg = errObj.error;
+      if (typeof errObj.code === 'string') upstreamCode = errObj.code;
+      else if (typeof errObj.status === 'string') upstreamCode = errObj.status;
     }
-    if (typeof errObj.code === 'string') {
-      upstreamCode = errObj.code;
+    if (!upstreamMsg && typeof parsed.message === 'string') {
+      upstreamMsg = parsed.message;
+    }
+    if (!upstreamMsg && typeof parsed.detail === 'string') {
+      upstreamMsg = parsed.detail;
+    }
+    if (!upstreamCode && typeof parsed.code === 'string') {
+      upstreamCode = parsed.code;
     }
   } catch {
-    upstreamMsg = rawBodyText.slice(0, 300);
+    upstreamMsg = rawBodyText.slice(0, 500);
   }
 
-  const lowerMsg = `${upstreamCode} ${upstreamMsg}`.toLowerCase();
+  const combinedRaw = [upstreamCode, upstreamMsg || rawBodyText.slice(0, 500)]
+    .filter(Boolean)
+    .join(' | ');
+  const upstreamDiagnostic = combinedRaw ? sanitizeDiagnosticText(combinedRaw) : undefined;
+  const lowerMsg = `${upstreamCode} ${upstreamMsg} ${rawBodyText.slice(0, 500)}`.toLowerCase();
   const retryAfterHeader = response.headers.get('retry-after');
   const retryAfterMs = parseRetryAfterMs(retryAfterHeader);
 
-  if (response.status === 401 || lowerMsg.includes('invalid api key') || lowerMsg.includes('incorrect api key')) {
+  if (
+    response.status === 401 ||
+    lowerMsg.includes('invalid api key') ||
+    lowerMsg.includes('incorrect api key')
+  ) {
     return new AppError({
       code: ErrorCodes.INVALID_API_KEY,
       category: 'api',
       statusCode: 502,
       retryable: false,
+      message: 'API key invalid',
+      upstreamDiagnostic,
     });
   }
 
-  if (
-    response.status === 402 ||
+  const hasPermissionDenied =
+    lowerMsg.includes('permission-denied') ||
+    lowerMsg.includes('permission_denied') ||
+    lowerMsg.includes('permission denied');
+  const hasCreditsOrLicenses = lowerMsg.includes('credits or licenses');
+  const hasCreditSignal =
+    hasCreditsOrLicenses ||
     lowerMsg.includes('credit') ||
     lowerMsg.includes('quota') ||
     lowerMsg.includes('billing') ||
-    lowerMsg.includes('insufficient')
+    lowerMsg.includes('insufficient');
+
+  if (
+    (hasPermissionDenied && hasCreditsOrLicenses) ||
+    hasCreditsOrLicenses ||
+    response.status === 402 ||
+    (response.status !== 403 && hasCreditSignal)
   ) {
     return new AppError({
       code: ErrorCodes.INSUFFICIENT_CREDITS,
       category: 'api',
       statusCode: 402,
       retryable: false,
+      message: 'xAI account e credit nai. console.x.ai te billing check koro.',
+      upstreamDiagnostic,
     });
   }
 
@@ -448,7 +479,8 @@ export async function mapUpstreamHttpError(response: Response): Promise<AppError
       category: 'api',
       statusCode: 403,
       retryable: false,
-      message: 'xAI rejected this request as unauthorized. Verify account permissions and key scope.',
+      message: 'permission/credits nai',
+      upstreamDiagnostic,
     });
   }
 
@@ -459,6 +491,7 @@ export async function mapUpstreamHttpError(response: Response): Promise<AppError
       statusCode: 429,
       retryable: true,
       retryAfterMs,
+      upstreamDiagnostic,
     });
   }
 
@@ -474,7 +507,7 @@ export async function mapUpstreamHttpError(response: Response): Promise<AppError
       category: 'api',
       statusCode: 404,
       retryable: false,
-      message: upstreamMsg ? `Model unavailable: ${sanitizeDiagnosticText(upstreamMsg)}` : undefined,
+      upstreamDiagnostic,
     });
   }
 
@@ -484,7 +517,7 @@ export async function mapUpstreamHttpError(response: Response): Promise<AppError
       category: 'api',
       statusCode: 400,
       retryable: false,
-      message: upstreamMsg ? sanitizeDiagnosticText(upstreamMsg) : undefined,
+      upstreamDiagnostic,
     });
   }
 
@@ -494,6 +527,8 @@ export async function mapUpstreamHttpError(response: Response): Promise<AppError
       category: 'api',
       statusCode: 502,
       retryable: true,
+      message: 'service unavailable',
+      upstreamDiagnostic,
     });
   }
 
@@ -502,17 +537,28 @@ export async function mapUpstreamHttpError(response: Response): Promise<AppError
     category: 'api',
     statusCode: 502,
     retryable: false,
-    message: upstreamMsg ? sanitizeDiagnosticText(upstreamMsg) : undefined,
+    message: 'service unavailable',
+    upstreamDiagnostic,
   });
 }
 
-function normalizeToAppError(
+export function normalizeToAppError(
   err: unknown,
-  context: { timedOut?: boolean; externalAborted?: boolean } = {},
+  context: {
+    timedOut?: boolean;
+    externalAborted?: boolean;
+    networkCode?: typeof ErrorCodes.NETWORK_DISCONNECTED | typeof ErrorCodes.VOICE_SERVICE_UNAVAILABLE;
+    networkCategory?: 'network' | 'voice';
+  } = {},
 ): AppError {
   if (err instanceof AppError) {
     return err;
   }
+
+  const rawDiagnostic =
+    err instanceof Error
+      ? sanitizeDiagnosticText(`${err.name}: ${err.message} ${extractNestedErrorCode(err)}`.trim())
+      : sanitizeDiagnosticText(String(err));
 
   if (context.externalAborted) {
     return new AppError({
@@ -530,6 +576,8 @@ function normalizeToAppError(
       category: 'network',
       statusCode: 504,
       retryable: true,
+      message: 'service unavailable',
+      upstreamDiagnostic: rawDiagnostic,
       cause: err,
     });
   }
@@ -550,6 +598,8 @@ function normalizeToAppError(
         category: 'network',
         statusCode: 504,
         retryable: true,
+        message: 'service unavailable',
+        upstreamDiagnostic: rawDiagnostic,
         cause: err,
       });
     }
@@ -567,13 +617,27 @@ function normalizeToAppError(
       msg.includes('und_err')
     ) {
       return new AppError({
-        code: ErrorCodes.NETWORK_DISCONNECTED,
-        category: 'network',
+        code: context.networkCode ?? ErrorCodes.NETWORK_DISCONNECTED,
+        category: context.networkCategory ?? 'network',
         statusCode: 503,
         retryable: true,
+        message: 'service unavailable',
+        upstreamDiagnostic: rawDiagnostic,
         cause: err,
       });
     }
+  }
+
+  if (context.networkCode === ErrorCodes.VOICE_SERVICE_UNAVAILABLE) {
+    return new AppError({
+      code: ErrorCodes.VOICE_SERVICE_UNAVAILABLE,
+      category: 'voice',
+      statusCode: 503,
+      retryable: true,
+      message: 'service unavailable',
+      upstreamDiagnostic: rawDiagnostic,
+      cause: err,
+    });
   }
 
   return new AppError({
@@ -581,6 +645,7 @@ function normalizeToAppError(
     category: 'internal',
     statusCode: 500,
     retryable: false,
+    upstreamDiagnostic: rawDiagnostic,
     cause: err,
   });
 }

@@ -39,7 +39,7 @@ export function registerUsageRoutes(
         },
       },
     },
-    async (): Promise<ConnectivityCheckDTO> => {
+    async (request): Promise<ConnectivityCheckDTO> => {
       const settings = await deps.settingsStore.getPublicSettings();
       const checkedAt = new Date().toISOString();
 
@@ -58,7 +58,7 @@ export function registerUsageRoutes(
             code: ErrorCodes.INVALID_API_KEY,
             category: 'api',
             statusCode: 502,
-            message: 'XAI_API_KEY is not configured in the backend environment.',
+            message: 'API key invalid',
             retryable: false,
           },
           note: 'Configure XAI_API_KEY in .env to enable live xAI connectivity.',
@@ -102,6 +102,18 @@ export function registerUsageRoutes(
                 statusCode: 503,
                 cause: err,
               });
+
+        request.log.error(
+          {
+            reqId: request.id,
+            code: appErr.code,
+            statusCode: appErr.statusCode,
+            ...(appErr.upstreamDiagnostic
+              ? { upstreamError: appErr.upstreamDiagnostic }
+              : {}),
+          },
+          'xAI connectivity probe failed',
+        );
 
         void deps.alertMonitor.recordApiOutcome({ ok: false, code: appErr.code });
 

@@ -10,6 +10,7 @@ import {
   estimateSttCostUsd,
   estimateTtsCostUsd,
   estimateVoiceDurationCostUsd,
+  sanitizeDiagnosticText,
   validateInput,
   type VoiceClientSecretDTO,
 } from '@mj/shared';
@@ -109,6 +110,7 @@ export function registerVoiceRoutes(
   const VOICES_CACHE_TTL_MS = 5 * 60 * 1000;
 
   async function runTrackedVoiceOp<T>(
+    request: FastifyRequest,
     meta: {
       kind: 'voice_realtime' | 'tts' | 'stt';
       model: string;
@@ -123,6 +125,22 @@ export function registerVoiceRoutes(
       return { value, latencyMs: Date.now() - startedAt };
     } catch (err) {
       const code = err instanceof AppError ? err.code : ErrorCodes.VOICE_SERVICE_UNAVAILABLE;
+      const upstreamError =
+        err instanceof AppError
+          ? err.upstreamDiagnostic ?? sanitizeDiagnosticText(err.message)
+          : sanitizeDiagnosticText(err instanceof Error ? err.message : String(err));
+
+      request.log.error(
+        {
+          reqId: request.id,
+          kind: meta.kind,
+          code,
+          statusCode: err instanceof AppError ? err.statusCode : 503,
+          upstreamError,
+        },
+        'xAI voice API error',
+      );
+
       await deps.repo.recordUsageLog({
         conversationId: meta.conversationId,
         kind: meta.kind,
@@ -210,6 +228,7 @@ export function registerVoiceRoutes(
       const model = settings.voice.voiceModel;
 
       const { value: ephemeralSecret } = await runTrackedVoiceOp(
+        request,
         {
           kind: 'voice_realtime',
           model,
@@ -292,6 +311,7 @@ export function registerVoiceRoutes(
     }
 
     const { value: ttsAudio, latencyMs } = await runTrackedVoiceOp(
+      request,
       { kind: 'tts', model: 'xai-tts' },
       () =>
         deps.voiceGateway.synthesizeSpeech({
@@ -354,6 +374,7 @@ export function registerVoiceRoutes(
       const audioBytes = new Uint8Array(Buffer.from(body.audioBase64, 'base64'));
 
       const { value: sttResult, latencyMs } = await runTrackedVoiceOp(
+        request,
         { kind: 'stt', model: 'grok-voice-transcribe-2.0' },
         () =>
           deps.voiceGateway.transcribeSpeech({

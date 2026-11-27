@@ -130,6 +130,54 @@ describe('Voice Instructions & Ephemeral Secret Client (Section 03 & 05)', () =>
             status: 401,
           }),
       }),
-    ).rejects.toMatchObject({ code: ErrorCodes.INVALID_API_KEY });
+    ).rejects.toMatchObject({
+      code: ErrorCodes.INVALID_API_KEY,
+      message: 'API key invalid',
+    });
+
+    await expect(
+      createRealtimeClientSecret({
+        apiKey: 'xai-nocredits',
+        baseUrl: 'https://api.x.ai/v1',
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({
+              error: {
+                code: 'permission-denied',
+                message: 'Your team does not have any credits or licenses.',
+              },
+            }),
+            { status: 403 },
+          ),
+      }),
+    ).rejects.toMatchObject({
+      code: ErrorCodes.INSUFFICIENT_CREDITS,
+      message: 'xAI account e credit nai. console.x.ai te billing check koro.',
+    });
+
+    await expect(
+      createRealtimeClientSecret({
+        apiKey: 'xai-forbidden',
+        baseUrl: 'https://api.x.ai/v1',
+        fetchImpl: async () =>
+          new Response(JSON.stringify({ error: 'Scope blocked' }), { status: 403 }),
+      }),
+    ).rejects.toMatchObject({
+      code: ErrorCodes.UNAUTHORIZED,
+      message: 'permission/credits nai',
+    });
+
+    await expect(
+      createRealtimeClientSecret({
+        apiKey: 'xai-down',
+        baseUrl: 'https://api.x.ai/v1',
+        fetchImpl: async () => {
+          throw new TypeError('fetch failed');
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: ErrorCodes.VOICE_SERVICE_UNAVAILABLE,
+      message: 'service unavailable',
+    });
   });
 });

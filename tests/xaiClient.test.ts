@@ -217,6 +217,97 @@ describe('XaiResponsesClient (Section 02 & Section 07)', () => {
         input: [{ role: 'user', content: 'hi' }],
         stream: true,
       }),
-    ).rejects.toMatchObject({ code: ErrorCodes.NETWORK_DISCONNECTED, retryable: true });
+    ).rejects.toMatchObject({
+      code: ErrorCodes.NETWORK_DISCONNECTED,
+      message: 'service unavailable',
+      retryable: true,
+    });
+  });
+
+  it('maps 401, 403 permission/credits, permission-denied + credits or licenses, and 5xx cleanly without leaking raw upstream errors to UI', async () => {
+    const makeClient = (status: number, payload: unknown) =>
+      new XaiResponsesClient({
+        apiKey: 'xai-key-secret-never-shown',
+        baseUrl: 'https://api.x.ai/v1',
+        defaultModel: 'grok-4.7',
+        timeoutMs: 5000,
+        maxRetries: 0,
+        fetchImpl: async () =>
+          new Response(typeof payload === 'string' ? payload : JSON.stringify(payload), { status }),
+      });
+
+    // 403 with permission-denied + "credits or licenses" (xAI string error format)
+    await expect(
+      makeClient(403, {
+        code: 'permission-denied',
+        error:
+          'Your newly created team does not have any credits or licenses yet using key xai-leakMeNot123456.',
+      }).createResponse({
+        instructions: 'Sys',
+        input: [{ role: 'user', content: 'hi' }],
+        stream: false,
+      }),
+    ).rejects.toMatchObject({
+      code: ErrorCodes.INSUFFICIENT_CREDITS,
+      message: 'xAI account e credit nai. console.x.ai te billing check koro.',
+    });
+
+    // Verify raw diagnostic is sanitized (key scrubbed) for server logging while UI payload stays friendly
+    try {
+      await makeClient(403, {
+        code: 'permission-denied',
+        error: 'Team lacks credits or licenses (key xai-leakMeNot123456)',
+      }).createResponse({
+        instructions: 'Sys',
+        input: [{ role: 'user', content: 'hi' }],
+        stream: false,
+      });
+    } catch (err) {
+      const appErr = err as import('@mj/shared').AppError;
+      expect(appErr.upstreamDiagnostic).toContain('permission-denied');
+      expect(appErr.upstreamDiagnostic).toContain('credits or licenses');
+      expect(appErr.upstreamDiagnostic).not.toContain('xai-leakMeNot123456');
+      expect(appErr.toPayload().message).toBe(
+        'xAI account e credit nai. console.x.ai te billing check koro.',
+      );
+      expect(JSON.stringify(appErr.toPayload())).not.toContain('xai-leakMeNot123456');
+      expect(JSON.stringify(appErr.toPayload())).not.toContain('upstreamDiagnostic');
+    }
+
+    // 401 -> "API key invalid"
+    await expect(
+      makeClient(401, { error: { message: 'Incorrect API key provided' } }).createResponse({
+        instructions: 'Sys',
+        input: [{ role: 'user', content: 'hi' }],
+        stream: false,
+      }),
+    ).rejects.toMatchObject({
+      code: ErrorCodes.INVALID_API_KEY,
+      message: 'API key invalid',
+    });
+
+    // Generic 403 -> "permission/credits nai"
+    await expect(
+      makeClient(403, { error: { message: 'Forbidden resource scope' } }).createResponse({
+        instructions: 'Sys',
+        input: [{ role: 'user', content: 'hi' }],
+        stream: false,
+      }),
+    ).rejects.toMatchObject({
+      code: ErrorCodes.UNAUTHORIZED,
+      message: 'permission/credits nai',
+    });
+
+    // 5xx -> "service unavailable"
+    await expect(
+      makeClient(503, { error: { message: 'Internal backend meltdown' } }).createResponse({
+        instructions: 'Sys',
+        input: [{ role: 'user', content: 'hi' }],
+        stream: false,
+      }),
+    ).rejects.toMatchObject({
+      code: ErrorCodes.UPSTREAM_ERROR,
+      message: 'service unavailable',
+    });
   });
 });
