@@ -5,7 +5,9 @@ mod permissions;
 mod system_monitor;
 mod tray;
 
+use permissions::{load_allowlist, DesktopAllowlistState};
 use std::sync::Mutex;
+use tauri::Manager;
 use tray::{setup_system_tray, TrayState};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -14,10 +16,17 @@ pub fn run() {
         .manage(TrayState {
             mic_status_item: Mutex::new(None),
         })
+        .manage(DesktopAllowlistState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            let persisted = load_allowlist(app.handle());
+            if let Some(state) = app.try_state::<DesktopAllowlistState>() {
+                if let Ok(mut guard) = state.0.lock() {
+                    *guard = persisted;
+                }
+            }
             setup_system_tray(app.handle())?;
             Ok(())
         })
@@ -25,6 +34,11 @@ pub fn run() {
             desktop_actions::desktop_get_permissions,
             desktop_actions::desktop_set_permission,
             desktop_actions::desktop_revoke_all,
+            desktop_actions::desktop_get_allowlist,
+            desktop_actions::desktop_pick_and_approve_app,
+            desktop_actions::desktop_pick_and_approve_folder,
+            desktop_actions::desktop_approve_domain_native,
+            desktop_actions::desktop_remove_allowlist_entry,
             desktop_actions::desktop_get_audit_logs,
             desktop_actions::desktop_get_system_status,
             desktop_actions::desktop_open_app,

@@ -309,34 +309,82 @@ const FORBIDDEN_SHELL_EXECUTABLES = new Set([
   'powershell.exe',
   'pwsh',
   'pwsh.exe',
+  'powershell_ise',
+  'powershell_ise.exe',
   'bash',
   'bash.exe',
   'sh',
   'sh.exe',
   'wsl',
   'wsl.exe',
-  'wscript',
-  'wscript.exe',
-  'cscript',
-  'cscript.exe',
+  'conhost',
+  'conhost.exe',
+  'python',
+  'python.exe',
+  'pythonw',
+  'pythonw.exe',
+  'python3',
+  'python3.exe',
+  'py',
+  'py.exe',
+  'node',
+  'node.exe',
+  'deno',
+  'deno.exe',
+  'bun',
+  'bun.exe',
+  'certutil',
+  'certutil.exe',
   'mshta',
   'mshta.exe',
   'rundll32',
   'rundll32.exe',
   'regsvr32',
   'regsvr32.exe',
-  'conhost',
-  'conhost.exe',
+  'wscript',
+  'wscript.exe',
+  'cscript',
+  'cscript.exe',
+  'bitsadmin',
+  'bitsadmin.exe',
+  'msiexec',
+  'msiexec.exe',
+  'forfiles',
+  'forfiles.exe',
+  'pcalua',
+  'pcalua.exe',
+  'control',
+  'control.exe',
+  'hh',
+  'hh.exe',
+  'infdefaultinstall',
+  'infdefaultinstall.exe',
 ]);
 
-const SHELL_METACHAR_REGEX = /[|&;`$><\r\n"']/;
+const FORBIDDEN_SCRIPT_EXT_REGEX =
+  /\.(bat|cmd|ps1|psm1|psd1|vbs|vbe|js|jse|wsf|wsh|hta|scr|pif|com|cpl|msc|msi|msp|jar)$/i;
+
+const SHELL_METACHAR_REGEX = /[|&;`$><\r\n"'\0]/;
 
 export function isForbiddenShellTarget(target: string): boolean {
   const trimmed = target.trim();
   if (!trimmed || SHELL_METACHAR_REGEX.test(trimmed)) return true;
   const normalized = trimmed.replace(/\\/g, '/').toLowerCase();
+  if (normalized.includes('..')) return true;
   const baseName = normalized.split('/').pop() ?? normalized;
+  if (!baseName) return true;
+  if (FORBIDDEN_SCRIPT_EXT_REGEX.test(baseName)) return true;
   return FORBIDDEN_SHELL_EXECUTABLES.has(baseName);
+}
+
+export function isValidApprovedExecutablePath(target: string): boolean {
+  const trimmed = target.trim();
+  if (!trimmed || isForbiddenShellTarget(trimmed)) return false;
+  if (trimmed.startsWith('\\\\') || trimmed.startsWith('//')) return false;
+  // Must be a valid absolute Windows (C:\...) or POSIX (/...) path ending in .exe
+  const isAbsolute = /^[a-zA-Z]:[\\/]/.test(trimmed) || trimmed.startsWith('/');
+  if (!isAbsolute) return false;
+  return /\.exe$/i.test(trimmed);
 }
 
 export function isProtectedSystemPath(targetPath: string): boolean {
@@ -361,14 +409,24 @@ export function isProtectedSystemPath(targetPath: string): boolean {
 
 export function normalizeWebDomainTarget(rawTarget: string): string | null {
   const trimmed = rawTarget.trim();
-  if (!trimmed || SHELL_METACHAR_REGEX.test(trimmed)) return null;
+  if (
+    !trimmed ||
+    SHELL_METACHAR_REGEX.test(trimmed) ||
+    trimmed.includes('\\') ||
+    trimmed.includes('@') ||
+    trimmed.includes('*')
+  ) {
+    return null;
+  }
   try {
     const withScheme = trimmed.includes('://') ? trimmed : `https://${trimmed}`;
     const url = new URL(withScheme);
+    if (url.username || url.password) return null;
     if (url.protocol !== 'https:' && url.hostname !== 'localhost' && url.hostname !== '127.0.0.1') {
       return null;
     }
-    return url.hostname.toLowerCase();
+    const clean = url.hostname.replace(/\.+$/, '').toLowerCase();
+    return clean || null;
   } catch {
     return null;
   }
@@ -376,19 +434,30 @@ export function normalizeWebDomainTarget(rawTarget: string): string | null {
 
 export function isApprovedHttpsUrl(rawUrl: string, approvedDomains: string[]): string | null {
   const trimmed = rawUrl.trim();
-  if (!trimmed || SHELL_METACHAR_REGEX.test(trimmed)) return null;
+  if (
+    !trimmed ||
+    SHELL_METACHAR_REGEX.test(trimmed) ||
+    trimmed.includes('\\') ||
+    trimmed.includes('@')
+  ) {
+    return null;
+  }
   try {
     const parsed = new URL(trimmed);
+    if (parsed.username || parsed.password) return null;
     const isLocalhostHttp =
       parsed.protocol === 'http:' &&
       (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1');
     if (parsed.protocol !== 'https:' && !isLocalhostHttp) {
       return null;
     }
-    const host = parsed.hostname.toLowerCase();
-    const allowed = approvedDomains.some(
-      (domain) => host === domain.toLowerCase() || host.endsWith(`.${domain.toLowerCase()}`),
-    );
+    const host = parsed.hostname.replace(/\.+$/, '').toLowerCase();
+    if (!host) return null;
+    const allowed = approvedDomains.some((domain) => {
+      const cleanDomain = domain.trim().replace(/\.+$/, '').toLowerCase();
+      if (!cleanDomain) return false;
+      return host === cleanDomain || host.endsWith(`.${cleanDomain}`);
+    });
     return allowed ? parsed.toString() : null;
   } catch {
     return null;

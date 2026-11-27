@@ -1182,19 +1182,13 @@ export function App() {
           break;
         case 'open_approved_app':
           if (inTauri && shortcut.target) {
-            await tauriOpenApprovedApp(
-              shortcut.target,
-              allowlist.filter((a) => a.kind === 'app').map((a) => a.target),
-            );
+            await tauriOpenApprovedApp(shortcut.target);
           }
           break;
         case 'open_approved_url':
           if (shortcut.target) {
             if (inTauri) {
-              await tauriOpenApprovedUrl(
-                shortcut.target,
-                allowlist.filter((a) => a.kind === 'web_domain').map((a) => a.target),
-              );
+              await tauriOpenApprovedUrl(shortcut.target);
             } else {
               window.open(shortcut.target, '_blank', 'noopener,noreferrer');
             }

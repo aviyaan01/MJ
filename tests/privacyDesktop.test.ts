@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   ADMIN_PRIVILEGE_POLICY,
@@ -8,6 +10,8 @@ import {
   isApprovedHttpsUrl,
   isForbiddenShellTarget,
   isProtectedSystemPath,
+  isValidApprovedExecutablePath,
+  normalizeWebDomainTarget,
 } from '@mj/shared';
 import { XaiResponsesClient } from '@mj/ai';
 import { buildServer, type MjServerContext } from '../apps/server/src/app.js';
@@ -79,6 +83,33 @@ describe('Stage 4 Hardened Defaults, Desktop Companion Guardrails & Privacy Cent
     expect(isForbiddenShellTarget('notepad.exe | whoami')).toBe(true);
     expect(isForbiddenShellTarget('C:\\Users\\ASUS\\AppData\\Local\\Programs\\Code.exe')).toBe(false);
 
+    // Phase 1 LOLBins, script interpreters, and strict absolute .exe enforcement
+    for (const lolbin of [
+      'C:\\Python312\\python.exe',
+      'C:\\Python312\\pythonw.exe',
+      'C:\\Program Files\\nodejs\\node.exe',
+      'C:\\Windows\\System32\\certutil.exe',
+      'C:\\Windows\\System32\\mshta.exe',
+      'C:\\Windows\\System32\\rundll32.exe',
+      'C:\\Windows\\System32\\regsvr32.exe',
+      'C:\\Windows\\System32\\wscript.exe',
+      'C:\\Windows\\System32\\cscript.exe',
+      'C:\\Tools\\run.bat',
+      'C:\\Tools\\run.cmd',
+      'C:\\Tools\\run.ps1',
+      'C:\\Tools\\run.vbs',
+    ]) {
+      expect(isForbiddenShellTarget(lolbin)).toBe(true);
+      expect(isValidApprovedExecutablePath(lolbin)).toBe(false);
+    }
+
+    expect(isValidApprovedExecutablePath('notepad.exe')).toBe(false);
+    expect(isValidApprovedExecutablePath('.\\app.exe')).toBe(false);
+    expect(isValidApprovedExecutablePath('\\\\evil-host\\share\\app.exe')).toBe(false);
+    expect(isValidApprovedExecutablePath('C:\\Tools\\no-extension')).toBe(false);
+    expect(isValidApprovedExecutablePath('C:\\Tools\\..\\Windows\\app.exe')).toBe(false);
+    expect(isValidApprovedExecutablePath('C:\\Users\\ASUS\\AppData\\Local\\Programs\\Code.exe')).toBe(true);
+
     expect(isProtectedSystemPath('C:\\Windows\\System32')).toBe(true);
     expect(isProtectedSystemPath('C:\\Program Files\\MJ')).toBe(true);
     expect(isProtectedSystemPath('C:\\Users\\ASUS\\..\\Windows')).toBe(true);
@@ -86,7 +117,13 @@ describe('Stage 4 Hardened Defaults, Desktop Companion Guardrails & Privacy Cent
 
     expect(isApprovedHttpsUrl('http://example.com', ['example.com'])).toBeNull();
     expect(isApprovedHttpsUrl('https://evil.example/a', ['docs.x.ai'])).toBeNull();
+    expect(isApprovedHttpsUrl('https://evil.com\\.approved.com/', ['approved.com'])).toBeNull();
+    expect(isApprovedHttpsUrl('https://approved.com@evil.com/', ['approved.com'])).toBeNull();
+    expect(isApprovedHttpsUrl('https://notapproved.com/', ['approved.com'])).toBeNull();
+    expect(normalizeWebDomainTarget('evil.com\\.approved.com')).toBeNull();
+    expect(normalizeWebDomainTarget('approved.com@evil.com')).toBeNull();
     expect(isApprovedHttpsUrl('https://docs.x.ai/guides', ['docs.x.ai'])).toBe('https://docs.x.ai/guides');
+    expect(isApprovedHttpsUrl('https://sub.approved.com/docs', ['approved.com'])).toBe('https://sub.approved.com/docs');
   });
 
   it('rejects bundled master-enable permission payloads and separates fileRead vs fileWrite', async () => {
@@ -426,5 +463,102 @@ describe('Stage 4 Hardened Defaults, Desktop Companion Guardrails & Privacy Cent
     expect(
       auditAfter.json().entries.some((e: { capability: string }) => e.capability === 'conversation_history'),
     ).toBe(true);
+  });
+
+  it('enforces Phase 1 Tauri Rust-side allowlists, hardened capabilities, LOLBin rejection, and strict URL bypass defense', async () => {
+    const { ctx, cookie } = await createAuthedTestServer();
+    contexts.push(ctx);
+
+    // Server allowlist must reject LOLBins, script extensions, relative paths, and non-.exe binaries
+    for (const badApp of [
+      'C:\\Python312\\pythonw.exe',
+      'C:\\Program Files\\nodejs\\node.exe',
+      'C:\\Windows\\System32\\certutil.exe',
+      'C:\\Tools\\payload.ps1',
+      'C:\\Tools\\payload.bat',
+      'C:\\Tools\\payload.vbs',
+      'notepad.exe',
+      'C:\\Tools\\tool.com',
+    ]) {
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/privacy/allowlist',
+        headers: { cookie },
+        payload: { kind: 'app', label: 'BlockedTarget', target: badApp },
+      });
+      expect(res.statusCode).toBe(403);
+    }
+
+    // Add approved domain and enable webLaunch to verify bypass URL rejection in backend validation too
+    await ctx.app.inject({
+      method: 'POST',
+      url: '/api/privacy/allowlist',
+      headers: { cookie },
+      payload: { kind: 'web_domain', label: 'Approved', target: 'https://approved.com' },
+    });
+    await ctx.app.inject({
+      method: 'PATCH',
+      url: '/api/privacy/permissions',
+      headers: { cookie },
+      payload: { key: 'webLaunch', enabled: true },
+    });
+
+    for (const bypassUrl of [
+      'https://evil.com\\.approved.com/',
+      'https://approved.com@evil.com/',
+      'http://approved.com/',
+      'https://notapproved.com/',
+    ]) {
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/desktop/validate-action',
+        headers: { cookie },
+        payload: { capability: 'webLaunch', action: 'Open URL', target: bypassUrl },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error.code).toBe(ErrorCodes.UNAPPROVED_TARGET);
+    }
+
+    // Verify Tauri capability & Rust security hardening invariants on disk
+    const root = process.cwd();
+    const capabilities = JSON.parse(
+      readFileSync(resolve(root, 'apps/desktop/src-tauri/capabilities/default.json'), 'utf8'),
+    ) as { permissions: string[] };
+    expect(capabilities.permissions).not.toContain('opener:allow-open-url');
+    expect(capabilities.permissions).not.toContain('notification:default');
+    expect(capabilities.permissions).toContain('core:default');
+
+    const cargoToml = readFileSync(resolve(root, 'apps/desktop/src-tauri/Cargo.toml'), 'utf8');
+    expect(cargoToml).toContain('url = "2"');
+
+    const desktopActionsRs = readFileSync(
+      resolve(root, 'apps/desktop/src-tauri/src/desktop_actions.rs'),
+      'utf8',
+    );
+    expect(desktopActionsRs).not.toMatch(/approved_apps:\s*Vec/);
+    expect(desktopActionsRs).not.toMatch(/approved_domains:\s*Vec/);
+    expect(desktopActionsRs).not.toMatch(/approved_folders:\s*Vec/);
+    expect(desktopActionsRs).toContain('Url::parse');
+    expect(desktopActionsRs).toContain('DesktopAllowlistState');
+
+    const permissionsRs = readFileSync(
+      resolve(root, 'apps/desktop/src-tauri/src/permissions.rs'),
+      'utf8',
+    );
+    expect(permissionsRs).toContain('FORBIDDEN_EXECUTABLE_STEMS');
+    expect(permissionsRs).toContain('certutil');
+    expect(permissionsRs).toContain('pythonw');
+    expect(permissionsRs).toContain('allowlist.json');
+    expect(permissionsRs).toContain('.eq_ignore_ascii_case("exe")');
+
+    const desktopBridgeTs = readFileSync(
+      resolve(root, 'apps/web/src/desktop/desktopBridge.ts'),
+      'utf8',
+    );
+    expect(desktopBridgeTs).toContain('export async function tauriOpenApprovedApp(executablePath: string)');
+    expect(desktopBridgeTs).toContain('export async function tauriOpenApprovedUrl(url: string)');
+    expect(desktopBridgeTs).not.toMatch(/invokeTauri\(['"]desktop_open_app['"],\s*\{[\s\S]*?approvedApps/);
+    expect(desktopBridgeTs).not.toMatch(/invokeTauri\(['"]desktop_open_url['"],\s*\{[\s\S]*?approvedDomains/);
+    expect(desktopBridgeTs).not.toMatch(/invokeTauri\(['"]desktop_search_files['"],\s*\{[\s\S]*?approvedFolders/);
   });
 });

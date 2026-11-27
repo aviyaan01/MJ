@@ -1,12 +1,10 @@
 {
   "$schema": "https://schemas.tauri.app/config/2/capability",
   "identifier": "default",
-  "description": "Hardened default capabilities for MJ Assistant Windows Desktop Companion (no arbitrary shell execution, asInvoker standard privileges).",
+  "description": "Hardened default capabilities for MJ Assistant Windows Desktop Companion (no direct webview opener/notification bypasses, no arbitrary shell execution, asInvoker standard privileges).",
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "notification:default",
-    "dialog:allow-open",
-    "opener:allow-open-url"
+    "dialog:allow-open"
   ]
 }

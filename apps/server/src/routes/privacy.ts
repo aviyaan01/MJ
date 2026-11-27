@@ -8,6 +8,7 @@ import {
   UpdateSinglePermissionSchema,
   isForbiddenShellTarget,
   isProtectedSystemPath,
+  isValidApprovedExecutablePath,
   normalizeWebDomainTarget,
   validateInput,
   type AuditOutcome,
@@ -100,12 +101,28 @@ export function registerPrivacyRoutes(
           target: normalizedTarget,
           outcome: 'denied',
           source: 'server',
-          detail: 'Shell interpreters and shell metacharacters are forbidden.',
+          detail: 'Shell interpreters, LOLBins, and script targets are forbidden.',
         });
         throw new AppError({
           code: ErrorCodes.SHELL_EXECUTION_FORBIDDEN,
           category: 'privacy',
           statusCode: 403,
+        });
+      }
+      if (!isValidApprovedExecutablePath(normalizedTarget)) {
+        await deps.repo.recordAuditLog({
+          capability: 'appOpening',
+          action: 'Blocked invalid application path in allowlist',
+          target: normalizedTarget,
+          outcome: 'denied',
+          source: 'server',
+          detail: 'Application target must be an absolute local path ending in .exe.',
+        });
+        throw new AppError({
+          code: ErrorCodes.UNAPPROVED_TARGET,
+          category: 'privacy',
+          statusCode: 403,
+          message: 'Application target must be a valid absolute local path with an explicit .exe extension.',
         });
       }
     } else if (body.kind === 'folder') {

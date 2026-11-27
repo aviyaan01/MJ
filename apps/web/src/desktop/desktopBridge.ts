@@ -64,46 +64,63 @@ export async function tauriGetNativeTelemetry(): Promise<HostTelemetryDTO | null
   return tauri.invoke<HostTelemetryDTO>('desktop_get_system_status');
 }
 
-export async function tauriOpenApprovedApp(
-  executablePath: string,
-  approvedApps: string[],
-): Promise<void> {
+export interface NativeDesktopAllowlist {
+  approvedApps: string[];
+  approvedDomains: string[];
+  approvedFolders: string[];
+}
+
+export async function tauriGetNativeAllowlist(): Promise<NativeDesktopAllowlist> {
+  return invokeTauri<NativeDesktopAllowlist>('desktop_get_allowlist');
+}
+
+export async function tauriNativePickApprovedApp(): Promise<string | null> {
+  return invokeTauri<string | null>('desktop_pick_and_approve_app');
+}
+
+export async function tauriNativePickApprovedFolder(): Promise<string | null> {
+  return invokeTauri<string | null>('desktop_pick_and_approve_folder');
+}
+
+export async function tauriNativeApproveDomain(domain: string): Promise<boolean> {
+  return invokeTauri<boolean>('desktop_approve_domain_native', { domain });
+}
+
+export async function tauriRemoveNativeAllowlistEntry(
+  kind: AllowlistKind,
+  target: string,
+): Promise<NativeDesktopAllowlist> {
+  return invokeTauri<NativeDesktopAllowlist>('desktop_remove_allowlist_entry', { kind, target });
+}
+
+export async function tauriOpenApprovedApp(executablePath: string): Promise<void> {
   await invokeTauri('desktop_open_app', {
     executablePath,
-    approvedApps,
   });
 }
 
-export async function tauriOpenApprovedUrl(
-  url: string,
-  approvedDomains: string[],
-): Promise<void> {
+export async function tauriOpenApprovedUrl(url: string): Promise<void> {
   await invokeTauri('desktop_open_url', {
     url,
-    approvedDomains,
   });
 }
 
 export async function tauriSearchApprovedFiles(
   folderPath: string,
   query: string,
-  approvedFolders: string[],
 ): Promise<Array<{ name: string; path: string; sizeBytes: number }>> {
   return invokeTauri('desktop_search_files', {
     folderPath,
     query,
-    approvedFolders,
   });
 }
 
 export async function tauriOrganizeApprovedFolder(
   folderPath: string,
-  approvedFolders: string[],
   confirmed: boolean,
 ): Promise<{ movedCount: number; skippedCount: number; details: string[] }> {
   return invokeTauri('desktop_organize_files', {
     folderPath,
-    approvedFolders,
     confirmed,
   });
 }

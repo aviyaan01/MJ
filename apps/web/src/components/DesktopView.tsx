@@ -31,6 +31,9 @@ import {
   isTauriDesktop,
   readBrowserTelemetry,
   tauriGetNativeTelemetry,
+  tauriNativeApproveDomain,
+  tauriNativePickApprovedApp,
+  tauriNativePickApprovedFolder,
   tauriOpenApprovedApp,
   tauriOpenApprovedUrl,
   tauriOrganizeApprovedFolder,
@@ -139,10 +142,7 @@ export function DesktopView({
         return;
       }
 
-      await tauriOpenApprovedApp(
-        target,
-        approvedApps.map((a) => a.target),
-      );
+      await tauriOpenApprovedApp(target);
       setActionResult({ tone: 'good', text: `Launched approved app: ${target}` });
     } catch (err) {
       setActionResult({
@@ -165,10 +165,7 @@ export function DesktopView({
       });
 
       if (inTauri) {
-        await tauriOpenApprovedUrl(
-          urlInput.trim(),
-          approvedDomains.map((d) => d.target),
-        );
+        await tauriOpenApprovedUrl(urlInput.trim());
       } else {
         window.open(urlInput.trim(), '_blank', 'noopener,noreferrer');
       }
@@ -203,11 +200,7 @@ export function DesktopView({
         return;
       }
 
-      const matches = await tauriSearchApprovedFiles(
-        folder,
-        searchQuery,
-        approvedFolders.map((f) => f.target),
-      );
+      const matches = await tauriSearchApprovedFiles(folder, searchQuery);
       setSearchResults(matches);
       setActionResult({ tone: 'good', text: `Found ${matches.length} matching files.` });
     } catch (err) {
@@ -241,11 +234,7 @@ export function DesktopView({
         return;
       }
 
-      const summary = await tauriOrganizeApprovedFolder(
-        folder,
-        approvedFolders.map((f) => f.target),
-        confirmFileWrite,
-      );
+      const summary = await tauriOrganizeApprovedFolder(folder, confirmFileWrite);
       setConfirmFileWrite(false);
       setActionResult({
         tone: 'good',
@@ -587,19 +576,52 @@ export function DesktopView({
               ))
             )}
           </select>
-          <button
-            type="button"
-            onClick={() => void handleOpenApp()}
-            className="inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-medium transition"
-            style={{
-              backgroundColor: 'rgba(154, 198, 230, 0.14)',
-              border: '1px solid rgba(177, 215, 241, 0.24)',
-              color: 'var(--mj-accent-ice)',
-            }}
-          >
-            <ShieldCheck className="h-3.5 w-3.5" />
-            <span>Launch Approved App</span>
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void handleOpenApp()}
+              className="inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-medium transition"
+              style={{
+                backgroundColor: 'rgba(154, 198, 230, 0.14)',
+                border: '1px solid rgba(177, 215, 241, 0.24)',
+                color: 'var(--mj-accent-ice)',
+              }}
+            >
+              <ShieldCheck className="h-3.5 w-3.5" />
+              <span>Launch Approved App</span>
+            </button>
+            {inTauri && (
+              <button
+                type="button"
+                onClick={() => {
+                  void tauriNativePickApprovedApp()
+                    .then(async (picked) => {
+                      if (picked) {
+                        setSelectedApp(picked);
+                        setActionResult({ tone: 'good', text: `Native Rust allowlist added: ${picked}` });
+                      }
+                      await onAuditUpdated();
+                    })
+                    .catch(async (err) => {
+                      setActionResult({
+                        tone: 'error',
+                        text: err instanceof Error ? err.message : 'Native app picker blocked.',
+                      });
+                      await onAuditUpdated();
+                    });
+                }}
+                className="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition hover:bg-white/5"
+                style={{
+                  backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                  border: '1px solid var(--mj-border-strong)',
+                  color: '#DCE6EE',
+                }}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>Approve .exe (Native Picker)</span>
+              </button>
+            )}
+          </div>
         </Panel>
 
         {/* Launch Approved Web Page */}
@@ -621,18 +643,53 @@ export function DesktopView({
             className="w-full rounded-xl px-3 py-2 font-mono text-xs text-[#EDF3F8] outline-none"
             style={{ backgroundColor: '#07090E', border: '1px solid var(--mj-border-strong)' }}
           />
-          <button
-            type="button"
-            onClick={() => void handleLaunchUrl()}
-            className="inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-medium transition"
-            style={{
-              backgroundColor: 'rgba(154, 198, 230, 0.14)',
-              border: '1px solid rgba(177, 215, 241, 0.24)',
-              color: 'var(--mj-accent-ice)',
-            }}
-          >
-            <span>Open Verified HTTPS URL</span>
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void handleLaunchUrl()}
+              className="inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-medium transition"
+              style={{
+                backgroundColor: 'rgba(154, 198, 230, 0.14)',
+                border: '1px solid rgba(177, 215, 241, 0.24)',
+                color: 'var(--mj-accent-ice)',
+              }}
+            >
+              <span>Open Verified HTTPS URL</span>
+            </button>
+            {inTauri && (
+              <button
+                type="button"
+                onClick={() => {
+                  void tauriNativeApproveDomain(urlInput.trim())
+                    .then(async (approved) => {
+                      setActionResult({
+                        tone: approved ? 'good' : 'error',
+                        text: approved
+                          ? `Approved domain in Rust native allowlist: ${urlInput.trim()}`
+                          : 'Native domain approval cancelled.',
+                      });
+                      await onAuditUpdated();
+                    })
+                    .catch(async (err) => {
+                      setActionResult({
+                        tone: 'error',
+                        text: err instanceof Error ? err.message : 'Domain approval rejected.',
+                      });
+                      await onAuditUpdated();
+                    });
+                }}
+                className="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition hover:bg-white/5"
+                style={{
+                  backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                  border: '1px solid var(--mj-border-strong)',
+                  color: '#DCE6EE',
+                }}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>Approve Domain (Native Dialog)</span>
+              </button>
+            )}
+          </div>
         </Panel>
 
         {/* Desktop Search (File Read) */}
@@ -674,18 +731,51 @@ export function DesktopView({
               style={{ backgroundColor: '#07090E', border: '1px solid var(--mj-border-strong)' }}
             />
           </div>
-          <button
-            type="button"
-            onClick={() => void handleSearchFiles()}
-            className="inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-medium"
-            style={{
-              backgroundColor: 'rgba(154, 198, 230, 0.14)',
-              border: '1px solid rgba(177, 215, 241, 0.24)',
-              color: 'var(--mj-accent-ice)',
-            }}
-          >
-            <span>Search Approved Folder</span>
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void handleSearchFiles()}
+              className="inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-medium"
+              style={{
+                backgroundColor: 'rgba(154, 198, 230, 0.14)',
+                border: '1px solid rgba(177, 215, 241, 0.24)',
+                color: 'var(--mj-accent-ice)',
+              }}
+            >
+              <span>Search Approved Folder</span>
+            </button>
+            {inTauri && (
+              <button
+                type="button"
+                onClick={() => {
+                  void tauriNativePickApprovedFolder()
+                    .then(async (picked) => {
+                      if (picked) {
+                        setSelectedFolder(picked);
+                        setActionResult({ tone: 'good', text: `Native folder approved: ${picked}` });
+                      }
+                      await onAuditUpdated();
+                    })
+                    .catch(async (err) => {
+                      setActionResult({
+                        tone: 'error',
+                        text: err instanceof Error ? err.message : 'Folder approval blocked.',
+                      });
+                      await onAuditUpdated();
+                    });
+                }}
+                className="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition hover:bg-white/5"
+                style={{
+                  backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                  border: '1px solid var(--mj-border-strong)',
+                  color: '#DCE6EE',
+                }}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>Approve Folder (Native Picker)</span>
+              </button>
+            )}
+          </div>
           {searchResults.length > 0 && (
             <ul className="max-h-28 overflow-auto rounded-lg bg-[#07090E] p-2 font-mono text-[11px] text-[#C7D4E1]">
               {searchResults.map((r) => (

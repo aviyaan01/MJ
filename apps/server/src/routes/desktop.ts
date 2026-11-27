@@ -7,6 +7,7 @@ import {
   isApprovedHttpsUrl,
   isForbiddenShellTarget,
   isProtectedSystemPath,
+  isValidApprovedExecutablePath,
   normalizeShortcutAccelerator,
   validateInput,
   type AuditSource,
@@ -88,14 +89,16 @@ export function registerDesktopRoutes(
         normalizeWinPath(entry.target) === normalizedTarget ||
         entry.label.toLowerCase() === params.target.trim().toLowerCase(),
     );
-    if (!match) {
+    if (!match || !isValidApprovedExecutablePath(match.target)) {
       await deps.repo.recordAuditLog({
         capability: params.capability,
         action: params.action,
         target: params.target,
         outcome: 'denied',
         source: params.source,
-        detail: 'Application not found on user allowlist.',
+        detail: match
+          ? 'Approved entry failed strict .exe / LOLBin validation.'
+          : 'Application not found on user allowlist.',
       });
       throw new AppError({
         code: ErrorCodes.UNAPPROVED_TARGET,
