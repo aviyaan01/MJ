@@ -96,15 +96,15 @@ export function extractUsageFromResponse(rawUsage: unknown): TokenUsage | undefi
 
   const reasoningTokens = toNumber(
     outputDetails?.reasoning_tokens ??
-      u.reasoning_tokens ??
-      u.thoughtsTokenCount ??
-      u.thoughts_token_count,
+    u.reasoning_tokens ??
+    u.thoughtsTokenCount ??
+    u.thoughts_token_count,
   );
   const cachedTokens = toNumber(
     inputDetails?.cached_tokens ??
-      u.cached_tokens ??
-      u.cachedContentTokenCount ??
-      u.cached_content_token_count,
+    u.cached_tokens ??
+    u.cachedContentTokenCount ??
+    u.cached_content_token_count,
   );
   const totalTokens =
     toNumber(u.total_tokens ?? u.totalTokenCount ?? u.total_token_count) ||
