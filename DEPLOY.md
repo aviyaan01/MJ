@@ -46,7 +46,11 @@ Browser (https://app.yourdomain.com — Static SPA from Dockerfile.frontend / CD
 
 ### Option 2A: Docker Container (Render / Fly.io / VPS / ECS)
 
-1. Prepare environment variables using [apps/server/.env.production.example](apps/server/.env.production.example):
+1. Copy the template to `apps/server/.env.production` (gitignored) and fill in real secrets/domains from [apps/server/.env.production.example](apps/server/.env.production.example):
+   ```bash
+   cp apps/server/.env.production.example apps/server/.env.production
+   ```
+   Required values inside `apps/server/.env.production`:
    - `APP_ENV=production`
    - `HOST=0.0.0.0`
    - `PORT=3001`

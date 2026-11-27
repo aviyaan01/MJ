@@ -5,6 +5,8 @@ node_modules/
 .env
 .env.*
 !.env.example
+!.env.production.example
+!**/.env.production.example
 
 # Local SQLite database & runtime data
 data/
