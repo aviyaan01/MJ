@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import {
@@ -8,6 +10,7 @@ import {
   type SystemHealthDTO,
   type UsageSummaryDTO,
 } from '@mj/shared';
+import { ChatWorkspace } from '../apps/web/src/components/ChatWorkspace.js';
 import { DesktopView } from '../apps/web/src/components/DesktopView.js';
 import { HomeDashboard } from '../apps/web/src/components/HomeDashboard.js';
 import { MicActiveBanner } from '../apps/web/src/components/MicActiveBanner.js';
@@ -293,5 +296,197 @@ describe('Frontend React Views & Responsive UI Coverage (Sections 16 & 17)', () 
       <UnlockGate onLogin={noopAsync} errorMessage={null} />,
     );
     expect(gateHtml).toContain('Unlock');
+  });
+
+  it('renders dynamic Gemini and Ollama branding, Chat provider switcher, and Usage budget fields', () => {
+    const geminiSettings: PublicSettingsDTO = {
+      ...mockSettings,
+      activeProvider: 'gemini',
+      activeModel: 'gemini-2.5-flash',
+      availableModels: ['gemini-2.5-flash', 'gemini-2.5-pro'],
+      apiBaseHost: 'generativelanguage.googleapis.com',
+      providers: [
+        {
+          id: 'gemini',
+          name: 'Google Gemini (Free Tier)',
+          baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+          configured: true,
+          freeTier: true,
+          requiresKey: true,
+          defaultModel: 'gemini-2.5-flash',
+          models: ['gemini-2.5-flash', 'gemini-2.5-pro'],
+          costNote: '$0.00 free tier',
+        },
+        {
+          id: 'ollama',
+          name: 'Ollama (Local Free)',
+          baseUrl: 'http://127.0.0.1:11434/v1',
+          configured: true,
+          freeTier: true,
+          requiresKey: false,
+          defaultModel: 'qwen2.5:7b',
+          models: ['qwen2.5:7b'],
+          costNote: '$0.00 local',
+        },
+        {
+          id: 'groq',
+          name: 'Groq (Free Tier)',
+          baseUrl: 'https://api.groq.com/openai/v1',
+          configured: true,
+          freeTier: true,
+          requiresKey: true,
+          defaultModel: 'llama-3.3-70b-versatile',
+          models: ['llama-3.3-70b-versatile'],
+          costNote: '$0.00 free tier',
+        },
+      ],
+      voice: {
+        ...mockSettings.voice,
+        voiceModel: 'gemini-2.5-flash-native-audio-preview-12-2025',
+      },
+    };
+
+    const geminiHealth: SystemHealthDTO = {
+      ...mockHealth,
+      activeProvider: 'gemini',
+      activeModel: 'gemini-2.5-flash',
+      activeVoiceModel: 'gemini-2.5-flash-native-audio-preview-12-2025',
+      apiBaseHost: 'generativelanguage.googleapis.com',
+    };
+
+    const geminiHome = renderToStaticMarkup(
+      <HomeDashboard
+        health={geminiHealth}
+        settings={geminiSettings}
+        usage={mockUsage}
+        conversations={[]}
+        online={true}
+        interactionMode="voice"
+        onChangeInteractionMode={() => {}}
+        streamingState="idle"
+        streamStatusDetail="Standing by"
+        voiceState={VoiceStates.IDLE}
+        voiceDetail="Mic inactive"
+        voiceMuted={false}
+        voiceAudioLevel={0}
+        liveUserTranscript=""
+        liveAssistantTranscript=""
+        hasLastResponseToSpeak={false}
+        latestHomeExchange={null}
+        activeError={null}
+        onStartVoice={() => {}}
+        onStopVoice={() => {}}
+        onToggleMute={() => {}}
+        onInterruptVoice={() => {}}
+        onRepeatLastResponse={() => {}}
+        onChangeLanguageMode={() => {}}
+        onQuickSend={() => {}}
+        onStopStream={() => {}}
+        onRetryLast={() => {}}
+        onOpenConversation={() => {}}
+        onNavigateChat={() => {}}
+        onNavigateUsage={() => {}}
+        onNavigateSettings={() => {}}
+      />,
+    );
+    expect(geminiHome).toContain('Gemini Voice &amp; Text Ready');
+    expect(geminiHome).toContain('Google Gemini Live');
+    expect(geminiHome).not.toContain('Grok Voice &amp; Text Ready');
+    expect(geminiHome).not.toContain('/v1/realtime/client_secrets');
+
+    const geminiUsage = renderToStaticMarkup(
+      <UsageDashboardView
+        health={geminiHealth}
+        backendLatencyMs={15}
+        online={true}
+        voiceState={VoiceStates.IDLE}
+        settings={geminiSettings}
+        usage={mockUsage}
+        connectivityCheck={null}
+        checkingConnectivity={false}
+        onRefreshUsage={noopAsync}
+        onCheckConnectivity={noopAsync}
+        onSaveSettings={noopAsync}
+      />,
+    );
+    expect(geminiUsage).toContain('Gemini Responses Text');
+    expect(geminiUsage).toContain('Verify Live Google Gemini Model');
+    expect(geminiUsage).not.toContain('Verify Live xAI Model');
+    expect(geminiUsage).not.toContain('wss://api.x.ai/v1/realtime');
+
+    const ollamaSettings: PublicSettingsDTO = {
+      ...geminiSettings,
+      activeProvider: 'ollama',
+      activeModel: 'qwen2.5:7b',
+      apiBaseHost: '127.0.0.1:11434',
+    };
+    const ollamaUsage = renderToStaticMarkup(
+      <UsageDashboardView
+        health={{ ...geminiHealth, activeProvider: 'ollama', activeModel: 'qwen2.5:7b' }}
+        backendLatencyMs={10}
+        online={true}
+        voiceState={VoiceStates.IDLE}
+        settings={ollamaSettings}
+        usage={mockUsage}
+        connectivityCheck={null}
+        checkingConnectivity={false}
+        onRefreshUsage={noopAsync}
+        onCheckConnectivity={noopAsync}
+        onSaveSettings={noopAsync}
+      />,
+    );
+    expect(ollamaUsage).toContain('Ollama (Local) Text');
+
+    const chatHtml = renderToStaticMarkup(
+      <ChatWorkspace
+        conversations={[]}
+        activeConversation={null}
+        messages={[]}
+        searchQuery=""
+        onSearchChange={() => {}}
+        settings={geminiSettings}
+        usage={mockUsage}
+        streamingState="idle"
+        streamStatusDetail="Standing by"
+        voiceState={VoiceStates.IDLE}
+        voiceDetail="Mic inactive"
+        voiceMuted={false}
+        liveUserTranscript=""
+        liveAssistantTranscript=""
+        activeError={null}
+        selectedProviderOverride="gemini"
+        onSelectProviderOverride={() => {}}
+        selectedModelOverride="gemini-2.5-flash"
+        onSelectModelOverride={() => {}}
+        onSelectConversation={() => {}}
+        onCreateConversation={() => {}}
+        onRenameConversation={noopAsync}
+        onDeleteConversation={noopAsync}
+        onSendMessage={() => {}}
+        onRegenerate={() => {}}
+        onStopStream={() => {}}
+        onRetryLast={() => {}}
+        onStartVoice={() => {}}
+        onStopVoice={() => {}}
+        onToggleMute={() => {}}
+        onInterruptVoice={() => {}}
+        onSpeakText={() => {}}
+      />,
+    );
+    expect(chatHtml).toContain('id="chat-provider-select"');
+    expect(chatHtml).toContain('id="chat-model-select"');
+    expect(chatHtml).toContain('>Auto<');
+    expect(chatHtml).toContain('>Gemini<');
+    expect(chatHtml).toContain('>Ollama<');
+    expect(chatHtml).toContain('>Groq<');
+
+    const settingsSource = readFileSync(
+      resolve(process.cwd(), 'apps/web/src/components/SettingsView.tsx'),
+      'utf8',
+    );
+    expect(settingsSource).toContain('id="daily-cap"');
+    expect(settingsSource).toContain('id="stt-rate"');
+    expect(settingsSource).toContain('dailyCapUsd: Number(dailyCapUsd)');
+    expect(settingsSource).toContain('sttRatePerHourUsd: Number(sttRatePerHour)');
   });
 });

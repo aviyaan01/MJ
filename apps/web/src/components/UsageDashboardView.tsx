@@ -20,12 +20,13 @@ import {
 } from 'lucide-react';
 import { Panel, StatusPill } from '@mj/ui';
 import { VOICE_STATE_META } from '@mj/voice';
-import type {
-  ConnectivityCheckDTO,
-  PublicSettingsDTO,
-  SystemHealthDTO,
-  UsageKind,
-  UsageSummaryDTO,
+import {
+  resolveProviderDisplay,
+  type ConnectivityCheckDTO,
+  type PublicSettingsDTO,
+  type SystemHealthDTO,
+  type UsageKind,
+  type UsageSummaryDTO,
   VoiceState,
 } from '@mj/shared';
 import { isTauriDesktop } from '../desktop/desktopBridge.js';
@@ -197,6 +198,14 @@ export function UsageDashboardView({
     }
   };
 
+  const providerDisplay = resolveProviderDisplay({
+    activeProvider: settings?.activeProvider ?? health?.activeProvider,
+    activeModel: settings?.activeModel ?? health?.activeModel,
+    activeVoiceModel: settings?.voice.voiceModel ?? health?.activeVoiceModel,
+    apiBaseHost: settings?.apiBaseHost ?? health?.apiBaseHost,
+    providers: settings?.providers,
+  });
+
   return (
     <div className="mx-auto w-full max-w-[1380px] space-y-5 px-4 py-6 sm:px-8 lg:py-8">
       {/* Header */}
@@ -244,7 +253,9 @@ export function UsageDashboardView({
             }}
           >
             <Radio className={`h-3.5 w-3.5 ${checkingConnectivity ? 'animate-pulse' : ''}`} />
-            {checkingConnectivity ? 'Checking xAI API…' : 'Verify Live xAI Model'}
+            {checkingConnectivity
+              ? providerDisplay.checkingButtonLabel
+              : providerDisplay.verifyButtonLabel}
           </button>
         </div>
       </div>
@@ -262,7 +273,9 @@ export function UsageDashboardView({
           <div className="space-y-0.5">
             <div className="flex flex-wrap items-center gap-2 font-medium text-[#EDF3F8]">
               <StatusPill tone={connectivityCheck.xaiReachable ? 'good' : 'error'}>
-                {connectivityCheck.xaiReachable ? 'Live xAI Verified' : 'Live Check Failed'}
+                {connectivityCheck.xaiReachable
+                  ? providerDisplay.verifiedPillLabel
+                  : 'Live Check Failed'}
               </StatusPill>
               <span>{connectivityCheck.note}</span>
             </div>
@@ -315,14 +328,14 @@ export function UsageDashboardView({
           icon={<AudioLines className="h-4 w-4" />}
           label="Voice Engine"
           value={apiKeyReady ? 'Connected' : 'Disconnected'}
-          detail={`${settings?.voice.voiceModel ?? health?.activeVoiceModel ?? 'grok-voice-latest'}`}
+          detail={`${settings?.voice.voiceModel ?? health?.activeVoiceModel ?? providerDisplay.voiceLiveLabel}`}
           tone={apiKeyReady ? 'good' : 'warn'}
         />
         <StatusCard
           icon={<Wifi className="h-4 w-4" />}
           label="WebSocket Health"
           value={wsStatus.label}
-          detail="wss://api.x.ai/v1/realtime"
+          detail={providerDisplay.voiceEndpoint}
           tone={wsStatus.tone}
         />
         <StatusCard
@@ -614,6 +627,8 @@ export function UsageDashboardView({
               {(['text', 'voice_realtime', 'tts', 'stt'] as UsageKind[]).map((kind) => {
                 const stats = usage.month.byKind[kind];
                 const meta = CHANNEL_LABELS[kind];
+                const channelTitle = kind === 'text' ? providerDisplay.textChannelTitle : meta.title;
+
                 return (
                   <div
                     key={kind}
@@ -623,7 +638,7 @@ export function UsageDashboardView({
                       border: '1px solid var(--mj-border-subtle)',
                     }}
                   >
-                    <div className="font-medium text-[#EDF3F8]">{meta.title}</div>
+                    <div className="font-medium text-[#EDF3F8]">{channelTitle}</div>
                     <div className="mt-2 grid grid-cols-2 gap-y-1 font-mono text-[11px]">
                       <span style={{ color: 'var(--mj-text-subtle)' }}>Requests</span>
                       <span className="text-right text-[#C7E3F5]">{stats.requests}</span>
@@ -846,9 +861,12 @@ export function UsageDashboardView({
         <div className="flex items-center gap-2" style={{ color: 'var(--mj-text-muted)' }}>
           <Globe className="h-4 w-4 text-[#9AC6E6]" />
           <span>
-            <strong className="text-[#DCE6EE]">Voice Alias Notice:</strong>{' '}
-            <code className="font-mono">grok-voice-latest</code> tracks xAI’s active release; re-verify models &amp; rates at{' '}
-            <code className="font-mono">docs.x.ai</code> before each deployment.
+            <strong className="text-[#DCE6EE]">Provider &amp; Voice Notice:</strong>{' '}
+            Active text engine <code className="font-mono">{providerDisplay.shortLabel}</code> · voice{' '}
+            <code className="font-mono">
+              {settings?.voice.voiceModel ?? health?.activeVoiceModel ?? providerDisplay.voiceLiveLabel}
+            </code>
+            ; verify limits &amp; pricing at <code className="font-mono">{providerDisplay.docsHint}</code>.
           </span>
         </div>
         <span className="font-mono text-[11px]" style={{ color: 'var(--mj-accent-blue)' }}>

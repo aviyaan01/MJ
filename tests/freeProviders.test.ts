@@ -775,4 +775,105 @@ describe('Free / $0 AI Providers & Failover Routing', () => {
     expect(summary.recentEvents.some((e: { kind: string; model: string }) => e.kind === 'tts' && e.model === 'gemini-2.5-flash-preview-tts')).toBe(true);
     expect(summary.recentEvents.some((e: { kind: string; model: string }) => e.kind === 'voice_realtime' && e.model === 'free-browser-voice')).toBe(true);
   });
+
+  it('extracts Gemini usageMetadata tokens and sends stream_options only for supported providers with 400 retry fallback', async () => {
+    const parsedGeminiEvents = parseOpenAiChatStreamFrame({
+      event: 'message',
+      data: JSON.stringify({
+        id: 'gem-1',
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        usageMetadata: {
+          promptTokenCount: 120,
+          candidatesTokenCount: 45,
+          thoughtsTokenCount: 15,
+          cachedContentTokenCount: 30,
+          totalTokenCount: 180,
+        },
+      }),
+    });
+    const completedEvent = parsedGeminiEvents.find((e) => e.type === 'completed');
+    expect(completedEvent && completedEvent.type === 'completed' ? completedEvent.usage : undefined).toEqual({
+      inputTokens: 120,
+      outputTokens: 45,
+      reasoningTokens: 15,
+      cachedTokens: 30,
+      totalTokens: 180,
+    });
+
+    const seenBodies: Array<Record<string, unknown>> = [];
+
+    // 1. Gemini sends stream_options: { include_usage: true } when streaming
+    const geminiClient = new XaiResponsesClient({
+      apiKey: 'AIza-test-gemini',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      defaultModel: 'gemini-2.5-flash',
+      providerId: 'gemini',
+      apiFormat: 'openai-chat',
+      fetchFn: (async (_url, init) => {
+        seenBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+        return createOpenAiChatSseResponse('Hello from Gemini');
+      }) as typeof fetch,
+    });
+    const gemRes = await geminiClient.createResponse({
+      model: 'gemini-2.5-flash',
+      input: [{ role: 'user', content: 'hi' }],
+      stream: true,
+    });
+    expect(gemRes.text).toBe('Hello from Gemini');
+    expect(seenBodies[0]?.stream_options).toEqual({ include_usage: true });
+
+    // 2. Mistral omits stream_options
+    const mistralBodies: Array<Record<string, unknown>> = [];
+    const mistralClient = new XaiResponsesClient({
+      apiKey: 'mistral-test-key',
+      baseUrl: 'https://api.mistral.ai/v1',
+      defaultModel: 'mistral-small-latest',
+      providerId: 'mistral',
+      apiFormat: 'openai-chat',
+      fetchFn: (async (_url, init) => {
+        mistralBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+        return createOpenAiChatSseResponse('Hello from Mistral');
+      }) as typeof fetch,
+    });
+    const misRes = await mistralClient.createResponse({
+      model: 'mistral-small-latest',
+      input: [{ role: 'user', content: 'hi' }],
+      stream: true,
+    });
+    expect(misRes.text).toBe('Hello from Mistral');
+    expect(mistralBodies[0]?.stream_options).toBeUndefined();
+
+    // 3. OpenAI-compat provider that rejects stream_options with 400 automatically retries without it
+    const retryBodies: Array<Record<string, unknown>> = [];
+    let attempt = 0;
+    const retryClient = new XaiResponsesClient({
+      apiKey: 'gsk-test-retry',
+      baseUrl: 'https://api.groq.com/openai/v1',
+      defaultModel: 'llama-3.3-70b-versatile',
+      providerId: 'groq',
+      apiFormat: 'openai-chat',
+      fetchFn: (async (_url, init) => {
+        attempt += 1;
+        retryBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+        if (attempt === 1) {
+          return new Response(
+            JSON.stringify({
+              error: { message: 'Extra inputs are not permitted: stream_options' },
+            }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        return createOpenAiChatSseResponse('Recovered after stripping stream_options');
+      }) as typeof fetch,
+    });
+    const retryRes = await retryClient.createResponse({
+      model: 'llama-3.3-70b-versatile',
+      input: [{ role: 'user', content: 'hi' }],
+      stream: true,
+    });
+    expect(attempt).toBe(2);
+    expect(retryBodies[0]?.stream_options).toEqual({ include_usage: true });
+    expect(retryBodies[1]?.stream_options).toBeUndefined();
+    expect(retryRes.text).toBe('Recovered after stripping stream_options');
+  });
 });

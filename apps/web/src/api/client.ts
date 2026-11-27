@@ -1,6 +1,7 @@
 import {
   ErrorCodes,
   type ADMIN_PRIVILEGE_POLICY,
+  type AiProviderId,
   type AllowlistEntryDTO,
   type AllowlistKind,
   type AuditLogEntryDTO,
@@ -385,7 +386,7 @@ export const mjApi = {
 
   streamChat: (
     conversationId: string,
-    payload: { content: string; model?: string; stream?: boolean },
+    payload: { content: string; model?: string; provider?: AiProviderId; stream?: boolean },
     handlers: StreamHandlers,
     signal: AbortSignal,
   ) =>
@@ -398,7 +399,7 @@ export const mjApi = {
 
   regenerateLastTurn: (
     conversationId: string,
-    payload: { model?: string; stream?: boolean },
+    payload: { model?: string; provider?: AiProviderId; stream?: boolean },
     handlers: StreamHandlers,
     signal: AbortSignal,
   ) =>

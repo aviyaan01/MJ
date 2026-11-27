@@ -120,12 +120,12 @@ const CORE_PRIVACY_ROWS: Array<{
   {
     key: 'voiceSessionAccess',
     title: 'Voice Recording & Realtime Session Access',
-    description: 'Allow ephemeral-token connections to xAI Grok Realtime Voice and TTS/STT.',
+    description: 'Allow realtime voice sessions (Google Gemini Live, browser speech, and TTS/STT).',
   },
   {
     key: 'externalWebServices',
-    title: 'External AI Web Services (xAI Grok)',
-    description: 'Allow outbound requests to api.x.ai for chat and voice intelligence.',
+    title: 'External AI Web Services',
+    description: 'Allow outbound requests to cloud AI providers (local Ollama on localhost stays enabled).',
   },
 ];
 
@@ -342,7 +342,7 @@ export function PrivacyCenterView({
         <Panel className="p-6">
           <h2 className="text-base font-medium text-[#EDF3F8]">Core Voice &amp; Service Permissions</h2>
           <p className="mt-1 mb-4 text-xs" style={{ color: 'var(--mj-text-muted)' }}>
-            Controls microphone hardware access, Grok voice sessions, and external AI calls.
+            Controls microphone hardware access, realtime voice sessions, and external AI calls.
           </p>
 
           <div className="space-y-3">

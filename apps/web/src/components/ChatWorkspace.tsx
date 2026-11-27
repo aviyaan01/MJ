@@ -21,13 +21,15 @@ import {
 } from 'lucide-react';
 import { BrandMark, Panel, StatusPill } from '@mj/ui';
 import { VOICE_STATE_META } from '@mj/voice';
-import type {
-  ConversationDTO,
-  MessageDTO,
-  PublicSettingsDTO,
-  StructuredErrorPayload,
-  UsageSummaryDTO,
-  VoiceState,
+import {
+  resolveProviderDisplay,
+  type AiProviderId,
+  type ConversationDTO,
+  type MessageDTO,
+  type PublicSettingsDTO,
+  type StructuredErrorPayload,
+  type UsageSummaryDTO,
+  type VoiceState,
 } from '@mj/shared';
 import { MarkdownMessage } from './MarkdownMessage.js';
 import { VoiceStateBar } from './VoiceStateBar.js';
@@ -48,6 +50,8 @@ interface ChatWorkspaceProps {
   liveUserTranscript: string;
   liveAssistantTranscript: string;
   activeError: StructuredErrorPayload | null;
+  selectedProviderOverride?: string;
+  onSelectProviderOverride?: (provider: string) => void;
   selectedModelOverride: string;
   onSelectModelOverride: (model: string) => void;
   onSelectConversation: (id: string) => void;
@@ -88,6 +92,8 @@ export function ChatWorkspace({
   liveUserTranscript,
   liveAssistantTranscript,
   activeError,
+  selectedProviderOverride = settings?.activeProvider ?? 'auto',
+  onSelectProviderOverride,
   selectedModelOverride,
   onSelectModelOverride,
   onSelectConversation,
@@ -115,6 +121,47 @@ export function ChatWorkspace({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const isTextBusy = streamingState === 'connecting' || streamingState === 'streaming';
+  const providerDisplay = resolveProviderDisplay({
+    activeProvider: (selectedProviderOverride as AiProviderId | undefined) ?? settings?.activeProvider,
+    activeModel: selectedModelOverride || settings?.activeModel,
+    activeVoiceModel: settings?.voice.voiceModel,
+    apiBaseHost: settings?.apiBaseHost,
+    providers: settings?.providers,
+  });
+
+  const providerOptions: Array<{ id: string; label: string }> = [
+    { id: 'auto', label: 'Auto' },
+    ...(settings?.providers && settings.providers.length > 0
+      ? settings.providers.map((p) => ({
+          id: p.id,
+          label:
+            p.id === 'gemini'
+              ? 'Gemini'
+              : p.id === 'ollama'
+                ? 'Ollama'
+                : p.id === 'groq'
+                  ? 'Groq'
+                  : p.name,
+        }))
+      : [
+          { id: 'gemini', label: 'Gemini' },
+          { id: 'ollama', label: 'Ollama' },
+          { id: 'groq', label: 'Groq' },
+          { id: 'xai', label: 'xAI Grok' },
+        ]),
+  ];
+
+  const activeProviderEntry =
+    selectedProviderOverride && selectedProviderOverride !== 'auto'
+      ? settings?.providers?.find((p) => p.id === selectedProviderOverride)
+      : undefined;
+
+  const selectableModels = Array.from(
+    new Set([
+      ...(activeProviderEntry?.models ?? settings?.availableModels ?? ['gemini-2.5-flash']),
+      ...(selectedModelOverride ? [selectedModelOverride] : []),
+    ]),
+  ).filter(Boolean);
   const voiceActive =
     voiceState === 'requesting_permission' ||
     voiceState === 'connecting' ||
@@ -513,12 +560,35 @@ export function ChatWorkspace({
               </>
             )}
 
+            <label htmlFor="chat-provider-select" className="sr-only">
+              Active AI Provider
+            </label>
+            <select
+              id="chat-provider-select"
+              aria-label="AI Provider"
+              value={selectedProviderOverride}
+              onChange={(e) => onSelectProviderOverride?.(e.target.value)}
+              disabled={isTextBusy}
+              className="rounded-xl px-2.5 py-1.5 font-mono text-xs outline-none disabled:opacity-50"
+              style={{
+                backgroundColor: '#0D1017',
+                border: '1px solid var(--mj-border-subtle)',
+                color: '#DCE6EE',
+              }}
+            >
+              {providerOptions.map((opt) => (
+                <option key={opt.id} value={opt.id}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+
             <label htmlFor="chat-model-select" className="sr-only">
-              Active Grok Model
+              Active Model
             </label>
             <select
               id="chat-model-select"
-              value={selectedModelOverride || settings?.activeModel || 'grok-4.7'}
+              value={selectedModelOverride || settings?.activeModel || 'gemini-2.5-flash'}
               onChange={(e) => onSelectModelOverride(e.target.value)}
               disabled={isTextBusy}
               className="rounded-xl px-3 py-1.5 font-mono text-xs outline-none disabled:opacity-50"
@@ -528,7 +598,7 @@ export function ChatWorkspace({
                 color: 'var(--mj-accent-ice)',
               }}
             >
-              {(settings?.availableModels ?? ['grok-4.7']).map((modelId) => (
+              {selectableModels.map((modelId) => (
                 <option key={modelId} value={modelId}>
                   {modelId}
                 </option>
@@ -585,10 +655,7 @@ export function ChatWorkspace({
                 }}
               >
                 <AlertTriangle className="h-4 w-4 shrink-0" />
-                <span>
-                  Set <code className="font-mono">XAI_API_KEY</code> in your server{' '}
-                  <code className="font-mono">.env</code> file and restart to enable live Grok text &amp; voice responses.
-                </span>
+                <span>{providerDisplay.missingKeyHint}</span>
               </div>
             )}
 

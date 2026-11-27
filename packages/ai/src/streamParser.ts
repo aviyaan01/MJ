@@ -72,21 +72,43 @@ export function extractUsageFromResponse(rawUsage: unknown): TokenUsage | undefi
   if (!rawUsage || typeof rawUsage !== 'object') return undefined;
   const u = rawUsage as Record<string, unknown>;
 
-  const inputTokens = toNumber(u.input_tokens ?? u.prompt_tokens);
-  const outputTokens = toNumber(u.output_tokens ?? u.completion_tokens);
+  const inputTokens = toNumber(
+    u.input_tokens ?? u.prompt_tokens ?? u.promptTokenCount ?? u.prompt_token_count,
+  );
+  const outputTokens = toNumber(
+    u.output_tokens ?? u.completion_tokens ?? u.candidatesTokenCount ?? u.candidates_token_count,
+  );
 
   const outputDetails =
-    u.output_tokens_details && typeof u.output_tokens_details === 'object'
+    (u.output_tokens_details && typeof u.output_tokens_details === 'object'
       ? (u.output_tokens_details as Record<string, unknown>)
-      : undefined;
+      : undefined) ??
+    (u.completion_tokens_details && typeof u.completion_tokens_details === 'object'
+      ? (u.completion_tokens_details as Record<string, unknown>)
+      : undefined);
   const inputDetails =
-    u.input_tokens_details && typeof u.input_tokens_details === 'object'
+    (u.input_tokens_details && typeof u.input_tokens_details === 'object'
       ? (u.input_tokens_details as Record<string, unknown>)
-      : undefined;
+      : undefined) ??
+    (u.prompt_tokens_details && typeof u.prompt_tokens_details === 'object'
+      ? (u.prompt_tokens_details as Record<string, unknown>)
+      : undefined);
 
-  const reasoningTokens = toNumber(outputDetails?.reasoning_tokens ?? u.reasoning_tokens);
-  const cachedTokens = toNumber(inputDetails?.cached_tokens ?? u.cached_tokens);
-  const totalTokens = toNumber(u.total_tokens) || inputTokens + outputTokens;
+  const reasoningTokens = toNumber(
+    outputDetails?.reasoning_tokens ??
+      u.reasoning_tokens ??
+      u.thoughtsTokenCount ??
+      u.thoughts_token_count,
+  );
+  const cachedTokens = toNumber(
+    inputDetails?.cached_tokens ??
+      u.cached_tokens ??
+      u.cachedContentTokenCount ??
+      u.cached_content_token_count,
+  );
+  const totalTokens =
+    toNumber(u.total_tokens ?? u.totalTokenCount ?? u.total_token_count) ||
+    inputTokens + outputTokens;
 
   return {
     inputTokens,
@@ -183,7 +205,7 @@ export function parseOpenAiChatStreamFrame(frame: RawSseFrame): ParsedSseEvent[]
 
   const events: ParsedSseEvent[] = [];
   const responseId = typeof payload.id === 'string' ? payload.id : undefined;
-  const usage = extractUsageFromResponse(payload.usage);
+  const usage = extractUsageFromResponse(payload.usage ?? payload.usageMetadata);
 
   if (Array.isArray(payload.choices) && payload.choices.length > 0) {
     const choice = payload.choices[0];
@@ -205,7 +227,8 @@ export function parseOpenAiChatStreamFrame(frame: RawSseFrame): ParsedSseEvent[]
         });
       }
     }
-  } else if (usage) {
+  }
+  if (usage && !events.some((e) => e.type === 'completed')) {
     events.push({
       type: 'completed',
       ...(responseId ? { responseId } : {}),

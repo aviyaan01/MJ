@@ -83,6 +83,7 @@ export function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeConversation, setActiveConversation] = useState<ConversationDTO | null>(null);
   const [messages, setMessages] = useState<MessageDTO[]>([]);
+  const [selectedProviderOverride, setSelectedProviderOverride] = useState<string>('auto');
   const [selectedModelOverride, setSelectedModelOverride] = useState('');
 
   const [streamingState, setStreamingState] = useState<
@@ -391,6 +392,7 @@ export function App() {
         mjApi.listDesktopShortcuts(),
       ]);
     setSettings(settingsRes);
+    setSelectedProviderOverride(settingsRes.activeProvider ?? 'auto');
     setSelectedModelOverride(settingsRes.activeModel);
     setUsage(usageRes);
     setConversations(convRes.conversations);
@@ -554,6 +556,9 @@ export function App() {
     setStreamStatusDetail('Connecting to AI provider…');
 
     const modelToUse = selectedModelOverride || settings?.activeModel;
+    const providerToUse = (selectedProviderOverride || settings?.activeProvider) as
+      | import('@mj/shared').AiProviderId
+      | undefined;
 
     const tempUserId = `temp-user-${Date.now()}`;
     const tempAssistantId = `temp-assistant-${Date.now()}`;
@@ -726,14 +731,14 @@ export function App() {
       if (options.mode === 'send' && options.promptText) {
         await mjApi.streamChat(
           options.conversationId,
-          { content: options.promptText, model: modelToUse },
+          { content: options.promptText, model: modelToUse, provider: providerToUse },
           { onEvent: handleEvent },
           abortController.signal,
         );
       } else {
         await mjApi.regenerateLastTurn(
           options.conversationId,
-          { model: modelToUse },
+          { model: modelToUse, provider: providerToUse },
           { onEvent: handleEvent },
           abortController.signal,
         );
@@ -865,9 +870,24 @@ export function App() {
   const handleSaveSettings = async (patch: Record<string, unknown>) => {
     const updated = await mjApi.updateSettings(patch);
     setSettings(updated);
+    setSelectedProviderOverride(updated.activeProvider ?? 'auto');
     setSelectedModelOverride(updated.activeModel);
     const refreshedUsage = await mjApi.getUsage();
     setUsage(refreshedUsage);
+  };
+
+  const handleSelectProviderOverride = (providerId: string) => {
+    setSelectedProviderOverride(providerId);
+    if (providerId === 'auto') {
+      if (settings?.activeModel) {
+        setSelectedModelOverride(settings.activeModel);
+      }
+      return;
+    }
+    const found = settings?.providers?.find((p) => p.id === providerId);
+    if (found?.defaultModel) {
+      setSelectedModelOverride(found.defaultModel);
+    }
   };
 
   const handleStartVoice = useCallback(async () => {
@@ -1416,6 +1436,8 @@ export function App() {
               liveUserTranscript={liveUserTranscript}
               liveAssistantTranscript={liveAssistantTranscript}
               activeError={activeError}
+              selectedProviderOverride={selectedProviderOverride}
+              onSelectProviderOverride={handleSelectProviderOverride}
               selectedModelOverride={selectedModelOverride}
               onSelectModelOverride={setSelectedModelOverride}
               onSelectConversation={(id) => void handleSelectConversation(id)}

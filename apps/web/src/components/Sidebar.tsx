@@ -1,6 +1,11 @@
 import { Activity, Home, Lock, LogOut, MessageSquare, Monitor, Settings, ShieldCheck } from 'lucide-react';
 import { BrandMark } from '@mj/ui';
-import type { AuthSessionDTO, SystemHealthDTO, VoiceState } from '@mj/shared';
+import {
+  resolveProviderDisplay,
+  type AuthSessionDTO,
+  type SystemHealthDTO,
+  type VoiceState,
+} from '@mj/shared';
 
 export type ActiveNavTab = 'home' | 'chat' | 'desktop' | 'privacy' | 'usage' | 'settings';
 
@@ -148,7 +153,14 @@ export function Sidebar({
           </div>
           <ul className="space-y-1.5 text-[11px]">
             <li className="flex items-center justify-between">
-              <span style={{ color: 'var(--mj-text-primary)' }}>Grok Text Chat</span>
+              <span style={{ color: 'var(--mj-text-primary)' }}>
+                {resolveProviderDisplay({
+                  activeProvider: health?.activeProvider,
+                  activeModel: health?.activeModel,
+                  activeVoiceModel: health?.activeVoiceModel,
+                  apiBaseHost: health?.apiBaseHost,
+                }).sidebarTextLabel}
+              </span>
               <span style={{ color: 'var(--mj-status-good)' }}>Active</span>
             </li>
             <li className="flex items-center justify-between">

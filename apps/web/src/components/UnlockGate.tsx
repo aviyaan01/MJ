@@ -119,7 +119,7 @@ export function UnlockGate({ onLogin, errorMessage }: UnlockGateProps) {
           }}
         >
           <ShieldCheck className="h-4 w-4 shrink-0" style={{ color: 'var(--mj-status-good)' }} />
-          <span>Your xAI API key remains isolated on the backend server.</span>
+          <span>Your provider API keys remain isolated on the backend server.</span>
         </div>
       </Panel>
     </div>

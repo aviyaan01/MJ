@@ -10,14 +10,15 @@ import {
   Sliders,
 } from 'lucide-react';
 import { Panel, StatusPill } from '@mj/ui';
-import type {
-  AiProviderId,
-  AuthSessionDTO,
-  LanguageMode,
-  PublicSettingsDTO,
-  ReasoningEffort,
-  ResponseStyle,
-  UsageSummaryDTO,
+import {
+  resolveProviderDisplay,
+  type AiProviderId,
+  type AuthSessionDTO,
+  type LanguageMode,
+  type PublicSettingsDTO,
+  type ReasoningEffort,
+  type ResponseStyle,
+  type UsageSummaryDTO,
 } from '@mj/shared';
 
 type SettingsTab = 'general' | 'model' | 'voice' | 'appearance' | 'usage' | 'security';
@@ -55,14 +56,14 @@ export function SettingsView({
 
   const [responseStyle, setResponseStyle] = useState<ResponseStyle>('balanced');
   const [activeProvider, setActiveProvider] = useState<AiProviderId>('auto');
-  const [activeModel, setActiveModel] = useState('grok-4.7');
+  const [activeModel, setActiveModel] = useState('gemini-2.5-flash');
   const [customModel, setCustomModel] = useState('');
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('medium');
   const [maxOutputTokens, setMaxOutputTokens] = useState(4096);
   const [timeoutMs, setTimeoutMs] = useState(60000);
   const [streamResponses, setStreamResponses] = useState(true);
 
-  const [voiceModel, setVoiceModel] = useState('grok-voice-latest');
+  const [voiceModel, setVoiceModel] = useState('gemini-2.5-flash-native-audio-preview-12-2025');
   const [customVoiceModel, setCustomVoiceModel] = useState('');
   const [voiceId, setVoiceId] = useState('ara');
   const [languageMode, setLanguageMode] = useState<LanguageMode>('auto');
@@ -74,6 +75,7 @@ export function SettingsView({
   const [reducedMotionOverride, setReducedMotionOverride] = useState<'system' | 'reduce' | 'normal'>('system');
   const [compactDensity, setCompactDensity] = useState(false);
 
+  const [dailyCapUsd, setDailyCapUsd] = useState(5);
   const [softCapUsd, setSoftCapUsd] = useState(10);
   const [hardCapUsd, setHardCapUsd] = useState(25);
   const [inputRate, setInputRate] = useState(2);
@@ -81,6 +83,7 @@ export function SettingsView({
   const [cachedRate, setCachedRate] = useState(0.5);
   const [voiceRatePerMin, setVoiceRatePerMin] = useState(0.05);
   const [ttsRatePerMilChars, setTtsRatePerMilChars] = useState(15);
+  const [sttRatePerHour, setSttRatePerHour] = useState(0.05);
 
   useEffect(() => {
     if (!settings) return;
@@ -103,6 +106,7 @@ export function SettingsView({
     setReducedMotionOverride(settings.reducedMotionOverride);
     setCompactDensity(settings.compactDensity);
 
+    setDailyCapUsd(settings.budget.dailyCapUsd ?? 5);
     setSoftCapUsd(settings.budget.softCapUsd);
     setHardCapUsd(settings.budget.hardCapUsd);
     setInputRate(settings.budget.inputRatePerMillionUsd);
@@ -110,6 +114,7 @@ export function SettingsView({
     setCachedRate(settings.budget.cachedInputRatePerMillionUsd);
     setVoiceRatePerMin(settings.budget.voiceRatePerMinuteUsd);
     setTtsRatePerMilChars(settings.budget.ttsRatePerMillionCharsUsd);
+    setSttRatePerHour(settings.budget.sttRatePerHourUsd ?? 0.05);
   }, [settings]);
 
   const handleSave = async (e: FormEvent) => {
@@ -140,6 +145,7 @@ export function SettingsView({
           voiceOutputEnabled,
         },
         budget: {
+          dailyCapUsd: Number(dailyCapUsd),
           softCapUsd: Number(softCapUsd),
           hardCapUsd: Number(hardCapUsd),
           inputRatePerMillionUsd: Number(inputRate),
@@ -147,6 +153,7 @@ export function SettingsView({
           cachedInputRatePerMillionUsd: Number(cachedRate),
           voiceRatePerMinuteUsd: Number(voiceRatePerMin),
           ttsRatePerMillionCharsUsd: Number(ttsRatePerMilChars),
+          sttRatePerHourUsd: Number(sttRatePerHour),
         },
       });
       setCustomModel('');
@@ -350,7 +357,7 @@ export function SettingsView({
                       border: '1px solid var(--mj-border-strong)',
                     }}
                   >
-                    {(settings?.availableModels ?? ['grok-4.7']).map((m) => (
+                    {(settings?.availableModels ?? ['gemini-2.5-flash']).map((m) => (
                       <option key={m} value={m}>
                         {m}
                       </option>
@@ -367,7 +374,7 @@ export function SettingsView({
                     type="text"
                     value={customModel}
                     onChange={(e) => setCustomModel(e.target.value)}
-                    placeholder="e.g. grok-4.7"
+                    placeholder="e.g. gemini-2.5-flash"
                     className="w-full rounded-xl px-3.5 py-2.5 font-mono text-sm text-[#EDF3F8] outline-none placeholder:text-[#8B9CB0]"
                     style={{
                       backgroundColor: '#07090E',
@@ -469,7 +476,12 @@ export function SettingsView({
                 <div>
                   <span style={{ color: 'var(--mj-text-subtle)' }}>Upstream API Host: </span>
                   <span className="font-mono text-[#EDF3F8]">
-                    {settings?.apiBaseHost ?? 'api.x.ai'}
+                    {resolveProviderDisplay({
+                      activeProvider,
+                      activeModel,
+                      apiBaseHost: settings?.apiBaseHost,
+                      providers: settings?.providers,
+                    }).hostLabel}
                   </span>
                 </div>
                 <div>
@@ -496,8 +508,7 @@ export function SettingsView({
                   Realtime Voice &amp; Language Settings
                 </h2>
                 <p className="mt-1 text-xs" style={{ color: 'var(--mj-text-muted)' }}>
-                  Connects to <code className="font-mono">wss://api.x.ai/v1/realtime</code> via ephemeral tokens from{' '}
-                  <code className="font-mono">/v1/realtime/client_secrets</code>.
+                  Connects via server-managed Google Gemini Live sessions with automatic fallback to Free Browser Voice (Web Speech API) and Groq Whisper STT.
                 </p>
               </div>
 
@@ -509,7 +520,7 @@ export function SettingsView({
                   color: 'var(--mj-text-secondary)',
                 }}
               >
-                <strong>Model naming note:</strong> <code className="font-mono">grok-voice-latest</code> tracks xAI’s newest voice release (currently <code className="font-mono">grok-voice-3.0</code>). Pin an exact versioned name if you need reproducible voice behavior across updates.
+                <strong>Voice routing note:</strong> Choose <code className="font-mono">gemini-2.5-flash-native-audio-preview-12-2025</code> for Gemini Live or <code className="font-mono">free-browser-voice</code> for $0.00 Web Speech API + Groq Whisper STT fallback.
               </div>
 
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -529,9 +540,9 @@ export function SettingsView({
                   >
                     {(
                       settings?.voice.availableVoiceModels ?? [
+                        'gemini-2.5-flash-native-audio-preview-12-2025',
                         'free-browser-voice',
                         'grok-voice-latest',
-                        'grok-voice-3.0',
                       ]
                     ).map((vm) => (
                       <option key={vm} value={vm}>
@@ -552,7 +563,7 @@ export function SettingsView({
                     type="text"
                     value={customVoiceModel}
                     onChange={(e) => setCustomVoiceModel(e.target.value)}
-                    placeholder="e.g. grok-voice-3.0"
+                    placeholder="e.g. gemini-2.5-flash-native-audio-preview-12-2025"
                     className="w-full rounded-xl px-3.5 py-2.5 font-mono text-sm text-[#EDF3F8] outline-none placeholder:text-[#8B9CB0]"
                     style={{
                       backgroundColor: '#07090E',
@@ -650,7 +661,7 @@ export function SettingsView({
                   <div>
                     <div className="text-xs font-medium text-[#DCE6EE]">Voice Output Enabled</div>
                     <div className="text-[11px]" style={{ color: 'var(--mj-text-subtle)' }}>
-                      Play spoken audio from Grok Voice &amp; TTS
+                      Play spoken audio from Realtime Voice &amp; TTS
                     </div>
                   </div>
                   <input
@@ -762,7 +773,25 @@ export function SettingsView({
                 <MetricTile label="Month Errors" value={String(usage?.month.errorCount ?? 0)} />
               </div>
 
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                <div>
+                  <label htmlFor="daily-cap" className="mb-1.5 block text-xs font-medium text-[#DCE6EE]">
+                    Daily Budget Cap (USD / day, 0 = off)
+                  </label>
+                  <input
+                    id="daily-cap"
+                    type="number"
+                    min={0}
+                    step={0.5}
+                    value={dailyCapUsd}
+                    onChange={(e) => setDailyCapUsd(Number(e.target.value))}
+                    className="w-full rounded-xl px-3.5 py-2 font-mono text-sm text-[#EDF3F8] outline-none"
+                    style={{
+                      backgroundColor: '#07090E',
+                      border: '1px solid var(--mj-border-strong)',
+                    }}
+                  />
+                </div>
                 <div>
                   <label htmlFor="soft-cap" className="mb-1.5 block text-xs font-medium text-[#DCE6EE]">
                     Soft Budget Warning Cap (USD / month)
@@ -892,6 +921,24 @@ export function SettingsView({
                     }}
                   />
                 </div>
+                <div>
+                  <label htmlFor="stt-rate" className="mb-1 block text-[11px] text-[#9EB0C3]">
+                    STT $/hour (paid fallback)
+                  </label>
+                  <input
+                    id="stt-rate"
+                    type="number"
+                    min={0}
+                    step={0.01}
+                    value={sttRatePerHour}
+                    onChange={(e) => setSttRatePerHour(Number(e.target.value))}
+                    className="w-full rounded-xl px-3 py-2 font-mono text-xs text-[#EDF3F8] outline-none"
+                    style={{
+                      backgroundColor: '#07090E',
+                      border: '1px solid var(--mj-border-subtle)',
+                    }}
+                  />
+                </div>
               </div>
 
               {usage && usage.recentEvents.length > 0 && (
@@ -958,7 +1005,7 @@ export function SettingsView({
                   className="flex items-center justify-between rounded-xl px-4 py-3"
                   style={{ backgroundColor: '#07090E', border: '1px solid var(--mj-border-subtle)' }}
                 >
-                  <span className="text-[#DCE6EE]">xAI Permanent Key Exposure</span>
+                  <span className="text-[#DCE6EE]">Provider Permanent Key Exposure</span>
                   <span style={{ color: 'var(--mj-status-good)' }}>Blocked (Server-Only)</span>
                 </li>
                 <li
@@ -993,8 +1040,8 @@ export function SettingsView({
                 <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
                   {(
                     [
-                      ['Stage 1 (Active)', 'Web Dashboard, Grok Responses Text Chat & Security'],
-                      ['Stage 2 (Active)', 'Grok Realtime Voice, Ephemeral Tokens & Bangla/Banglish'],
+                      ['Stage 1 (Active)', 'Web Dashboard, Multi-Provider AI Text Chat & Security'],
+                      ['Stage 2 (Active)', 'Gemini Live Voice, Free Browser Fallback & Bangla/Banglish'],
                       ['Stage 3 (Planned)', 'Long-Term Memory, Tool Calling, Web Search, Files & Automation'],
                       ['Stage 4 (Active)', 'Windows Tauri Companion, Granular Permissions & Audit Log'],
                       ['Stage 5 (Active)', 'Usage & Spend-vs-Budget Dashboard, Latency & Delivery Package'],

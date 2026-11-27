@@ -161,6 +161,13 @@ export class XaiResponsesClient {
     const timeoutMs = params.timeoutMs ?? this.defaultTimeoutMs;
     const startedAt = Date.now();
 
+    const includeStreamOptions =
+      this.apiFormat === 'openai-chat' &&
+      params.stream &&
+      (this.providerId
+        ? ['gemini', 'groq', 'openrouter', 'ollama', 'cerebras', 'github'].includes(this.providerId)
+        : !this.baseUrl.toLowerCase().includes('mistral.ai'));
+
     const bodyPayload: Record<string, unknown> =
       this.apiFormat === 'openai-chat'
         ? {
@@ -173,6 +180,7 @@ export class XaiResponsesClient {
               })),
             ],
             stream: params.stream,
+            ...(includeStreamOptions ? { stream_options: { include_usage: true } } : {}),
             ...(params.maxOutputTokens ? { max_tokens: params.maxOutputTokens } : {}),
           }
         : {
@@ -228,6 +236,14 @@ export class XaiResponsesClient {
           (appErr.upstreamDiagnostic ?? appErr.message).toLowerCase().includes('reasoning')
         ) {
           delete bodyPayload.reasoning;
+          continue;
+        }
+        if (
+          appErr.code === ErrorCodes.INVALID_REQUEST &&
+          bodyPayload.stream_options !== undefined &&
+          (appErr.upstreamDiagnostic ?? appErr.message).toLowerCase().includes('stream_options')
+        ) {
+          delete bodyPayload.stream_options;
           continue;
         }
 
@@ -308,7 +324,8 @@ export class XaiResponsesClient {
           this.apiFormat === 'openai-chat'
             ? extractOutputTextFromOpenAiChat(json)
             : extractOutputTextFromResponse(json);
-        const usage = extractUsageFromResponse(json.usage) ?? emptyUsage();
+        const usage =
+          extractUsageFromResponse(json.usage ?? json.usageMetadata) ?? emptyUsage();
         const responseId = typeof json.id === 'string' ? json.id : undefined;
 
         if (text) {

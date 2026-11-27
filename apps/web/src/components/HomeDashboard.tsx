@@ -25,15 +25,16 @@ import {
 } from 'lucide-react';
 import { MJCoreOrb, Panel, StatusPill, type OrbState } from '@mj/ui';
 import { VOICE_STATE_META } from '@mj/voice';
-import type {
-  ConversationDTO,
-  LanguageMode,
-  MessageDTO,
-  PublicSettingsDTO,
-  StructuredErrorPayload,
-  SystemHealthDTO,
-  UsageSummaryDTO,
-  VoiceState,
+import {
+  resolveProviderDisplay,
+  type ConversationDTO,
+  type LanguageMode,
+  type MessageDTO,
+  type PublicSettingsDTO,
+  type StructuredErrorPayload,
+  type SystemHealthDTO,
+  type UsageSummaryDTO,
+  type VoiceState,
 } from '@mj/shared';
 import { isTauriDesktop } from '../desktop/desktopBridge.js';
 import { MarkdownMessage } from './MarkdownMessage.js';
@@ -239,7 +240,13 @@ export function HomeDashboard({
               : health?.backend !== 'online'
                 ? 'Backend offline'
                 : apiKeyReady
-                  ? 'Grok Voice & Text Ready'
+                  ? resolveProviderDisplay({
+                      activeProvider: settings?.activeProvider ?? health?.activeProvider,
+                      activeModel: settings?.activeModel ?? health?.activeModel,
+                      activeVoiceModel: settings?.voice.voiceModel ?? health?.activeVoiceModel,
+                      apiBaseHost: settings?.apiBaseHost ?? health?.apiBaseHost,
+                      providers: settings?.providers,
+                    }).readyBanner
                   : 'API Key Missing'}
           </StatusPill>
         </div>
@@ -274,8 +281,8 @@ export function HomeDashboard({
                   }}
                 >
                   {interactionMode === 'voice'
-                    ? settings?.voice.voiceModel ?? 'grok-voice-latest'
-                    : settings?.activeModel ?? 'grok-4.7'}
+                    ? settings?.voice.voiceModel ?? 'gemini-2.5-flash-native-audio-preview-12-2025'
+                    : settings?.activeModel ?? 'gemini-2.5-flash'}
                 </span>
               </div>
 
@@ -326,9 +333,18 @@ export function HomeDashboard({
               How can I <span style={{ color: 'var(--mj-accent-ice)' }}>assist you?</span>
             </h2>
             <p className="mt-1.5 text-center text-xs sm:text-sm" style={{ color: 'var(--mj-text-muted)' }}>
-              {interactionMode === 'voice'
-                ? 'Speak naturally in English, বাংলা, or Banglish with Grok Realtime Voice.'
-                : 'Type in English, বাংলা, or Banglish with Grok Responses streaming.'}
+              {(() => {
+                const display = resolveProviderDisplay({
+                  activeProvider: settings?.activeProvider ?? health?.activeProvider,
+                  activeModel: settings?.activeModel ?? health?.activeModel,
+                  activeVoiceModel: settings?.voice.voiceModel ?? health?.activeVoiceModel,
+                  apiBaseHost: settings?.apiBaseHost ?? health?.apiBaseHost,
+                  providers: settings?.providers,
+                });
+                return interactionMode === 'voice'
+                  ? `Speak naturally in English, বাংলা, or Banglish with ${display.voiceLiveLabel}.`
+                  : `Type in English, বাংলা, or Banglish with ${display.textEngineLabel}.`;
+              })()}
             </p>
 
             <div className="my-4">
@@ -523,12 +539,15 @@ export function HomeDashboard({
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                 <div className="space-y-1">
                   <div className="font-medium text-[#F5DFB5]">
-                    xAI API key is not configured on the backend
+                    No active AI provider key or local runtime is configured
                   </div>
                   <p style={{ color: 'var(--mj-text-secondary)' }}>
-                    Copy <code className="font-mono">.env.example</code> to{' '}
-                    <code className="font-mono">.env</code>, set{' '}
-                    <code className="font-mono">XAI_API_KEY</code>, and restart the server.
+                    {resolveProviderDisplay({
+                      activeProvider: settings?.activeProvider ?? health?.activeProvider,
+                      activeModel: settings?.activeModel ?? health?.activeModel,
+                      apiBaseHost: settings?.apiBaseHost ?? health?.apiBaseHost,
+                      providers: settings?.providers,
+                    }).missingKeyHint}
                   </p>
                 </div>
               </div>
@@ -860,7 +879,7 @@ export function HomeDashboard({
               <StatusRow
                 icon={<Sparkles className="h-4 w-4" />}
                 label="Models"
-                value={`${settings?.activeModel ?? health?.activeModel ?? 'grok-4.7'} · ${settings?.voice.voiceModel ?? health?.activeVoiceModel ?? 'grok-voice-latest'}`}
+                value={`${settings?.activeModel ?? health?.activeModel ?? 'gemini-2.5-flash'} · ${settings?.voice.voiceModel ?? health?.activeVoiceModel ?? 'free-browser-voice'}`}
                 tone="neutral"
               />
             </div>
@@ -962,8 +981,13 @@ export function HomeDashboard({
               <div className="text-xs">
                 <div className="font-medium text-[#DCE6EE]">Ephemeral voice tokens</div>
                 <p className="mt-1 leading-relaxed" style={{ color: 'var(--mj-text-muted)' }}>
-                  Your mic stays off until you press Talk. Realtime voice connects using short-lived backend tokens from{' '}
-                  <code className="font-mono">/v1/realtime/client_secrets</code>.
+                  Your mic stays off until you press Talk. Realtime voice stays isolated via server-side sessions and browser/free fallbacks ({resolveProviderDisplay({
+                    activeProvider: settings?.activeProvider ?? health?.activeProvider,
+                    activeModel: settings?.activeModel ?? health?.activeModel,
+                    activeVoiceModel: settings?.voice.voiceModel ?? health?.activeVoiceModel,
+                    apiBaseHost: settings?.apiBaseHost ?? health?.apiBaseHost,
+                    providers: settings?.providers,
+                  }).voiceLiveLabel}).
                 </p>
               </div>
             </div>
