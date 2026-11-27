@@ -14,6 +14,7 @@ pub struct DesktopPermissions {
     pub clipboard_write: bool,
     pub web_launch: bool,
     pub wake_word_standby: bool,
+    pub configurable_shortcuts: bool,
 }
 
 impl Default for DesktopPermissions {
@@ -28,6 +29,7 @@ impl Default for DesktopPermissions {
             clipboard_write: false,
             web_launch: false,
             wake_word_standby: false,
+            configurable_shortcuts: false,
         }
     }
 }
@@ -98,6 +100,7 @@ pub fn set_single_permission(
         "clipboardWrite" => perms.clipboard_write = enabled,
         "webLaunch" => perms.web_launch = enabled,
         "wakeWordStandby" => perms.wake_word_standby = enabled,
+        "configurableShortcuts" => perms.configurable_shortcuts = enabled,
         _ => return Err(format!("Unknown or unsupported single permission key: {key}")),
     }
     save_permissions(app, &perms)?;

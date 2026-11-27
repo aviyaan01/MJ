@@ -34,6 +34,7 @@ export class PermissionsStore {
       clipboardWrite: Boolean(saved.clipboardWrite ?? false),
       webLaunch: Boolean(saved.webLaunch ?? false),
       wakeWordStandby: Boolean(saved.wakeWordStandby ?? false),
+      configurableShortcuts: Boolean(saved.configurableShortcuts ?? false),
       microphoneAccess:
         saved.microphoneAccess !== undefined
           ? Boolean(saved.microphoneAccess)

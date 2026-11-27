@@ -1,0 +1,66 @@
+# Split Production Architecture: Separate Backend API, Separate Frontend Web, Optional Caddy TLS Proxy
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    env_file:
+      - ./apps/server/.env.production
+    environment:
+      APP_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3001
+      SERVE_WEB_DIST: "false"
+      DATABASE_URL: /app/data/mj-assistant.db
+    volumes:
+      - mj_sqlite_data:/app/data
+    ports:
+      - "127.0.0.1:3001:3001"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        # Public API origin ONLY — never pass XAI_API_KEY or AUTH_SECRET into frontend build args
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-https://api.yourdomain.com}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:80"
+
+  # Optional automatic HTTPS reverse proxy (docker compose -f docker-compose.prod.yml --profile tls up -d)
+  caddy:
+    image: caddy:2.8-alpine
+    profiles: ["tls"]
+    restart: unless-stopped
+    depends_on:
+      - frontend
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  mj_sqlite_data:
+  caddy_data:
+  caddy_config:

@@ -16,6 +16,7 @@ import { createSessionGuard } from './auth.js';
 import { loadServerConfig, type ServerConfig } from './config.js';
 import { PermissionsStore } from './permissionsStore.js';
 import { RuntimeSettingsStore } from './settingsStore.js';
+import { ShortcutsStore } from './shortcutsStore.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerConversationRoutes } from './routes/conversations.js';
 import { registerDesktopRoutes } from './routes/desktop.js';
@@ -53,6 +54,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
   const repo = new MjDatabaseRepository(dbHandle);
   const settingsStore = new RuntimeSettingsStore(repo, config);
   const permissionsStore = new PermissionsStore(repo);
+  const shortcutsStore = new ShortcutsStore(repo);
   const xaiClient =
     options.xaiClient ??
     new XaiResponsesClient({
@@ -163,6 +165,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
   registerDesktopRoutes(app, {
     repo,
     permissionsStore,
+    shortcutsStore,
     requireSession,
   });
   registerVoiceRoutes(app, {

@@ -28,6 +28,8 @@ export interface ServerConfig {
   accessPasscode: string;
   passcodeRequired: boolean;
   serveWebDist: boolean;
+  cookieSameSite: 'lax' | 'strict' | 'none';
+  cookieDomain?: string;
   rootDir: string;
 }
 
@@ -171,6 +173,12 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
   const serveWebDist =
     rawServeWeb === 'true' ? true : rawServeWeb === 'false' ? false : appEnv === 'production';
 
+  const rawSameSite = (env.COOKIE_SAME_SITE ?? 'lax').trim().toLowerCase();
+  const cookieSameSite: ServerConfig['cookieSameSite'] =
+    rawSameSite === 'strict' ? 'strict' : rawSameSite === 'none' ? 'none' : 'lax';
+  const rawCookieDomain = (env.COOKIE_DOMAIN ?? '').trim();
+  const cookieDomain = rawCookieDomain && !isPlaceholderValue(rawCookieDomain) ? rawCookieDomain : undefined;
+
   return {
     appEnv,
     host: (env.HOST ?? '127.0.0.1').trim(),
@@ -194,6 +202,8 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
     accessPasscode,
     passcodeRequired,
     serveWebDist,
+    cookieSameSite,
+    ...(cookieDomain ? { cookieDomain } : {}),
     rootDir,
   };
 }

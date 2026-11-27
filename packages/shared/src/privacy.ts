@@ -8,7 +8,8 @@ export type OsCapabilityKey =
   | 'notifications'
   | 'clipboardWrite'
   | 'webLaunch'
-  | 'wakeWordStandby';
+  | 'wakeWordStandby'
+  | 'configurableShortcuts';
 
 export type PrivacyControlKey =
   | 'microphoneAccess'
@@ -30,13 +31,14 @@ export interface PermissionsStateDTO {
   clipboardWrite: boolean;
   webLaunch: boolean;
   wakeWordStandby: boolean;
+  configurableShortcuts: boolean;
 
   // Privacy & service controls (Section 15)
   microphoneAccess: boolean;
   voiceSessionAccess: boolean;
   externalWebServices: boolean;
 
-  // Stage 3 deferred categories — strictly OFF and non-activatable in Stage 4
+  // Stage 3 deferred categories — strictly OFF and non-activatable
   memoryAccess: false;
   optionalAutomation: false;
   cloudFileProcessing: false;
@@ -51,6 +53,7 @@ export const DEFAULT_PERMISSIONS_STATE: PermissionsStateDTO = {
   clipboardWrite: false,
   webLaunch: false,
   wakeWordStandby: false,
+  configurableShortcuts: false,
   microphoneAccess: true,
   voiceSessionAccess: true,
   externalWebServices: true,
@@ -68,6 +71,7 @@ export const OS_CAPABILITY_KEYS: readonly OsCapabilityKey[] = [
   'clipboardWrite',
   'webLaunch',
   'wakeWordStandby',
+  'configurableShortcuts',
 ];
 
 export const ControllablePermissionKeySchema = z.enum([
@@ -79,6 +83,7 @@ export const ControllablePermissionKeySchema = z.enum([
   'clipboardWrite',
   'webLaunch',
   'wakeWordStandby',
+  'configurableShortcuts',
   'microphoneAccess',
   'voiceSessionAccess',
   'externalWebServices',
@@ -145,6 +150,7 @@ export const ValidateDesktopActionSchema = z
       'notifications',
       'clipboardWrite',
       'webLaunch',
+      'configurableShortcuts',
     ]),
     action: z.string().trim().min(1).max(120),
     target: z.string().trim().min(1).max(400),
@@ -152,6 +158,111 @@ export const ValidateDesktopActionSchema = z
     source: z.enum(['web', 'desktop-tauri']).optional(),
   })
   .strict();
+
+export type ShortcutActionKind =
+  | 'toggle_voice'
+  | 'stop_all_mic'
+  | 'focus_chat'
+  | 'focus_desktop'
+  | 'open_approved_app'
+  | 'open_approved_url';
+
+export interface ConfigurableShortcutDTO {
+  id: string;
+  label: string;
+  accelerator: string;
+  action: ShortcutActionKind;
+  target?: string;
+  createdAt: string;
+}
+
+export const CreateShortcutSchema = z
+  .object({
+    label: z.string().trim().min(1, 'Label is required').max(60),
+    accelerator: z.string().trim().min(3).max(60),
+    action: z.enum([
+      'toggle_voice',
+      'stop_all_mic',
+      'focus_chat',
+      'focus_desktop',
+      'open_approved_app',
+      'open_approved_url',
+    ]),
+    target: z.string().trim().max(300).optional(),
+  })
+  .strict();
+
+export function normalizeShortcutAccelerator(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed || SHELL_METACHAR_REGEX.test(trimmed)) return null;
+
+  const parts = trimmed
+    .split('+')
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length < 2 || parts.length > 5) return null;
+
+  let hasCtrl = false;
+  let hasAlt = false;
+  let hasMeta = false;
+  let hasShift = false;
+  let primaryKey: string | null = null;
+
+  for (const part of parts) {
+    const lower = part.toLowerCase();
+    if (lower === 'ctrl' || lower === 'control') {
+      hasCtrl = true;
+    } else if (lower === 'alt' || lower === 'option') {
+      hasAlt = true;
+    } else if (lower === 'meta' || lower === 'cmd' || lower === 'command' || lower === 'win' || lower === 'super') {
+      hasMeta = true;
+    } else if (lower === 'shift') {
+      hasShift = true;
+    } else {
+      if (primaryKey !== null) return null;
+      if (/^[a-z0-9]$/.test(lower) || /^f([1-9]|1[0-2])$/.test(lower)) {
+        primaryKey = lower.toUpperCase();
+      } else if (lower === 'space' || part === ' ') {
+        primaryKey = 'Space';
+      } else if (lower === 'slash' || part === '/') {
+        primaryKey = '/';
+      } else {
+        return null;
+      }
+    }
+  }
+
+  // Require at least one non-Shift modifier (Ctrl, Alt, or Meta) so typing is never hijacked
+  if (!primaryKey || (!hasCtrl && !hasAlt && !hasMeta)) {
+    return null;
+  }
+
+  const ordered: string[] = [];
+  if (hasCtrl) ordered.push('Ctrl');
+  if (hasAlt) ordered.push('Alt');
+  if (hasMeta) ordered.push('Meta');
+  if (hasShift) ordered.push('Shift');
+  ordered.push(primaryKey);
+  return ordered.join('+');
+}
+
+export function acceleratorFromKeyboardEvent(ev: {
+  key: string;
+  ctrlKey: boolean;
+  altKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+}): string | null {
+  if (['Control', 'Shift', 'Alt', 'Meta'].includes(ev.key)) return null;
+  if (!ev.ctrlKey && !ev.altKey && !ev.metaKey) return null;
+  const parts: string[] = [];
+  if (ev.ctrlKey) parts.push('Ctrl');
+  if (ev.altKey) parts.push('Alt');
+  if (ev.metaKey) parts.push('Meta');
+  if (ev.shiftKey) parts.push('Shift');
+  parts.push(ev.key === ' ' ? 'Space' : ev.key.toUpperCase());
+  return normalizeShortcutAccelerator(parts.join('+'));
+}
 
 export interface HostTelemetryDTO {
   source: 'local-windows-host' | 'windows-tauri-os';

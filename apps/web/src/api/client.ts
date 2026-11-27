@@ -8,8 +8,10 @@ import {
   type AuditSource,
   type AuthSessionDTO,
   type ChatStreamEvent,
+  type ConfigurableShortcutDTO,
   type ConnectivityCheckDTO,
   type ControllablePermissionKey,
+  type ShortcutActionKind,
   type ConversationDTO,
   type ConversationDetailDTO,
   type HostTelemetryDTO,
@@ -22,6 +24,17 @@ import {
   type UsageSummaryDTO,
   type VoiceClientSecretDTO,
 } from '@mj/shared';
+
+const RAW_API_BASE =
+  (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_BASE_URL?.trim() ??
+  '';
+
+export const API_BASE_URL = RAW_API_BASE.replace(/\/+$/, '');
+
+export function resolveApiUrl(path: string): string {
+  if (!path.startsWith('/')) return path;
+  return API_BASE_URL ? `${API_BASE_URL}${path}` : path;
+}
 
 export class ApiClientError extends Error {
   public readonly payload: StructuredErrorPayload;
@@ -36,7 +49,7 @@ export class ApiClientError extends Error {
 async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await fetch(resolveApiUrl(url), {
       ...init,
       credentials: 'include',
       headers: {
@@ -246,7 +259,8 @@ export const mjApi = {
       | 'systemMonitoring'
       | 'notifications'
       | 'clipboardWrite'
-      | 'webLaunch';
+      | 'webLaunch'
+      | 'configurableShortcuts';
     action: string;
     target: string;
     confirmed?: boolean;
@@ -259,6 +273,38 @@ export const mjApi = {
         body: JSON.stringify(payload),
       },
     ),
+
+  listDesktopShortcuts: () =>
+    requestJson<{ enabled: boolean; shortcuts: ConfigurableShortcutDTO[] }>(
+      '/api/desktop/shortcuts',
+    ),
+
+  createDesktopShortcut: (payload: {
+    label: string;
+    accelerator: string;
+    action: ShortcutActionKind;
+    target?: string;
+  }) =>
+    requestJson<{ shortcut: ConfigurableShortcutDTO }>('/api/desktop/shortcuts', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  deleteDesktopShortcut: (id: string) =>
+    requestJson<{ deleted: boolean; id: string }>(
+      `/api/desktop/shortcuts/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    ),
+
+  triggerDesktopShortcut: (id: string, source: 'web' | 'desktop-tauri' = 'web') =>
+    requestJson<{
+      executed: boolean;
+      shortcut: ConfigurableShortcutDTO;
+      auditEntry: AuditLogEntryDTO;
+    }>(`/api/desktop/shortcuts/${encodeURIComponent(id)}/trigger`, {
+      method: 'POST',
+      body: JSON.stringify({ source }),
+    }),
 
   requestVoiceClientSecret: (input?: {
     conversationId?: string;
@@ -294,7 +340,7 @@ export const mjApi = {
   ): Promise<ArrayBuffer> => {
     let response: Response;
     try {
-      response = await fetch('/api/voice/tts', {
+      response = await fetch(resolveApiUrl('/api/voice/tts'), {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
@@ -376,7 +422,7 @@ async function streamSseEndpoint(
 ): Promise<void> {
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await fetch(resolveApiUrl(url), {
       method: 'POST',
       credentials: 'include',
       headers: {

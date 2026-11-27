@@ -3,11 +3,13 @@ import {
   DEFAULT_PERMISSIONS_STATE,
   ErrorCodes,
   VoiceStates,
+  acceleratorFromKeyboardEvent,
   type AllowlistEntryDTO,
   type AllowlistKind,
   type AuditLogEntryDTO,
   type AuthSessionDTO,
   type ChatStreamEvent,
+  type ConfigurableShortcutDTO,
   type ConnectivityCheckDTO,
   type ControllablePermissionKey,
   type ConversationDTO,
@@ -27,9 +29,13 @@ import { MicActiveBanner } from './components/MicActiveBanner.js';
 import { Sidebar, type ActiveNavTab } from './components/Sidebar.js';
 import { UnlockGate } from './components/UnlockGate.js';
 import {
+  isTauriDesktop,
   syncTauriMicTray,
+  tauriOpenApprovedApp,
+  tauriOpenApprovedUrl,
   tauriRevokeAllPermissions,
   tauriSetSinglePermission,
+  tauriValidateShortcutTrigger,
 } from './desktop/desktopBridge.js';
 import { WakeWordListener } from './voice/wakeWordListener.js';
 
@@ -88,6 +94,7 @@ export function App() {
 
   const [permissions, setPermissions] = useState<PermissionsStateDTO>(DEFAULT_PERMISSIONS_STATE);
   const [allowlist, setAllowlist] = useState<AllowlistEntryDTO[]>([]);
+  const [shortcuts, setShortcuts] = useState<ConfigurableShortcutDTO[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogEntryDTO[]>([]);
   const [wakeWordActive, setWakeWordActive] = useState(false);
   const [wakeWordStatusMessage, setWakeWordStatusMessage] = useState(
@@ -327,8 +334,17 @@ export function App() {
     }
   }, []);
 
+  const refreshShortcuts = useCallback(async () => {
+    try {
+      const res = await mjApi.listDesktopShortcuts();
+      setShortcuts(res.shortcuts);
+    } catch {
+      // ignore background shortcuts refresh failure
+    }
+  }, []);
+
   const loadAuthenticatedWorkspace = useCallback(async () => {
-    const [settingsRes, usageRes, convRes, voicesRes, permRes, allowRes, auditRes] =
+    const [settingsRes, usageRes, convRes, voicesRes, permRes, allowRes, auditRes, shortcutRes] =
       await Promise.all([
         mjApi.getSettings(),
         mjApi.getUsage(),
@@ -337,6 +353,7 @@ export function App() {
         mjApi.getPrivacyPermissions(),
         mjApi.listAllowlist(),
         mjApi.listAuditLogs(),
+        mjApi.listDesktopShortcuts(),
       ]);
     setSettings(settingsRes);
     setSelectedModelOverride(settingsRes.activeModel);
@@ -345,6 +362,7 @@ export function App() {
     setPermissions(permRes.permissions);
     setAllowlist(allowRes.entries);
     setAuditLogs(auditRes.entries);
+    setShortcuts(shortcutRes.shortcuts);
     if (voicesRes.voices.length > 0) {
       setAvailableVoices(voicesRes.voices);
     }
@@ -435,6 +453,7 @@ export function App() {
     setMessages([]);
     setPermissions(DEFAULT_PERMISSIONS_STATE);
     setAllowlist([]);
+    setShortcuts([]);
     setAuditLogs([]);
   };
 
@@ -943,6 +962,116 @@ export function App() {
     }
   }, [handleTogglePermission]);
 
+  const handleTriggerShortcutAction = useCallback(
+    async (shortcut: ConfigurableShortcutDTO) => {
+      const inTauri = isTauriDesktop();
+      if (inTauri) {
+        await tauriValidateShortcutTrigger(shortcut.accelerator, shortcut.action);
+      }
+      await mjApi.triggerDesktopShortcut(shortcut.id, inTauri ? 'desktop-tauri' : 'web');
+
+      switch (shortcut.action) {
+        case 'toggle_voice': {
+          const isVoiceOpen =
+            voiceState === 'requesting_permission' ||
+            voiceState === 'connecting' ||
+            voiceState === 'listening' ||
+            voiceState === 'processing' ||
+            voiceState === 'speaking' ||
+            voiceState === 'interrupted' ||
+            voiceState === 'reconnecting';
+          if (isVoiceOpen) {
+            void voiceServiceRef.current?.stopSession('manual');
+          } else {
+            await startVoiceRef.current();
+          }
+          break;
+        }
+        case 'stop_all_mic':
+          await handleStopAllMic();
+          break;
+        case 'focus_chat':
+          setActiveTab('chat');
+          break;
+        case 'focus_desktop':
+          setActiveTab('desktop');
+          break;
+        case 'open_approved_app':
+          if (inTauri && shortcut.target) {
+            await tauriOpenApprovedApp(
+              shortcut.target,
+              allowlist.filter((a) => a.kind === 'app').map((a) => a.target),
+            );
+          }
+          break;
+        case 'open_approved_url':
+          if (shortcut.target) {
+            if (inTauri) {
+              await tauriOpenApprovedUrl(
+                shortcut.target,
+                allowlist.filter((a) => a.kind === 'web_domain').map((a) => a.target),
+              );
+            } else {
+              window.open(shortcut.target, '_blank', 'noopener,noreferrer');
+            }
+          }
+          break;
+      }
+
+      await refreshAuditLogs();
+    },
+    [allowlist, handleStopAllMic, refreshAuditLogs, voiceState],
+  );
+
+  useEffect(() => {
+    if (!session?.authenticated || !permissions.configurableShortcuts || shortcuts.length === 0) {
+      return;
+    }
+
+    const onKeyDown = (e: globalThis.KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toUpperCase();
+      if (
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA' ||
+        tag === 'SELECT' ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
+
+      const acc = acceleratorFromKeyboardEvent(e);
+      if (!acc) return;
+      const matched = shortcuts.find((item) => item.accelerator === acc);
+      if (!matched) return;
+
+      e.preventDefault();
+      void handleTriggerShortcutAction(matched).catch((err) => {
+        const payload: StructuredErrorPayload =
+          err instanceof ApiClientError
+            ? err.payload
+            : {
+                code: ErrorCodes.PERMISSION_DENIED,
+                category: 'desktop',
+                statusCode: 403,
+                message: err instanceof Error ? err.message : 'Shortcut trigger blocked.',
+                retryable: false,
+              };
+        setActiveError(payload);
+        void refreshAuditLogs();
+      });
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [
+    handleTriggerShortcutAction,
+    permissions.configurableShortcuts,
+    refreshAuditLogs,
+    session?.authenticated,
+    shortcuts,
+  ]);
+
   // Initialize optional Wake-Word Standby listener (defaults OFF, Section 14)
   useEffect(() => {
     const listener = new WakeWordListener(
@@ -1168,7 +1297,10 @@ export function App() {
             <DesktopView
               permissions={permissions}
               allowlist={allowlist}
+              shortcuts={shortcuts}
               onAuditUpdated={refreshAuditLogs}
+              onShortcutsUpdated={refreshShortcuts}
+              onTriggerShortcutAction={handleTriggerShortcutAction}
               onNavigatePrivacy={() => setActiveTab('privacy')}
             />
           )}

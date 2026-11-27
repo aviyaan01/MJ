@@ -112,6 +112,13 @@ export async function tauriSendNotification(title: string, body: string): Promis
   await invokeTauri('desktop_send_notification', { title, body });
 }
 
+export async function tauriValidateShortcutTrigger(
+  accelerator: string,
+  action: string,
+): Promise<void> {
+  await invokeTauri('desktop_validate_shortcut_trigger', { accelerator, action });
+}
+
 export interface BrowserTelemetrySnapshot {
   source: 'browser-sandbox';
   online: boolean;

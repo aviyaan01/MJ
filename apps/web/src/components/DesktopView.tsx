@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type FormEvent, type KeyboardEvent } from 'react';
 import {
   AppWindow,
   Bell,
@@ -8,16 +8,23 @@ import {
   FolderSync,
   Globe,
   HardDrive,
+  Keyboard,
   Laptop,
   Lock,
+  Play,
+  Plus,
   RefreshCw,
   ShieldCheck,
+  Trash2,
 } from 'lucide-react';
 import { Panel, StatusPill } from '@mj/ui';
-import type {
-  AllowlistEntryDTO,
-  HostTelemetryDTO,
-  PermissionsStateDTO,
+import {
+  acceleratorFromKeyboardEvent,
+  type AllowlistEntryDTO,
+  type ConfigurableShortcutDTO,
+  type HostTelemetryDTO,
+  type PermissionsStateDTO,
+  type ShortcutActionKind,
 } from '@mj/shared';
 import { mjApi } from '../api/client.js';
 import {
@@ -29,19 +36,26 @@ import {
   tauriOrganizeApprovedFolder,
   tauriSearchApprovedFiles,
   tauriSendNotification,
+  tauriValidateShortcutTrigger,
 } from '../desktop/desktopBridge.js';
 
 interface DesktopViewProps {
   permissions: PermissionsStateDTO;
   allowlist: AllowlistEntryDTO[];
+  shortcuts?: ConfigurableShortcutDTO[];
   onAuditUpdated: () => Promise<void>;
+  onShortcutsUpdated?: () => Promise<void>;
+  onTriggerShortcutAction?: (shortcut: ConfigurableShortcutDTO) => Promise<void>;
   onNavigatePrivacy: () => void;
 }
 
 export function DesktopView({
   permissions,
   allowlist,
+  shortcuts = [],
   onAuditUpdated,
+  onShortcutsUpdated,
+  onTriggerShortcutAction,
   onNavigatePrivacy,
 }: DesktopViewProps) {
   const inTauri = isTauriDesktop();
@@ -63,6 +77,12 @@ export function DesktopView({
   const [notifyTitle, setNotifyTitle] = useState('MJ Assistant');
   const [notifyBody, setNotifyBody] = useState('Desktop notification channel verified.');
   const [clipboardText, setClipboardText] = useState('MJ Assistant approved clipboard check');
+
+  const [shortcutLabel, setShortcutLabel] = useState('');
+  const [shortcutAccelerator, setShortcutAccelerator] = useState('Ctrl+Shift+M');
+  const [shortcutAction, setShortcutAction] = useState<ShortcutActionKind>('toggle_voice');
+  const [shortcutTarget, setShortcutTarget] = useState('');
+  const [savingShortcut, setSavingShortcut] = useState(false);
 
   const approvedApps = allowlist.filter((a) => a.kind === 'app');
   const approvedFolders = allowlist.filter((a) => a.kind === 'folder');
@@ -293,6 +313,84 @@ export function DesktopView({
       setActionResult({
         tone: 'error',
         text: err instanceof Error ? err.message : 'Clipboard write blocked.',
+      });
+    } finally {
+      await onAuditUpdated();
+    }
+  };
+
+  const handleShortcutKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    const normalized = acceleratorFromKeyboardEvent(e);
+    if (!normalized) return;
+    e.preventDefault();
+    setShortcutAccelerator(normalized);
+  };
+
+  const handleCreateShortcut = async (e: FormEvent) => {
+    e.preventDefault();
+    setActionResult(null);
+    setSavingShortcut(true);
+    try {
+      await mjApi.createDesktopShortcut({
+        label: shortcutLabel.trim(),
+        accelerator: shortcutAccelerator.trim(),
+        action: shortcutAction,
+        ...(shortcutAction === 'open_approved_app' || shortcutAction === 'open_approved_url'
+          ? { target: shortcutTarget.trim() }
+          : {}),
+      });
+      setShortcutLabel('');
+      setActionResult({
+        tone: 'good',
+        text: `Shortcut ${shortcutAccelerator.trim()} bound cleanly.`,
+      });
+      await onShortcutsUpdated?.();
+    } catch (err) {
+      setActionResult({
+        tone: 'error',
+        text: err instanceof Error ? err.message : 'Could not bind shortcut.',
+      });
+    } finally {
+      setSavingShortcut(false);
+      await onAuditUpdated();
+    }
+  };
+
+  const handleDeleteShortcut = async (id: string) => {
+    setActionResult(null);
+    try {
+      await mjApi.deleteDesktopShortcut(id);
+      setActionResult({ tone: 'good', text: 'Shortcut removed.' });
+      await onShortcutsUpdated?.();
+    } catch (err) {
+      setActionResult({
+        tone: 'error',
+        text: err instanceof Error ? err.message : 'Could not remove shortcut.',
+      });
+    } finally {
+      await onAuditUpdated();
+    }
+  };
+
+  const handleTriggerShortcut = async (shortcut: ConfigurableShortcutDTO) => {
+    setActionResult(null);
+    try {
+      if (inTauri) {
+        await tauriValidateShortcutTrigger(shortcut.accelerator, shortcut.action);
+      }
+      if (onTriggerShortcutAction) {
+        await onTriggerShortcutAction(shortcut);
+      } else {
+        await mjApi.triggerDesktopShortcut(shortcut.id, inTauri ? 'desktop-tauri' : 'web');
+      }
+      setActionResult({
+        tone: 'good',
+        text: `Executed shortcut "${shortcut.label}" (${shortcut.accelerator}).`,
+      });
+    } catch (err) {
+      setActionResult({
+        tone: 'error',
+        text: err instanceof Error ? err.message : 'Shortcut trigger blocked.',
       });
     } finally {
       await onAuditUpdated();
@@ -714,6 +812,157 @@ export function DesktopView({
           </button>
         </Panel>
       </div>
+
+      {/* Configurable Shortcuts (Section 14 Optional Advanced Capability — Ships OFF) */}
+      <Panel className="space-y-4 p-6">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-medium text-[#EDF3F8]">
+              <Keyboard className="h-4 w-4 text-[#9AC6E6]" />
+              <span>Configurable Shortcuts</span>
+            </div>
+            <p className="mt-1 text-xs" style={{ color: 'var(--mj-text-muted)' }}>
+              Ships OFF. When enabled individually in Privacy Center, binds validated hotkeys (Ctrl/Alt/Meta + key) to approved MJ actions or allowlisted desktop targets with full audit logging.
+            </p>
+          </div>
+          <StatusPill tone={permissions.configurableShortcuts ? 'good' : 'neutral'}>
+            {permissions.configurableShortcuts ? 'Enabled' : 'OFF'}
+          </StatusPill>
+        </div>
+
+        <form onSubmit={handleCreateShortcut} className="grid grid-cols-1 gap-2.5 sm:grid-cols-5">
+          <input
+            type="text"
+            value={shortcutLabel}
+            onChange={(e) => setShortcutLabel(e.target.value)}
+            placeholder="Label (e.g. Quick Voice)"
+            aria-label="Shortcut label"
+            className="rounded-xl px-3 py-2 text-xs text-[#EDF3F8] outline-none placeholder:text-[#8B9CB0]"
+            style={{ backgroundColor: '#07090E', border: '1px solid var(--mj-border-strong)' }}
+          />
+          <input
+            type="text"
+            value={shortcutAccelerator}
+            onChange={(e) => setShortcutAccelerator(e.target.value)}
+            onKeyDown={handleShortcutKeyDown}
+            placeholder="Press keys (e.g. Ctrl+Shift+M)"
+            aria-label="Shortcut key combo"
+            className="rounded-xl px-3 py-2 font-mono text-xs text-[#EDF3F8] outline-none placeholder:text-[#8B9CB0]"
+            style={{ backgroundColor: '#07090E', border: '1px solid var(--mj-border-strong)' }}
+          />
+          <select
+            aria-label="Shortcut action"
+            value={shortcutAction}
+            onChange={(e) => setShortcutAction(e.target.value as ShortcutActionKind)}
+            className="rounded-xl px-3 py-2 text-xs text-[#EDF3F8] outline-none"
+            style={{ backgroundColor: '#07090E', border: '1px solid var(--mj-border-strong)' }}
+          >
+            <option value="toggle_voice">Toggle Voice Session</option>
+            <option value="stop_all_mic">Emergency Stop Mic</option>
+            <option value="focus_chat">Open Chat Workspace</option>
+            <option value="focus_desktop">Open Desktop Companion</option>
+            <option value="open_approved_app">Launch Approved App</option>
+            <option value="open_approved_url">Open Approved HTTPS URL</option>
+          </select>
+          {shortcutAction === 'open_approved_app' || shortcutAction === 'open_approved_url' ? (
+            <input
+              type="text"
+              value={shortcutTarget}
+              onChange={(e) => setShortcutTarget(e.target.value)}
+              placeholder={
+                shortcutAction === 'open_approved_app'
+                  ? 'Allowlisted app label/path'
+                  : 'https://approved-domain.example'
+              }
+              aria-label="Shortcut action target"
+              className="rounded-xl px-3 py-2 font-mono text-xs text-[#EDF3F8] outline-none placeholder:text-[#8B9CB0]"
+              style={{ backgroundColor: '#07090E', border: '1px solid var(--mj-border-strong)' }}
+            />
+          ) : (
+            <div
+              className="flex items-center rounded-xl px-3 py-2 text-[11px]"
+              style={{ backgroundColor: '#07090E', color: 'var(--mj-text-subtle)' }}
+            >
+              No external target needed
+            </div>
+          )}
+          <button
+            type="submit"
+            disabled={savingShortcut || !shortcutLabel.trim() || !shortcutAccelerator.trim()}
+            className="inline-flex items-center justify-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-medium transition disabled:opacity-50"
+            style={{
+              backgroundColor: 'rgba(154, 198, 230, 0.14)',
+              border: '1px solid rgba(177, 215, 241, 0.24)',
+              color: 'var(--mj-accent-ice)',
+            }}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            <span>{savingShortcut ? 'Saving…' : 'Bind Shortcut'}</span>
+          </button>
+        </form>
+
+        {shortcuts.length === 0 ? (
+          <div
+            className="rounded-xl p-3.5 text-xs"
+            style={{
+              backgroundColor: '#07090E',
+              border: '1px solid var(--mj-border-subtle)',
+              color: 'var(--mj-text-subtle)',
+            }}
+          >
+            No configurable shortcuts saved yet.
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {shortcuts.map((sc) => (
+              <div
+                key={sc.id}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-xl px-3.5 py-2.5 text-xs"
+                style={{
+                  backgroundColor: '#07090E',
+                  border: '1px solid var(--mj-border-subtle)',
+                }}
+              >
+                <div className="min-w-0 flex-1">
+                  <span className="mr-2 rounded px-2 py-0.5 font-mono text-[11px] font-medium text-[#C7E3F5]" style={{ backgroundColor: 'rgba(154, 198, 230, 0.14)' }}>
+                    {sc.accelerator}
+                  </span>
+                  <span className="font-medium text-[#EDF3F8]">{sc.label}</span>
+                  <span className="ml-2 font-mono text-[11px]" style={{ color: 'var(--mj-text-muted)' }}>
+                    {sc.action}
+                    {sc.target ? ` -> ${sc.target}` : ''}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => void handleTriggerShortcut(sc)}
+                    aria-label={`Trigger shortcut ${sc.label}`}
+                    className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-medium transition hover:bg-white/5"
+                    style={{
+                      border: '1px solid var(--mj-border-subtle)',
+                      color: 'var(--mj-accent-ice)',
+                    }}
+                  >
+                    <Play className="h-3 w-3" />
+                    <span>Trigger</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleDeleteShortcut(sc.id)}
+                    aria-label={`Delete shortcut ${sc.label}`}
+                    className="rounded-lg p-1.5 transition hover:bg-white/5"
+                    style={{ color: 'var(--mj-status-error)' }}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
     </div>
   );
 }

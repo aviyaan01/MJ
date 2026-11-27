@@ -440,3 +440,45 @@ pub fn desktop_send_notification(
 pub fn desktop_sync_mic_tray(app: AppHandle, active: bool, wake_word_standby: bool) {
     update_tray_mic_indicator(&app, active, wake_word_standby);
 }
+
+#[tauri::command]
+pub fn desktop_validate_shortcut_trigger(
+    app: AppHandle,
+    accelerator: String,
+    action: String,
+) -> Result<(), String> {
+    let perms = load_permissions(&app);
+    if !perms.configurable_shortcuts {
+        let _ = append_audit_entry(
+            &app,
+            "configurableShortcuts",
+            "Blocked shortcut trigger",
+            &format!("{accelerator} -> {action}"),
+            "denied",
+            Some("configurableShortcuts capability is OFF"),
+        );
+        return Err("configurableShortcuts capability is OFF.".to_string());
+    }
+
+    if is_forbidden_shell_target(&accelerator) || is_forbidden_shell_target(&action) {
+        let _ = append_audit_entry(
+            &app,
+            "configurableShortcuts",
+            "Blocked unsafe shortcut trigger",
+            &format!("{accelerator} -> {action}"),
+            "denied",
+            Some("Arbitrary shell targets are forbidden"),
+        );
+        return Err("Shortcut contains forbidden shell targets or characters.".to_string());
+    }
+
+    let _ = append_audit_entry(
+        &app,
+        "configurableShortcuts",
+        "Triggered configured desktop shortcut",
+        &format!("{accelerator} -> {action}"),
+        "allowed",
+        None,
+    );
+    Ok(())
+}

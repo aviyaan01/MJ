@@ -84,6 +84,7 @@ export function shouldUseSecureCookie(
   request: FastifyRequest,
   config: ServerConfig,
 ): boolean {
+  if (config.cookieSameSite === 'none') return true;
   if (config.appEnv !== 'production') return false;
   if (request.protocol === 'https') return true;
   return !isLoopbackHost(request.hostname);
@@ -97,7 +98,8 @@ export function setSessionCookie(
 ): void {
   reply.setCookie(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
-    sameSite: 'lax',
+    sameSite: config.cookieSameSite,
+    ...(config.cookieDomain ? { domain: config.cookieDomain } : {}),
     path: '/',
     secure: shouldUseSecureCookie(request, config),
     maxAge: SESSION_TTL_SECONDS,
@@ -111,7 +113,8 @@ export function clearSessionCookie(
 ): void {
   reply.clearCookie(SESSION_COOKIE_NAME, {
     httpOnly: true,
-    sameSite: 'lax',
+    sameSite: config.cookieSameSite,
+    ...(config.cookieDomain ? { domain: config.cookieDomain } : {}),
     path: '/',
     secure: shouldUseSecureCookie(request, config),
   });

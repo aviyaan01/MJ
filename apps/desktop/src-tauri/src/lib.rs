@@ -33,6 +33,7 @@ pub fn run() {
             desktop_actions::desktop_organize_files,
             desktop_actions::desktop_send_notification,
             desktop_actions::desktop_sync_mic_tray,
+            desktop_actions::desktop_validate_shortcut_trigger,
             credentials::desktop_store_credential,
             credentials::desktop_get_credential,
             credentials::desktop_delete_credential,

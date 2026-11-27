@@ -98,6 +98,13 @@ const OS_CAPABILITY_ROWS: Array<{
       'Always-listening standby defaults OFF. Enabling shows a persistent mic-active indicator everywhere.',
     riskTag: 'Always-Listening',
   },
+  {
+    key: 'configurableShortcuts',
+    title: 'Configurable Shortcuts',
+    description:
+      'Bind validated keyboard hotkeys to approved MJ actions or allowlisted desktop targets. Ships OFF.',
+    riskTag: 'Hotkeys',
+  },
 ];
 
 const CORE_PRIVACY_ROWS: Array<{

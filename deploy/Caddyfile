@@ -1,0 +1,28 @@
+# Caddy Automatic HTTPS Configuration (Let's Encrypt) for Split Frontend & Backend
+# Replace app.yourdomain.com and api.yourdomain.com with your real DNS A/AAAA records.
+
+app.yourdomain.com {
+    encode gzip zstd
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    reverse_proxy frontend:80
+}
+
+api.yourdomain.com {
+    # Do NOT buffer SSE streams from /api/conversations/:id/messages
+    reverse_proxy backend:3001 {
+        flush_interval -1
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-Host {host}
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    }
+}

@@ -12,7 +12,7 @@ export interface HealthRouteDeps {
 }
 
 export function registerHealthRoutes(app: FastifyInstance, deps: HealthRouteDeps): void {
-  app.get('/api/health', async () => {
+  const buildHealthPayload = async (): Promise<{ dbOk: boolean; payload: SystemHealthDTO }> => {
     const dbOk = deps.dbHandle.ping();
     const settings = await deps.settingsStore.getPublicSettings();
 
@@ -47,6 +47,16 @@ export function registerHealthRoutes(app: FastifyInstance, deps: HealthRouteDeps
       },
     };
 
+    return { dbOk, payload };
+  };
+
+  app.get('/health', async (_request, reply) => {
+    const { dbOk, payload } = await buildHealthPayload();
+    return reply.status(dbOk ? 200 : 503).send(payload);
+  });
+
+  app.get('/api/health', async () => {
+    const { payload } = await buildHealthPayload();
     return payload;
   });
 }
