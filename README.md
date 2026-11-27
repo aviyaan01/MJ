@@ -1,8 +1,8 @@
-# MJ Assistant — Stage 2 (Web Text + Realtime Voice)
+# MJ Assistant — Personal AI Workspace (Stages 1, 2, 4 & 5 Complete)
 
-MJ Assistant is a JARVIS-inspired personal AI assistant built in the obsidian-dark **MJ/AURA** visual identity (`#07080B` / `#0D1017` / `#121722` with cool ice-blue accents) and powered by xAI's **Grok Responses API** (`POST /v1/responses`) and **Grok Speech-to-Speech Realtime API** (`wss://api.x.ai/v1/realtime`).
+MJ Assistant is a JARVIS-inspired personal AI assistant built in the obsidian-dark **MJ/AURA** visual identity (`#07080B` / `#0D1017` / `#121722` with cool ice-blue accents) powered by xAI's **Grok Responses API** (`POST /v1/responses`) and **Grok Speech-to-Speech Realtime API** (`wss://api.x.ai/v1/realtime`).
 
-This repository implements **Stage 1 & Stage 2** (Sections **00, 01, 02, 03, 04, 05, 07, 08**, and **Phases 1–2 of Section 17**). Long-term memory, tools/function calling, web search, file analysis, personal automation, and Windows Tauri desktop features remain deferred to Stages 3–4.
+This repository implements **Stages 1, 2, 4, and 5** (Sections **00, 01, 02, 03, 04, 05, 07, 08, 14, 15, 16, 17**, and **Final Development Instructions**). Stage 3 features (`memoryAccess`, long-term memory, arbitrary tool calling, web search, cloud file analysis, and scheduled automation) remain **strictly OFF and deferred**.
 
 ---
 
@@ -11,16 +11,17 @@ This repository implements **Stage 1 & Stage 2** (Sections **00, 01, 02, 03, 04,
 ```text
 mj-assistant/
 ├── apps/
-│   ├── web/        # React 19 + TypeScript + Vite + Tailwind CSS v4 (AURA Obsidian Dashboard, Voice & Chat)
-│   └── server/     # Fastify 5 + TypeScript API proxy, SSE text streaming, ephemeral voice secrets, TTS/STT proxy
+│   ├── web/        # React 19 + TypeScript + Vite + Tailwind CSS v4 (Home, Chat, Usage, Desktop, Privacy, Settings)
+│   ├── server/     # Fastify 5 + TypeScript API proxy, SSE streaming, ephemeral secrets, privacy/budget guards, static host
+│   └── desktop/    # Tauri 2 Windows companion (system tray, Win32-safe allowlisted actions, asInvoker, no shell plugin)
 ├── packages/
-│   ├── shared/     # Shared DTOs, Zod schemas, centralized AppError & ErrorCodes, cost estimator
-│   ├── ai/         # xAI POST /v1/responses client, /v1/realtime/client_secrets, /v1/tts, /v1/stt, MJ prompts
+│   ├── shared/     # Shared DTOs, Zod schemas, centralized AppError & ErrorCodes, privacy defaults & cost calculators
+│   ├── ai/         # xAI POST /v1/responses client, /v1/models check, /v1/realtime/client_secrets, /v1/tts, /v1/stt
 │   ├── voice/      # Independent Voice Service: 9-state machine, PCM16 24kHz codec, WebSocket & Web Audio playback
 │   └── ui/         # Obsidian-dark CSS tokens (WCAG AA), audio-synced MJCoreOrb, Panel, StatusPill, BrandMark
-├── database/       # Drizzle ORM + built-in node:sqlite (WAL, foreign keys, versioned SQL migrations)
-├── docs/           # Stage 1 & Stage 2 API integration and verification guides
-├── tests/          # Vitest unit, voice, database & Fastify integration tests
+├── database/       # Drizzle ORM + built-in node:sqlite (WAL, foreign keys, versioned SQL migrations + audit logs)
+├── docs/           # Delivery package: API reference, deployment guide, test report & per-stage checklists
+├── tests/          # Vitest tests (AI client, voice codec/state machine, SQLite DB, Fastify integration, Stage 4 & 5 UI/API)
 └── .env.example    # Environment placeholders only (no real secrets)
 ```
 
@@ -31,6 +32,8 @@ mj-assistant/
 - **Node.js 24 LTS** (built-in `node:sqlite` is used—no C++ native compilation required)
 - **npm 10+**
 - **xAI API Key** from [console.x.ai](https://console.x.ai) (billing enabled)
+- **Optional (for native Windows Tauri desktop builds in `apps/desktop`)**:
+  - Rust toolchain (`rustup`, `rustc`, `cargo`) + MSVC C++ Build Tools + WebView2 Runtime
 
 ---
 
@@ -69,7 +72,26 @@ npm run dev
 
 Open **http://127.0.0.1:5173** (or **http://localhost:5173**) in Chrome or Edge.
 
+### Optional Windows Tauri Companion (`apps/desktop`)
+
+After installing Rust (`rustup`), MSVC C++ Build Tools, and workspace packages:
+
+```bash
+npm run desktop:dev
+npm run desktop:build
+```
+
 ---
+
+## Delivery Package Documentation
+
+- **API Reference & Credentials**: [docs/api-integration.md](docs/api-integration.md)
+- **Setup, Production & Windows Deployment Guide**: [docs/deployment-guide.md](docs/deployment-guide.md)
+- **Section 17 Test Matrix & Verification Report**: [docs/testing-checklist-and-report.md](docs/testing-checklist-and-report.md)
+- **Stage Guides**:
+  - [Stage 1 — Text Chat & Error Handling](docs/stage-1-api-and-testing.md)
+  - [Stage 2 — Realtime Voice & Ephemeral Secrets](docs/stage-2-voice-and-testing.md)
+  - [Stage 4 — Windows Companion & Privacy Hardening](docs/stage-4-desktop-and-privacy.md)
 
 ## Testing & Verification
 
@@ -77,6 +99,6 @@ Open **http://127.0.0.1:5173** (or **http://localhost:5173**) in Chrome or Edge.
 npm run typecheck
 npm test
 npm run build
+npm run db:migrate
+npm run audit:deps
 ```
-
-See [docs/stage-1-api-and-testing.md](docs/stage-1-api-and-testing.md) and [docs/stage-2-voice-and-testing.md](docs/stage-2-voice-and-testing.md) for detailed API specs and end-to-end testing checklists.

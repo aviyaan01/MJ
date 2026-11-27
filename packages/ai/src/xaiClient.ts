@@ -53,6 +53,7 @@ export interface CreateResponseResult {
  */
 export class XaiResponsesClient {
   private readonly apiKey: string;
+  private readonly baseUrl: string;
   private readonly responsesUrl: string;
   private readonly defaultModel: string;
   private readonly defaultTimeoutMs: number;
@@ -62,6 +63,9 @@ export class XaiResponsesClient {
   constructor(config: XaiClientConfig) {
     this.apiKey = config.apiKey;
     const normalizedBase = config.baseUrl.replace(/\/+$/, '');
+    this.baseUrl = normalizedBase.endsWith('/responses')
+      ? normalizedBase.slice(0, -'/responses'.length)
+      : normalizedBase;
     this.responsesUrl = normalizedBase.endsWith('/responses')
       ? normalizedBase
       : `${normalizedBase}/responses`;
@@ -69,6 +73,51 @@ export class XaiResponsesClient {
     this.defaultTimeoutMs = config.timeoutMs;
     this.maxRetries = Math.max(0, Math.min(config.maxRetries ?? 2, 4));
     this.fetchImpl = config.fetchImpl ?? fetch;
+  }
+
+  /**
+   * Queries `GET /v1/models` on demand to verify live xAI reachability and model availability
+   * without sending a paid completion request.
+   */
+  public async listAvailableModelIds(
+    timeoutMs = 10000,
+  ): Promise<{ modelIds: string[]; latencyMs: number }> {
+    if (!this.apiKey || this.apiKey.trim().length === 0) {
+      throw new AppError({
+        code: ErrorCodes.INVALID_API_KEY,
+        category: 'api',
+        statusCode: 502,
+      });
+    }
+
+    const startedAt = Date.now();
+    try {
+      const response = await this.fetchImpl(`${this.baseUrl}/models`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+
+      if (!response.ok) {
+        throw await mapUpstreamHttpError(response);
+      }
+
+      const json = (await response.json()) as { data?: Array<{ id?: string }> };
+      const modelIds = Array.isArray(json.data)
+        ? json.data
+            .map((entry) => (typeof entry.id === 'string' ? entry.id.trim() : ''))
+            .filter(Boolean)
+        : [];
+
+      return {
+        modelIds,
+        latencyMs: Date.now() - startedAt,
+      };
+    } catch (err) {
+      throw normalizeToAppError(err, { timedOut: false, externalAborted: false });
+    }
   }
 
   public async createResponse(params: CreateResponseParams): Promise<CreateResponseResult> {

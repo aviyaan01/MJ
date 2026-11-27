@@ -14,13 +14,14 @@ function sseStreamFromChunks(chunks: string[]): ReadableStream<Uint8Array> {
   });
 }
 
-describe('MJ System Prompt (Section 01 & Stage 2 Boundaries)', () => {
-  it('enforces MJ Assistant identity and Stage 2 scope boundaries', () => {
+describe('MJ System Prompt (Section 01 & Stage 4 Boundaries)', () => {
+  it('enforces MJ Assistant identity and Stage 4 scope boundaries', () => {
     const prompt = buildMjSystemPrompt({ responseStyle: 'concise' });
     expect(prompt).toContain('MJ Assistant');
     expect(prompt).toContain('Never call yourself ChatGPT, JARVIS, Grok');
-    expect(prompt).toContain('Stage 2 (Web Text + Realtime Voice)');
-    expect(prompt).toContain('Cross-session long-term memory, function calling/tools');
+    expect(prompt).toContain('Stage 4 Scope Boundaries (Important):');
+    expect(prompt).toContain('Cross-session long-term memory, AI function calling/tools');
+    expect(prompt).toContain('Never execute or suggest arbitrary shell commands');
   });
 });
 

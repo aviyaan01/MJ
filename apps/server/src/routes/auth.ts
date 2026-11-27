@@ -59,7 +59,7 @@ export function registerAuthRoutes(app: FastifyInstance, config: ServerConfig): 
 
       const mode = config.passcodeRequired ? 'passcode' : 'local-dev';
       const token = signSessionToken(mode, config.authSecret);
-      setSessionCookie(reply, token, config);
+      setSessionCookie(request, reply, token, config);
 
       const dto: AuthSessionDTO = {
         authenticated: true,
@@ -71,8 +71,8 @@ export function registerAuthRoutes(app: FastifyInstance, config: ServerConfig): 
     },
   );
 
-  app.post('/api/auth/logout', async (_request, reply) => {
-    clearSessionCookie(reply, config);
+  app.post('/api/auth/logout', async (request, reply) => {
+    clearSessionCookie(request, reply, config);
     const dto: AuthSessionDTO = {
       authenticated: false,
       passcodeRequired: config.passcodeRequired,

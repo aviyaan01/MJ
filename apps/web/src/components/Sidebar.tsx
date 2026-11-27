@@ -1,8 +1,8 @@
-import { Home, LogOut, MessageSquare, Settings, ShieldCheck } from 'lucide-react';
+import { Activity, Home, Lock, LogOut, MessageSquare, Monitor, Settings, ShieldCheck } from 'lucide-react';
 import { BrandMark } from '@mj/ui';
 import type { AuthSessionDTO, SystemHealthDTO, VoiceState } from '@mj/shared';
 
-export type ActiveNavTab = 'home' | 'chat' | 'settings';
+export type ActiveNavTab = 'home' | 'chat' | 'desktop' | 'privacy' | 'usage' | 'settings';
 
 interface SidebarProps {
   activeTab: ActiveNavTab;
@@ -17,12 +17,14 @@ interface SidebarProps {
 const NAV_ITEMS: Array<{ id: ActiveNavTab; label: string; icon: typeof Home }> = [
   { id: 'home', label: 'Home', icon: Home },
   { id: 'chat', label: 'Chat', icon: MessageSquare },
+  { id: 'usage', label: 'Usage', icon: Activity },
+  { id: 'desktop', label: 'Desktop', icon: Monitor },
+  { id: 'privacy', label: 'Privacy', icon: Lock },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
 const UPCOMING_STAGES = [
   { label: 'Memory & Tools', stage: 'Stage 3' },
-  { label: 'Desktop OS', stage: 'Stage 4' },
 ];
 
 export function Sidebar({
@@ -66,7 +68,7 @@ export function Sidebar({
               className="text-[10px] tracking-[0.16em] uppercase"
               style={{ color: 'var(--mj-text-subtle)' }}
             >
-              STAGE 2 · VOICE &amp; TEXT
+              STAGE 5 · MONITORING &amp; DELIVERY
             </div>
           </div>
         </div>
@@ -151,6 +153,14 @@ export function Sidebar({
             </li>
             <li className="flex items-center justify-between">
               <span style={{ color: 'var(--mj-text-primary)' }}>Realtime Voice</span>
+              <span style={{ color: 'var(--mj-status-good)' }}>Active</span>
+            </li>
+            <li className="flex items-center justify-between">
+              <span style={{ color: 'var(--mj-text-primary)' }}>Desktop &amp; Privacy</span>
+              <span style={{ color: 'var(--mj-status-good)' }}>Active</span>
+            </li>
+            <li className="flex items-center justify-between">
+              <span style={{ color: 'var(--mj-text-primary)' }}>Usage &amp; Monitoring</span>
               <span style={{ color: 'var(--mj-status-good)' }}>Active</span>
             </li>
             {UPCOMING_STAGES.map((item) => (

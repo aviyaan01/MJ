@@ -58,7 +58,28 @@ export const appSettings = sqliteTable('app_settings', {
   updatedAt: text('updated_at').notNull(),
 });
 
+export const desktopAllowlist = sqliteTable('desktop_allowlist', {
+  id: text('id').primaryKey(),
+  kind: text('kind', { enum: ['app', 'folder', 'web_domain'] }).notNull(),
+  label: text('label').notNull(),
+  target: text('target').notNull(),
+  createdAt: text('created_at').notNull(),
+});
+
+export const privilegedAuditLogs = sqliteTable('privileged_audit_logs', {
+  id: text('id').primaryKey(),
+  timestamp: text('timestamp').notNull(),
+  capability: text('capability').notNull(),
+  action: text('action').notNull(),
+  target: text('target').notNull(),
+  outcome: text('outcome', { enum: ['allowed', 'denied', 'cancelled', 'error'] }).notNull(),
+  source: text('source', { enum: ['web', 'server', 'desktop-tauri'] }).notNull(),
+  detail: text('detail'),
+});
+
 export type ConversationRow = typeof conversations.$inferSelect;
 export type MessageRow = typeof messages.$inferSelect;
 export type UsageLogRow = typeof usageLogs.$inferSelect;
 export type AppSettingRow = typeof appSettings.$inferSelect;
+export type DesktopAllowlistRow = typeof desktopAllowlist.$inferSelect;
+export type PrivilegedAuditLogRow = typeof privilegedAuditLogs.$inferSelect;

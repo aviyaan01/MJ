@@ -4,6 +4,12 @@ import {
   AppError,
   ErrorCodes,
   evaluateBudgetStatus,
+  sanitizeDiagnosticText,
+  type AllowlistEntryDTO,
+  type AllowlistKind,
+  type AuditLogEntryDTO,
+  type AuditOutcome,
+  type AuditSource,
   type BudgetSettings,
   type ConversationDTO,
   type ConversationDetailDTO,
@@ -16,7 +22,14 @@ import {
   type UsageSummaryDTO,
 } from '@mj/shared';
 import { mapDatabaseError, type MjDatabaseHandle } from './client.js';
-import { appSettings, conversations, messages, usageLogs } from './schema.js';
+import {
+  appSettings,
+  conversations,
+  desktopAllowlist,
+  messages,
+  privilegedAuditLogs,
+  usageLogs,
+} from './schema.js';
 
 export interface AddMessageInput {
   id?: string;
@@ -421,20 +434,42 @@ export class MjDatabaseRepository {
         let inputTokens = 0;
         let outputTokens = 0;
         let reasoningTokens = 0;
+        let cachedTokens = 0;
         let totalTokens = 0;
         let voiceSeconds = 0;
         let estimatedCostUsd = 0;
         let latencySum = 0;
+
+        const kindAccum: Record<
+          UsageKind,
+          { requests: number; errors: number; estimatedCostUsd: number; latencySum: number; totalTokens: number; voiceSeconds: number }
+        > = {
+          text: { requests: 0, errors: 0, estimatedCostUsd: 0, latencySum: 0, totalTokens: 0, voiceSeconds: 0 },
+          voice_realtime: { requests: 0, errors: 0, estimatedCostUsd: 0, latencySum: 0, totalTokens: 0, voiceSeconds: 0 },
+          tts: { requests: 0, errors: 0, estimatedCostUsd: 0, latencySum: 0, totalTokens: 0, voiceSeconds: 0 },
+          stt: { requests: 0, errors: 0, estimatedCostUsd: 0, latencySum: 0, totalTokens: 0, voiceSeconds: 0 },
+        };
 
         for (const r of rows) {
           if (r.status === 'error') errorCount += 1;
           inputTokens += r.inputTokens;
           outputTokens += r.outputTokens;
           reasoningTokens += r.reasoningTokens;
+          cachedTokens += r.cachedTokens;
           totalTokens += r.totalTokens;
           voiceSeconds += r.voiceSeconds;
           estimatedCostUsd += r.estimatedCostUsd;
           latencySum += r.latencyMs;
+
+          const bucket = kindAccum[r.kind];
+          if (bucket) {
+            bucket.requests += 1;
+            if (r.status === 'error') bucket.errors += 1;
+            bucket.estimatedCostUsd += r.estimatedCostUsd;
+            bucket.latencySum += r.latencyMs;
+            bucket.totalTokens += r.totalTokens;
+            bucket.voiceSeconds += r.voiceSeconds;
+          }
         }
 
         return {
@@ -443,10 +478,59 @@ export class MjDatabaseRepository {
           inputTokens,
           outputTokens,
           reasoningTokens,
+          cachedTokens,
           totalTokens,
           voiceSeconds,
           estimatedCostUsd: Number(estimatedCostUsd.toFixed(6)),
           avgLatencyMs: rows.length > 0 ? Math.round(latencySum / rows.length) : 0,
+          byKind: {
+            text: {
+              requests: kindAccum.text.requests,
+              errors: kindAccum.text.errors,
+              estimatedCostUsd: Number(kindAccum.text.estimatedCostUsd.toFixed(6)),
+              avgLatencyMs:
+                kindAccum.text.requests > 0
+                  ? Math.round(kindAccum.text.latencySum / kindAccum.text.requests)
+                  : 0,
+              totalTokens: kindAccum.text.totalTokens,
+              voiceSeconds: kindAccum.text.voiceSeconds,
+            },
+            voice_realtime: {
+              requests: kindAccum.voice_realtime.requests,
+              errors: kindAccum.voice_realtime.errors,
+              estimatedCostUsd: Number(kindAccum.voice_realtime.estimatedCostUsd.toFixed(6)),
+              avgLatencyMs:
+                kindAccum.voice_realtime.requests > 0
+                  ? Math.round(
+                      kindAccum.voice_realtime.latencySum / kindAccum.voice_realtime.requests,
+                    )
+                  : 0,
+              totalTokens: kindAccum.voice_realtime.totalTokens,
+              voiceSeconds: kindAccum.voice_realtime.voiceSeconds,
+            },
+            tts: {
+              requests: kindAccum.tts.requests,
+              errors: kindAccum.tts.errors,
+              estimatedCostUsd: Number(kindAccum.tts.estimatedCostUsd.toFixed(6)),
+              avgLatencyMs:
+                kindAccum.tts.requests > 0
+                  ? Math.round(kindAccum.tts.latencySum / kindAccum.tts.requests)
+                  : 0,
+              totalTokens: kindAccum.tts.totalTokens,
+              voiceSeconds: kindAccum.tts.voiceSeconds,
+            },
+            stt: {
+              requests: kindAccum.stt.requests,
+              errors: kindAccum.stt.errors,
+              estimatedCostUsd: Number(kindAccum.stt.estimatedCostUsd.toFixed(6)),
+              avgLatencyMs:
+                kindAccum.stt.requests > 0
+                  ? Math.round(kindAccum.stt.latencySum / kindAccum.stt.requests)
+                  : 0,
+              totalTokens: kindAccum.stt.totalTokens,
+              voiceSeconds: kindAccum.stt.voiceSeconds,
+            },
+          },
         };
       };
 
@@ -457,7 +541,7 @@ export class MjDatabaseRepository {
         .select()
         .from(usageLogs)
         .orderBy(desc(usageLogs.createdAt))
-        .limit(15);
+        .limit(30);
 
       return {
         today,
@@ -515,6 +599,183 @@ export class MjDatabaseRepository {
             updatedAt: sql`excluded.updated_at`,
           },
         });
+    } catch (err) {
+      throw mapDatabaseError(err, 'query');
+    }
+  }
+
+  public async clearAllConversations(): Promise<number> {
+    try {
+      const existing = await this.handle.db
+        .select({ id: conversations.id })
+        .from(conversations);
+      await this.handle.db.delete(conversations);
+      return existing.length;
+    } catch (err) {
+      throw mapDatabaseError(err, 'query');
+    }
+  }
+
+  public async listAllowlist(kind?: AllowlistKind): Promise<AllowlistEntryDTO[]> {
+    try {
+      const rows = kind
+        ? await this.handle.db
+            .select()
+            .from(desktopAllowlist)
+            .where(eq(desktopAllowlist.kind, kind))
+            .orderBy(desc(desktopAllowlist.createdAt))
+        : await this.handle.db
+            .select()
+            .from(desktopAllowlist)
+            .orderBy(desc(desktopAllowlist.createdAt));
+
+      return rows.map((row) => ({
+        id: row.id,
+        kind: row.kind,
+        label: row.label,
+        target: row.target,
+        createdAt: row.createdAt,
+      }));
+    } catch (err) {
+      throw mapDatabaseError(err, 'query');
+    }
+  }
+
+  public async addAllowlistEntry(entry: {
+    kind: AllowlistKind;
+    label: string;
+    target: string;
+  }): Promise<AllowlistEntryDTO> {
+    try {
+      const id = randomUUID();
+      const createdAt = new Date().toISOString();
+      await this.handle.db.insert(desktopAllowlist).values({
+        id,
+        kind: entry.kind,
+        label: entry.label,
+        target: entry.target,
+        createdAt,
+      });
+      return {
+        id,
+        kind: entry.kind,
+        label: entry.label,
+        target: entry.target,
+        createdAt,
+      };
+    } catch (err) {
+      throw mapDatabaseError(err, 'query');
+    }
+  }
+
+  public async deleteAllowlistEntry(id: string): Promise<boolean> {
+    try {
+      const existing = await this.handle.db
+        .select({ id: desktopAllowlist.id })
+        .from(desktopAllowlist)
+        .where(eq(desktopAllowlist.id, id))
+        .limit(1);
+      if (existing.length === 0) return false;
+      await this.handle.db.delete(desktopAllowlist).where(eq(desktopAllowlist.id, id));
+      return true;
+    } catch (err) {
+      throw mapDatabaseError(err, 'query');
+    }
+  }
+
+  public async recordAuditLog(entry: {
+    capability: string;
+    action: string;
+    target: string;
+    outcome: AuditOutcome;
+    source: AuditSource;
+    detail?: string | null;
+  }): Promise<AuditLogEntryDTO> {
+    try {
+      const id = randomUUID();
+      const timestamp = new Date().toISOString();
+      const safeTarget = sanitizeDiagnosticText(entry.target).slice(0, 240);
+      const safeDetail = entry.detail ? sanitizeDiagnosticText(entry.detail).slice(0, 400) : null;
+
+      await this.handle.db.insert(privilegedAuditLogs).values({
+        id,
+        timestamp,
+        capability: entry.capability,
+        action: entry.action,
+        target: safeTarget,
+        outcome: entry.outcome,
+        source: entry.source,
+        detail: safeDetail,
+      });
+
+      return {
+        id,
+        timestamp,
+        capability: entry.capability,
+        action: entry.action,
+        target: safeTarget,
+        outcome: entry.outcome,
+        source: entry.source,
+        detail: safeDetail,
+      };
+    } catch (err) {
+      throw mapDatabaseError(err, 'query');
+    }
+  }
+
+  public async listAuditLogs(options: {
+    capability?: string;
+    outcome?: AuditOutcome;
+    limit?: number;
+  } = {}): Promise<AuditLogEntryDTO[]> {
+    try {
+      const limit = Math.max(1, Math.min(options.limit ?? 100, 500));
+      const rows = await this.handle.db
+        .select()
+        .from(privilegedAuditLogs)
+        .orderBy(desc(privilegedAuditLogs.timestamp))
+        .limit(limit);
+
+      return rows
+        .filter((row) => {
+          if (options.capability && row.capability !== options.capability) return false;
+          if (options.outcome && row.outcome !== options.outcome) return false;
+          return true;
+        })
+        .map((row) => ({
+          id: row.id,
+          timestamp: row.timestamp,
+          capability: row.capability,
+          action: row.action,
+          target: row.target,
+          outcome: row.outcome,
+          source: row.source,
+          detail: row.detail,
+        }));
+    } catch (err) {
+      throw mapDatabaseError(err, 'query');
+    }
+  }
+
+  public async exportPersonalData(): Promise<{
+    conversations: ConversationDetailDTO[];
+    allowlist: AllowlistEntryDTO[];
+    auditLogs: AuditLogEntryDTO[];
+  }> {
+    try {
+      const convList = await this.listConversations();
+      const details: ConversationDetailDTO[] = [];
+      for (const conv of convList) {
+        const detail = await this.getConversationDetail(conv.id);
+        if (detail) details.push(detail);
+      }
+      const allowlist = await this.listAllowlist();
+      const auditLogs = await this.listAuditLogs({ limit: 500 });
+      return {
+        conversations: details,
+        allowlist,
+        auditLogs,
+      };
     } catch (err) {
       throw mapDatabaseError(err, 'query');
     }

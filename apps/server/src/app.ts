@@ -1,3 +1,5 @@
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { extname, resolve, sep } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
@@ -12,10 +14,13 @@ import {
 } from '@mj/database';
 import { createSessionGuard } from './auth.js';
 import { loadServerConfig, type ServerConfig } from './config.js';
+import { PermissionsStore } from './permissionsStore.js';
 import { RuntimeSettingsStore } from './settingsStore.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerConversationRoutes } from './routes/conversations.js';
+import { registerDesktopRoutes } from './routes/desktop.js';
 import { registerHealthRoutes } from './routes/health.js';
+import { registerPrivacyRoutes } from './routes/privacy.js';
 import { registerSettingsRoutes } from './routes/settings.js';
 import { registerUsageRoutes } from './routes/usage.js';
 import {
@@ -30,6 +35,7 @@ export interface BuildServerOptions {
   voiceGateway?: VoiceGateway;
   dbHandle?: MjDatabaseHandle;
   logger?: boolean;
+  webDistDir?: string;
 }
 
 export interface MjServerContext {
@@ -38,6 +44,7 @@ export interface MjServerContext {
   dbHandle: MjDatabaseHandle;
   repo: MjDatabaseRepository;
   settingsStore: RuntimeSettingsStore;
+  permissionsStore: PermissionsStore;
 }
 
 export async function buildServer(options: BuildServerOptions = {}): Promise<MjServerContext> {
@@ -45,6 +52,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
   const dbHandle = options.dbHandle ?? createDatabase(config.databaseUrl);
   const repo = new MjDatabaseRepository(dbHandle);
   const settingsStore = new RuntimeSettingsStore(repo, config);
+  const permissionsStore = new PermissionsStore(repo);
   const xaiClient =
     options.xaiClient ??
     new XaiResponsesClient({
@@ -138,11 +146,30 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
   });
   registerAuthRoutes(app, config);
   registerSettingsRoutes(app, { settingsStore, requireSession });
-  registerUsageRoutes(app, { repo, settingsStore, requireSession });
+  registerUsageRoutes(app, {
+    config,
+    repo,
+    settingsStore,
+    xaiClient,
+    voiceGateway,
+    requireSession,
+  });
+  registerPrivacyRoutes(app, {
+    repo,
+    permissionsStore,
+    settingsStore,
+    requireSession,
+  });
+  registerDesktopRoutes(app, {
+    repo,
+    permissionsStore,
+    requireSession,
+  });
   registerVoiceRoutes(app, {
     config,
     repo,
     settingsStore,
+    permissionsStore,
     voiceGateway,
     requireSession,
   });
@@ -150,9 +177,64 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
     config,
     repo,
     settingsStore,
+    permissionsStore,
     xaiClient,
     requireSession,
   });
+
+  // Optional production single-server static frontend serving (built apps/web/dist)
+  const resolvedWebDist =
+    options.webDistDir ??
+    (config.serveWebDist ? resolve(config.rootDir, 'apps', 'web', 'dist') : null);
+
+  if (resolvedWebDist && existsSync(resolve(resolvedWebDist, 'index.html'))) {
+    const distRoot = resolve(resolvedWebDist);
+    const mimeByExt: Record<string, string> = {
+      '.html': 'text/html; charset=utf-8',
+      '.js': 'application/javascript; charset=utf-8',
+      '.css': 'text/css; charset=utf-8',
+      '.json': 'application/json; charset=utf-8',
+      '.svg': 'image/svg+xml',
+      '.png': 'image/png',
+      '.ico': 'image/x-icon',
+      '.woff2': 'font/woff2',
+    };
+
+    app.get('/*', async (request, reply) => {
+      const urlPath = request.url.split('?')[0] ?? '/';
+      if (urlPath === '/api' || urlPath.startsWith('/api/')) {
+        throw new AppError({
+          code: ErrorCodes.NOT_FOUND,
+          category: 'validation',
+          statusCode: 404,
+          requestId: request.id,
+          message: `API endpoint "${urlPath}" not found.`,
+        });
+      }
+
+      const safeRel = decodeURIComponent(urlPath).replace(/^\/+/, '');
+      const candidate = resolve(distRoot, safeRel);
+      const insideDist =
+        candidate === distRoot || candidate.startsWith(`${distRoot}${sep}`);
+
+      if (insideDist && safeRel.length > 0 && existsSync(candidate) && statSync(candidate).isFile()) {
+        const ext = extname(candidate).toLowerCase();
+        const isHashedAsset = urlPath.startsWith('/assets/');
+        return reply
+          .header('Content-Type', mimeByExt[ext] ?? 'application/octet-stream')
+          .header(
+            'Cache-Control',
+            isHashedAsset ? 'public, max-age=31536000, immutable' : 'no-cache',
+          )
+          .send(readFileSync(candidate));
+      }
+
+      return reply
+        .header('Content-Type', 'text/html; charset=utf-8')
+        .header('Cache-Control', 'no-cache')
+        .send(readFileSync(resolve(distRoot, 'index.html')));
+    });
+  }
 
   app.setErrorHandler((err, request, reply) => {
     if (err instanceof AppError) {
@@ -211,5 +293,6 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
     dbHandle,
     repo,
     settingsStore,
+    permissionsStore,
   };
 }

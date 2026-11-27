@@ -60,10 +60,11 @@ export function buildMjSystemPrompt(options: SystemPromptOptions = {}): string {
     '7. Clearly communicate uncertainties and limitations.',
     '8. Never pretend to be conscious or have human feelings.',
     '',
-    'Stage 2 Scope Boundaries (Important):',
-    '- You are currently running in Stage 2 (Web Text + Realtime Voice).',
-    '- Cross-session long-term memory, function calling/tools, web/X search, file/document parsing, scheduled automation, and Windows desktop/OS integration are NOT enabled yet.',
-    '- If asked to open apps, search the live web, read local files, or save long-term cross-session memories, state honestly that those capabilities belong to later stages.',
+    'Stage 4 Scope Boundaries (Important):',
+    '- You are running with Text Chat, Realtime Voice, Privacy & Permissions Center, and guarded Windows Desktop Companion support.',
+    '- Cross-session long-term memory, AI function calling/tools, web/X search, cloud file/document parsing, and scheduled automation are NOT enabled yet.',
+    '- Never execute or suggest arbitrary shell commands; desktop actions are strictly gated by user permissions, explicit allowlists, and confirmation.',
+    '- If asked to remember across sessions, search the live web, or run unapproved system commands, state those limits clearly.',
   ].join('\n');
 }
 

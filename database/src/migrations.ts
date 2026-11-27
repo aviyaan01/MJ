@@ -77,4 +77,34 @@ export const SQL_MIGRATIONS: SqlMigration[] = [
       ALTER TABLE usage_logs ADD COLUMN voice_seconds INTEGER NOT NULL DEFAULT 0;
     `,
   },
+  {
+    id: '0003_stage4_privacy_desktop',
+    description: 'Create desktop_allowlist and privileged_audit_logs tables for Stage 4 privacy hardening',
+    sql: `
+      CREATE TABLE IF NOT EXISTS desktop_allowlist (
+        id TEXT PRIMARY KEY NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('app', 'folder', 'web_domain')),
+        label TEXT NOT NULL,
+        target TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_desktop_allowlist_kind
+        ON desktop_allowlist (kind, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS privileged_audit_logs (
+        id TEXT PRIMARY KEY NOT NULL,
+        timestamp TEXT NOT NULL,
+        capability TEXT NOT NULL,
+        action TEXT NOT NULL,
+        target TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK (outcome IN ('allowed', 'denied', 'cancelled', 'error')),
+        source TEXT NOT NULL CHECK (source IN ('web', 'server', 'desktop-tauri')),
+        detail TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_privileged_audit_logs_timestamp
+        ON privileged_audit_logs (timestamp DESC);
+    `,
+  },
 ];

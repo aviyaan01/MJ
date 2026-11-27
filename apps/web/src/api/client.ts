@@ -1,11 +1,21 @@
 import {
   ErrorCodes,
+  type ADMIN_PRIVILEGE_POLICY,
+  type AllowlistEntryDTO,
+  type AllowlistKind,
+  type AuditLogEntryDTO,
+  type AuditOutcome,
+  type AuditSource,
   type AuthSessionDTO,
   type ChatStreamEvent,
+  type ConnectivityCheckDTO,
+  type ControllablePermissionKey,
   type ConversationDTO,
   type ConversationDetailDTO,
+  type HostTelemetryDTO,
   type LanguageMode,
   type MessageDTO,
+  type PermissionsStateDTO,
   type PublicSettingsDTO,
   type StructuredErrorPayload,
   type SystemHealthDTO,
@@ -151,6 +161,104 @@ export const mjApi = {
     }),
 
   getUsage: () => requestJson<UsageSummaryDTO>('/api/usage'),
+
+  checkUsageConnectivity: () =>
+    requestJson<ConnectivityCheckDTO>('/api/usage/connectivity', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+
+  getPrivacyPermissions: () =>
+    requestJson<{
+      permissions: PermissionsStateDTO;
+      adminPolicy: typeof ADMIN_PRIVILEGE_POLICY;
+    }>('/api/privacy/permissions'),
+
+  setSinglePermission: (key: ControllablePermissionKey, enabled: boolean) =>
+    requestJson<{
+      permissions: PermissionsStateDTO;
+      adminPolicy: typeof ADMIN_PRIVILEGE_POLICY;
+    }>('/api/privacy/permissions', {
+      method: 'PATCH',
+      body: JSON.stringify({ key, enabled }),
+    }),
+
+  revokeDesktopPermissions: () =>
+    requestJson<{
+      permissions: PermissionsStateDTO;
+      adminPolicy: typeof ADMIN_PRIVILEGE_POLICY;
+    }>('/api/privacy/revoke-desktop', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+
+  listAuditLogs: (filters?: { capability?: string; outcome?: string; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (filters?.capability) params.set('capability', filters.capability);
+    if (filters?.outcome) params.set('outcome', filters.outcome);
+    if (filters?.limit) params.set('limit', String(filters.limit));
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    return requestJson<{ entries: AuditLogEntryDTO[] }>(`/api/privacy/audit-log${qs}`);
+  },
+
+  recordAuditLog: (entry: {
+    capability: string;
+    action: string;
+    target: string;
+    outcome: AuditOutcome;
+    source: AuditSource;
+    detail?: string;
+  }) =>
+    requestJson<{ entry: AuditLogEntryDTO }>('/api/privacy/audit-log', {
+      method: 'POST',
+      body: JSON.stringify(entry),
+    }),
+
+  listAllowlist: () => requestJson<{ entries: AllowlistEntryDTO[] }>('/api/privacy/allowlist'),
+
+  addAllowlistEntry: (entry: { kind: AllowlistKind; label: string; target: string }) =>
+    requestJson<{ entry: AllowlistEntryDTO }>('/api/privacy/allowlist', {
+      method: 'POST',
+      body: JSON.stringify(entry),
+    }),
+
+  deleteAllowlistEntry: (id: string) =>
+    requestJson<{ deleted: boolean; id: string }>(
+      `/api/privacy/allowlist/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    ),
+
+  exportPersonalData: () => requestJson<Record<string, unknown>>('/api/privacy/export'),
+
+  clearAllConversations: () =>
+    requestJson<{ cleared: boolean; deletedCount: number }>('/api/privacy/conversations', {
+      method: 'DELETE',
+    }),
+
+  getDesktopSystemStatus: () =>
+    requestJson<{ telemetry: HostTelemetryDTO }>('/api/desktop/system-status'),
+
+  validateDesktopAction: (payload: {
+    capability:
+      | 'appOpening'
+      | 'fileRead'
+      | 'fileWrite'
+      | 'systemMonitoring'
+      | 'notifications'
+      | 'clipboardWrite'
+      | 'webLaunch';
+    action: string;
+    target: string;
+    confirmed?: boolean;
+    source?: 'web' | 'desktop-tauri';
+  }) =>
+    requestJson<{ approved: boolean; auditEntry: AuditLogEntryDTO }>(
+      '/api/desktop/validate-action',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+    ),
 
   requestVoiceClientSecret: (input?: {
     conversationId?: string;

@@ -27,6 +27,8 @@ export interface ServerConfig {
   authSecretEphemeral: boolean;
   accessPasscode: string;
   passcodeRequired: boolean;
+  serveWebDist: boolean;
+  rootDir: string;
 }
 
 const DEFAULT_SUGGESTED_MODELS = [
@@ -165,6 +167,10 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
   const timeoutNum = Number(env.XAI_TIMEOUT_MS ?? 60000);
   const maxTokensNum = Number(env.XAI_MAX_OUTPUT_TOKENS ?? 4096);
 
+  const rawServeWeb = (env.SERVE_WEB_DIST ?? '').trim().toLowerCase();
+  const serveWebDist =
+    rawServeWeb === 'true' ? true : rawServeWeb === 'false' ? false : appEnv === 'production';
+
   return {
     appEnv,
     host: (env.HOST ?? '127.0.0.1').trim(),
@@ -187,5 +193,7 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
     authSecretEphemeral,
     accessPasscode,
     passcodeRequired,
+    serveWebDist,
+    rootDir,
   };
 }

@@ -1,0 +1,11 @@
+{
+  "kind": "synthetic planning fixture",
+  "provenance": "Locally authored 2026-10-14; all rates and limits are assumptions, not observed traffic",
+  "workloads": [
+    {"class": "interactive reads", "offered_jobs_per_second": 80, "average_service_seconds": 0.02, "deadline_seconds": 0.25},
+    {"class": "exports", "offered_jobs_per_second": 20, "successful_completions_per_second": 15, "backlog_jobs": 9000, "deadline_seconds": 1800}
+  ],
+  "candidate_exports": {"successful_completions_per_second": 35, "startup_seconds": "unknown", "downstream_quota_jobs_per_second": "unknown"},
+  "load_report": {"scheduled_per_second": 100, "started_per_second": 60, "dropped_per_second": 40, "generator_cpu_limit": "unverified"},
+  "request": "Choose Now/Next/Scale, recovery estimate and first measurement. Preserve assumptions; do not invent capacity or cloud prices."
+}

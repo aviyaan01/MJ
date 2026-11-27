@@ -16,12 +16,14 @@ import {
 import { XaiResponsesClient, buildMjSystemPrompt } from '@mj/ai';
 import type { MjDatabaseRepository } from '@mj/database';
 import type { ServerConfig } from '../config.js';
+import type { PermissionsStore } from '../permissionsStore.js';
 import type { RuntimeSettingsStore } from '../settingsStore.js';
 
 export interface ConversationRouteDeps {
   config: ServerConfig;
   repo: MjDatabaseRepository;
   settingsStore: RuntimeSettingsStore;
+  permissionsStore: PermissionsStore;
   xaiClient: XaiResponsesClient;
   requireSession: (request: FastifyRequest) => Promise<void>;
 }
@@ -334,6 +336,25 @@ export function registerConversationRoutes(
         });
       }
 
+      const permissions = await deps.permissionsStore.getPermissions();
+      if (!permissions.externalWebServices) {
+        await deps.repo.recordAuditLog({
+          capability: 'externalWebServices',
+          action: 'Blocked outbound Grok API chat request',
+          target: 'https://api.x.ai/v1/responses',
+          outcome: 'denied',
+          source: 'server',
+          detail: 'externalWebServices is disabled in Privacy & Permissions.',
+        });
+        throw new AppError({
+          code: ErrorCodes.PERMISSION_DENIED,
+          category: 'privacy',
+          statusCode: 403,
+          requestId: request.id,
+          message: 'External AI requests are disabled in Privacy & Permissions.',
+        });
+      }
+
       const settings = await deps.settingsStore.getPublicSettings();
       const usageSummary = await deps.repo.getUsageSummary(settings.budget);
       if (usageSummary.budgetStatus.level === 'hard_cap_reached') {
@@ -398,6 +419,25 @@ export function registerConversationRoutes(
           category: 'api',
           statusCode: 502,
           requestId: request.id,
+        });
+      }
+
+      const permissions = await deps.permissionsStore.getPermissions();
+      if (!permissions.externalWebServices) {
+        await deps.repo.recordAuditLog({
+          capability: 'externalWebServices',
+          action: 'Blocked outbound Grok API chat request',
+          target: 'https://api.x.ai/v1/responses',
+          outcome: 'denied',
+          source: 'server',
+          detail: 'externalWebServices is disabled in Privacy & Permissions.',
+        });
+        throw new AppError({
+          code: ErrorCodes.PERMISSION_DENIED,
+          category: 'privacy',
+          statusCode: 403,
+          requestId: request.id,
+          message: 'External AI requests are disabled in Privacy & Permissions.',
         });
       }
 

@@ -24,7 +24,7 @@ export function registerHealthRoutes(app: FastifyInstance, deps: HealthRouteDeps
 
     const payload: SystemHealthDTO = {
       status: dbOk ? 'online' : 'degraded',
-      stage: 'Stage 2 · Text & Realtime Voice',
+      stage: 'Stage 5 · Monitoring, Usage & Final Delivery',
       backend: 'online',
       database: dbOk ? 'healthy' : 'unavailable',
       aiEngine: engineState,
@@ -43,7 +43,7 @@ export function registerHealthRoutes(app: FastifyInstance, deps: HealthRouteDeps
         memory: false,
         tools: false,
         automation: false,
-        desktop: false,
+        desktop: true,
       },
     };
 

@@ -41,14 +41,25 @@ export interface PersistedSettingsPatch {
 }
 
 export class RuntimeSettingsStore {
+  private cachedSaved: PersistedSettingsPatch | null = null;
+
   constructor(
     private readonly repo: MjDatabaseRepository,
     private readonly config: ServerConfig,
   ) {}
 
-  public async getPublicSettings(): Promise<PublicSettingsDTO> {
+  private async loadSavedPatch(): Promise<PersistedSettingsPatch> {
+    if (this.cachedSaved !== null) {
+      return this.cachedSaved;
+    }
     const saved =
       (await this.repo.getStoredSettings<PersistedSettingsPatch>(SETTINGS_STORAGE_KEY)) ?? {};
+    this.cachedSaved = saved;
+    return saved;
+  }
+
+  public async getPublicSettings(): Promise<PublicSettingsDTO> {
+    const saved = await this.loadSavedPatch();
 
     const activeModel = saved.activeModel?.trim() || this.config.xaiTextModel;
     const availableModels = Array.from(new Set([activeModel, ...this.config.availableModels]));
@@ -91,8 +102,7 @@ export class RuntimeSettingsStore {
   }
 
   public async updateSettings(patch: PersistedSettingsPatch): Promise<PublicSettingsDTO> {
-    const existing =
-      (await this.repo.getStoredSettings<PersistedSettingsPatch>(SETTINGS_STORAGE_KEY)) ?? {};
+    const existing = await this.loadSavedPatch();
 
     const merged: PersistedSettingsPatch = {
       ...existing,
@@ -116,6 +126,7 @@ export class RuntimeSettingsStore {
     };
 
     await this.repo.saveStoredSettings(SETTINGS_STORAGE_KEY, merged);
+    this.cachedSaved = merged;
     return this.getPublicSettings();
   }
 }

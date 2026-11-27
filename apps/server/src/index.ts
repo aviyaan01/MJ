@@ -29,7 +29,7 @@ async function main() {
   });
 
   console.log(
-    `[MJ Server] Stage 1 API listening at http://${config.host}:${config.port} (env=${config.appEnv}, model=${config.xaiTextModel}, db=${dbHandle.filePath})`,
+    `[MJ Server] MJ Assistant API listening at http://${config.host}:${config.port} (env=${config.appEnv}, model=${config.xaiTextModel}, db=${dbHandle.filePath})`,
   );
 }
 

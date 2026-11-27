@@ -26,6 +26,13 @@ export const ErrorCodes = {
   AUDIO_PLAYBACK_FAILED: 'AUDIO_PLAYBACK_FAILED',
   VOICE_SERVICE_UNAVAILABLE: 'VOICE_SERVICE_UNAVAILABLE',
   VOICE_CONNECTION_INTERRUPTED: 'VOICE_CONNECTION_INTERRUPTED',
+
+  // Stage 4 Desktop & Privacy Errors (Sections 14 & 15)
+  PERMISSION_DENIED: 'PERMISSION_DENIED',
+  CONFIRMATION_REQUIRED: 'CONFIRMATION_REQUIRED',
+  SHELL_EXECUTION_FORBIDDEN: 'SHELL_EXECUTION_FORBIDDEN',
+  UNAPPROVED_TARGET: 'UNAPPROVED_TARGET',
+  DESKTOP_HOST_REQUIRED: 'DESKTOP_HOST_REQUIRED',
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
@@ -33,6 +40,8 @@ export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
 export type ErrorCategory =
   | 'api'
   | 'voice'
+  | 'desktop'
+  | 'privacy'
   | 'network'
   | 'database'
   | 'auth'
@@ -101,6 +110,16 @@ const DEFAULT_USER_MESSAGES: Record<ErrorCode, string> = {
     'Grok voice service is temporarily unavailable. Please try again or switch to text mode.',
   VOICE_CONNECTION_INTERRUPTED:
     'Voice connection interrupted. Reconnecting...',
+  PERMISSION_DENIED:
+    'This capability is currently turned OFF in the Privacy & Permissions Center. Enable it individually before continuing.',
+  CONFIRMATION_REQUIRED:
+    'Explicit user confirmation is required before modifying or organizing local files.',
+  SHELL_EXECUTION_FORBIDDEN:
+    'Arbitrary shell commands and script interpreters are strictly blocked by MJ Assistant security policy.',
+  UNAPPROVED_TARGET:
+    'This target is not in your explicit allowlist. Approve it in Privacy & Permissions first.',
+  DESKTOP_HOST_REQUIRED:
+    'This OS-level action requires running inside the MJ Assistant Windows Tauri Desktop Companion.',
 };
 
 const RETRYABLE_CODES = new Set<ErrorCode>([
@@ -182,7 +201,14 @@ export function inferHttpStatus(code: ErrorCode): number {
     case ErrorCodes.UNAUTHORIZED:
       return 401;
     case ErrorCodes.MIC_PERMISSION_DENIED:
+    case ErrorCodes.PERMISSION_DENIED:
+    case ErrorCodes.SHELL_EXECUTION_FORBIDDEN:
+    case ErrorCodes.UNAPPROVED_TARGET:
       return 403;
+    case ErrorCodes.CONFIRMATION_REQUIRED:
+      return 409;
+    case ErrorCodes.DESKTOP_HOST_REQUIRED:
+      return 501;
     case ErrorCodes.INSUFFICIENT_CREDITS:
       return 402;
     case ErrorCodes.RATE_LIMITED:

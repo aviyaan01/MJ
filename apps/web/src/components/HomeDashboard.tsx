@@ -1,5 +1,6 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { memo, useEffect, useState, type FormEvent } from 'react';
 import {
+  Activity,
   AlertTriangle,
   ArrowRight,
   AudioLines,
@@ -9,6 +10,7 @@ import {
   FileText,
   Globe,
   Hand,
+  Laptop,
   Layers,
   MessageSquare,
   Mic,
@@ -19,6 +21,7 @@ import {
   Sparkles,
   Square,
   Volume2,
+  Wifi,
 } from 'lucide-react';
 import { MJCoreOrb, Panel, StatusPill, type OrbState } from '@mj/ui';
 import { VOICE_STATE_META } from '@mj/voice';
@@ -32,6 +35,7 @@ import type {
   UsageSummaryDTO,
   VoiceState,
 } from '@mj/shared';
+import { isTauriDesktop } from '../desktop/desktopBridge.js';
 import { MarkdownMessage } from './MarkdownMessage.js';
 import { VoiceStateBar } from './VoiceStateBar.js';
 
@@ -39,7 +43,6 @@ interface HomeDashboardProps {
   health: SystemHealthDTO | null;
   settings: PublicSettingsDTO | null;
   usage: UsageSummaryDTO | null;
-  conversations: ConversationDTO[];
   online: boolean;
   interactionMode: 'voice' | 'text';
   onChangeInteractionMode: (mode: 'voice' | 'text') => void;
@@ -58,6 +61,7 @@ interface HomeDashboardProps {
     assistantMessage: MessageDTO | null;
   } | null;
   activeError: StructuredErrorPayload | null;
+  conversations: ConversationDTO[];
   onStartVoice: () => void;
   onStopVoice: () => void;
   onToggleMute: () => void;
@@ -69,6 +73,7 @@ interface HomeDashboardProps {
   onRetryLast: () => void;
   onOpenConversation: (conversationId: string) => void;
   onNavigateChat: () => void;
+  onNavigateUsage: () => void;
   onNavigateSettings: () => void;
 }
 
@@ -136,15 +141,10 @@ export function HomeDashboard({
   onRetryLast,
   onOpenConversation,
   onNavigateChat,
+  onNavigateUsage,
   onNavigateSettings,
 }: HomeDashboardProps) {
-  const [now, setNow] = useState(() => new Date());
   const [quickInput, setQuickInput] = useState('');
-
-  useEffect(() => {
-    const timer = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
 
   const voiceActive =
     voiceState === 'requesting_permission' ||
@@ -181,9 +181,11 @@ export function HomeDashboard({
   const apiKeyReady = settings?.apiKeyConfigured ?? health?.aiEngine === 'ready';
   const budgetLevel = usage?.budgetStatus.level ?? 'ok';
   const hardCap = usage?.budgetStatus.hardCapUsd ?? 0;
+  const softCap = usage?.budgetStatus.softCapUsd ?? 0;
   const monthSpend = usage?.month.estimatedCostUsd ?? 0;
   const budgetPct = hardCap > 0 ? Math.min(100, Math.round((monthSpend / hardCap) * 100)) : 0;
   const languageMode = settings?.voice.languageMode ?? 'auto';
+  const inTauri = isTauriDesktop();
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -193,26 +195,9 @@ export function HomeDashboard({
     onQuickSend(trimmed);
   };
 
-  const formattedTime = now.toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
-  const formattedFullDate = now.toLocaleDateString([], {
-    weekday: 'long',
-    month: 'long',
-    day: 'numeric',
-    year: 'numeric',
-  });
-  const formattedTopDate = now
+  const formattedTopDate = new Date()
     .toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })
     .toUpperCase();
-  const greeting =
-    now.getHours() < 12
-      ? 'Good morning.'
-      : now.getHours() < 18
-        ? 'Good afternoon.'
-        : 'Good evening.';
 
   return (
     <div className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-7 lg:px-10 lg:py-8">
@@ -223,7 +208,7 @@ export function HomeDashboard({
             className="text-[11px] font-medium tracking-[0.22em] uppercase"
             style={{ color: 'var(--mj-text-subtle)' }}
           >
-            PERSONAL AI ASSISTANT · STAGE 2 REALTIME VOICE
+            PERSONAL AI ASSISTANT · MONITORING &amp; REALTIME VOICE
           </div>
           <h1 className="mt-1.5 text-2xl font-normal tracking-tight text-[#F0F5F9] sm:text-3xl">
             MJ <span style={{ color: 'var(--mj-accent-ice)' }}>Assistant</span>
@@ -799,41 +784,15 @@ export function HomeDashboard({
 
         {/* Right Information Panel */}
         <aside className="flex min-w-0 flex-col gap-4">
-          {/* Clock & Greeting */}
-          <Panel
-            className="relative overflow-hidden p-5"
-            style={{
-              background:
-                'radial-gradient(ellipse at 90% 10%, rgba(115, 161, 197, 0.14), transparent 45%), linear-gradient(145deg, rgba(18, 25, 36, 0.94), rgba(10, 14, 21, 0.94))',
-            }}
-          >
-            <div
-              className="text-[11px] font-medium tracking-[0.18em] uppercase"
-              style={{ color: 'var(--mj-text-subtle)' }}
-            >
-              LOCAL TIME
-            </div>
-            <div className="mt-2.5 text-4xl font-light tracking-tight text-[#EDF5FB] tabular-nums">
-              {formattedTime}
-            </div>
-            <div className="mt-1 text-xs" style={{ color: 'var(--mj-text-muted)' }}>
-              {formattedFullDate}
-            </div>
-            <div
-              className="mt-4 flex items-center justify-between border-t pt-3 text-xs"
-              style={{ borderColor: 'var(--mj-border-subtle)' }}
-            >
-              <span className="font-medium text-[#DCE6EE]">{greeting}</span>
-              <span style={{ color: 'var(--mj-text-subtle)' }}>Shared Context</span>
-            </div>
-          </Panel>
+          {/* Isolated Clock Card (prevents 1s interval rerenders across orb/feed) */}
+          <LocalClockCard />
 
           {/* System Status (100% real data) */}
           <Panel className="p-5">
             <div className="mb-3 flex items-center justify-between">
               <h3 className="text-sm font-medium text-[#DCE7F0]">System Status</h3>
               <StatusPill tone={health?.backend === 'online' ? 'good' : 'error'}>
-                {health?.backend === 'online' ? 'Healthy' : 'Offline'}
+                {health?.backend === 'online' ? 'Online' : 'Offline'}
               </StatusPill>
             </div>
 
@@ -845,7 +804,7 @@ export function HomeDashboard({
                   apiKeyReady
                     ? 'Connected'
                     : health?.backend === 'online'
-                      ? 'Key missing'
+                      ? 'Disconnected'
                       : 'Unavailable'
                 }
                 tone={apiKeyReady ? 'good' : 'warn'}
@@ -857,22 +816,32 @@ export function HomeDashboard({
                   voiceActive
                     ? VOICE_STATE_META[voiceState].label
                     : apiKeyReady
-                      ? 'Ready'
-                      : 'Key missing'
+                      ? 'Connected'
+                      : 'Disconnected'
                 }
                 tone={
                   voiceState === 'error'
                     ? 'error'
-                    : voiceActive
+                    : voiceActive || apiKeyReady
                       ? 'good'
-                      : apiKeyReady
-                        ? 'good'
-                        : 'warn'
+                      : 'warn'
                 }
               />
               <StatusRow
+                icon={<Wifi className="h-4 w-4" />}
+                label="WebSocket"
+                value={
+                  voiceActive
+                    ? VOICE_STATE_META[voiceState].label
+                    : voiceState === 'error'
+                      ? 'Error'
+                      : 'Standby'
+                }
+                tone={voiceState === 'error' ? 'error' : voiceActive ? 'good' : 'neutral'}
+              />
+              <StatusRow
                 icon={<Database className="h-4 w-4" />}
-                label="SQLite Storage"
+                label="Database"
                 value={health?.database === 'healthy' ? 'Healthy' : 'Unavailable'}
                 tone={health?.database === 'healthy' ? 'good' : 'error'}
               />
@@ -883,39 +852,36 @@ export function HomeDashboard({
                 tone={online ? 'good' : 'warn'}
               />
               <StatusRow
+                icon={<Laptop className="h-4 w-4" />}
+                label="Desktop"
+                value={inTauri ? 'Tauri Native' : 'Host Bridge'}
+                tone={inTauri || health?.backend === 'online' ? 'good' : 'warn'}
+              />
+              <StatusRow
                 icon={<Sparkles className="h-4 w-4" />}
-                label="Voice Model"
-                value={settings?.voice.voiceModel ?? health?.activeVoiceModel ?? 'grok-voice-latest'}
+                label="Models"
+                value={`${settings?.activeModel ?? health?.activeModel ?? 'grok-4.7'} · ${settings?.voice.voiceModel ?? health?.activeVoiceModel ?? 'grok-voice-latest'}`}
                 tone="neutral"
               />
             </div>
           </Panel>
 
-          {/* API Usage Summary */}
+          {/* API Usage & Spend-vs-Budget Summary */}
           <Panel className="p-5">
             <div className="mb-3 flex items-center justify-between">
-              <h3 className="text-sm font-medium text-[#DCE7F0]">API Usage Summary</h3>
-              <span
-                className="text-[11px] uppercase tracking-[0.12em]"
-                style={{ color: 'var(--mj-text-subtle)' }}
+              <h3 className="text-sm font-medium text-[#DCE7F0]">Spend vs Budget</h3>
+              <button
+                type="button"
+                onClick={onNavigateUsage}
+                className="inline-flex items-center gap-1 text-[11px] font-medium transition hover:underline"
+                style={{ color: 'var(--mj-accent-ice)' }}
               >
-                THIS MONTH
-              </span>
+                <Activity className="h-3 w-3" />
+                Full Monitor
+              </button>
             </div>
 
             <div className="grid grid-cols-2 gap-3 text-xs">
-              <div
-                className="rounded-xl p-3"
-                style={{
-                  backgroundColor: 'rgba(255, 255, 255, 0.02)',
-                  border: '1px solid var(--mj-border-subtle)',
-                }}
-              >
-                <div style={{ color: 'var(--mj-text-subtle)' }}>Voice min (mo)</div>
-                <div className="mt-1 text-lg font-medium text-[#EDF3F8] tabular-nums">
-                  {((usage?.month.voiceSeconds ?? 0) / 60).toFixed(1)}m
-                </div>
-              </div>
               <div
                 className="rounded-xl p-3"
                 style={{
@@ -928,12 +894,24 @@ export function HomeDashboard({
                   ${monthSpend.toFixed(4)}
                 </div>
               </div>
+              <div
+                className="rounded-xl p-3"
+                style={{
+                  backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                  border: '1px solid var(--mj-border-subtle)',
+                }}
+              >
+                <div style={{ color: 'var(--mj-text-subtle)' }}>Avg latency / Voice</div>
+                <div className="mt-1 text-sm font-medium text-[#EDF3F8] tabular-nums">
+                  {usage?.month.avgLatencyMs ?? 0}ms · {((usage?.month.voiceSeconds ?? 0) / 60).toFixed(1)}m
+                </div>
+              </div>
             </div>
 
             <div className="mt-3.5">
               <div className="flex items-center justify-between text-[11px]">
                 <span style={{ color: 'var(--mj-text-subtle)' }}>
-                  Budget cap ({hardCap > 0 ? `$${hardCap.toFixed(2)}` : 'No hard cap'})
+                  Cap: {softCap > 0 ? `$${softCap.toFixed(0)} warn / ` : ''}{hardCap > 0 ? `$${hardCap.toFixed(2)} hard` : 'No hard cap'}
                 </span>
                 <span
                   style={{
@@ -995,6 +973,63 @@ export function HomeDashboard({
     </div>
   );
 }
+
+const LocalClockCard = memo(function LocalClockCard() {
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 10_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const formattedTime = now.toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  const formattedFullDate = now.toLocaleDateString([], {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  });
+  const greeting =
+    now.getHours() < 12
+      ? 'Good morning.'
+      : now.getHours() < 18
+        ? 'Good afternoon.'
+        : 'Good evening.';
+
+  return (
+    <Panel
+      className="relative overflow-hidden p-5"
+      style={{
+        background:
+          'radial-gradient(ellipse at 90% 10%, rgba(115, 161, 197, 0.14), transparent 45%), linear-gradient(145deg, rgba(18, 25, 36, 0.94), rgba(10, 14, 21, 0.94))',
+      }}
+    >
+      <div
+        className="text-[11px] font-medium tracking-[0.18em] uppercase"
+        style={{ color: 'var(--mj-text-subtle)' }}
+      >
+        LOCAL TIME
+      </div>
+      <div className="mt-2.5 text-4xl font-light tracking-tight text-[#EDF5FB] tabular-nums">
+        {formattedTime}
+      </div>
+      <div className="mt-1 text-xs" style={{ color: 'var(--mj-text-muted)' }}>
+        {formattedFullDate}
+      </div>
+      <div
+        className="mt-4 flex items-center justify-between border-t pt-3 text-xs"
+        style={{ borderColor: 'var(--mj-border-subtle)' }}
+      >
+        <span className="font-medium text-[#DCE6EE]">{greeting}</span>
+        <span style={{ color: 'var(--mj-text-subtle)' }}>Shared Context</span>
+      </div>
+    </Panel>
+  );
+});
 
 function StatusRow({
   icon,

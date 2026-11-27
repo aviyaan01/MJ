@@ -113,31 +113,38 @@ export interface BudgetStatusSummary {
   dailySpendUsd: number;
   softCapUsd: number;
   hardCapUsd: number;
+  percentOfSoftCap: number | null;
+  percentOfHardCap: number | null;
+  remainingSoftCapUsd: number | null;
+  remainingHardCapUsd: number | null;
+}
+
+export interface ChannelUsageBreakdown {
+  requests: number;
+  errors: number;
+  estimatedCostUsd: number;
+  avgLatencyMs: number;
+  totalTokens: number;
+  voiceSeconds: number;
+}
+
+export interface UsagePeriodSummary {
+  requestCount: number;
+  errorCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  cachedTokens: number;
+  totalTokens: number;
+  voiceSeconds: number;
+  estimatedCostUsd: number;
+  avgLatencyMs: number;
+  byKind: Record<UsageKind, ChannelUsageBreakdown>;
 }
 
 export interface UsageSummaryDTO {
-  today: {
-    requestCount: number;
-    errorCount: number;
-    inputTokens: number;
-    outputTokens: number;
-    reasoningTokens: number;
-    totalTokens: number;
-    voiceSeconds: number;
-    estimatedCostUsd: number;
-    avgLatencyMs: number;
-  };
-  month: {
-    requestCount: number;
-    errorCount: number;
-    inputTokens: number;
-    outputTokens: number;
-    reasoningTokens: number;
-    totalTokens: number;
-    voiceSeconds: number;
-    estimatedCostUsd: number;
-    avgLatencyMs: number;
-  };
+  today: UsagePeriodSummary;
+  month: UsagePeriodSummary;
   budgetStatus: BudgetStatusSummary;
   recentEvents: Array<{
     id: string;
@@ -153,9 +160,23 @@ export interface UsageSummaryDTO {
   }>;
 }
 
+export interface ConnectivityCheckDTO {
+  checkedAt: string;
+  apiKeyConfigured: boolean;
+  xaiReachable: boolean;
+  modelChecked: string;
+  modelAvailable: boolean | null;
+  availableModelCount: number | null;
+  voiceModelChecked: string;
+  availableVoiceCount: number | null;
+  latencyMs: number | null;
+  error: StructuredErrorPayload | null;
+  note: string;
+}
+
 export interface SystemHealthDTO {
   status: 'online' | 'degraded';
-  stage: 'Stage 2 · Text & Realtime Voice';
+  stage: 'Stage 5 · Monitoring, Usage & Final Delivery';
   backend: 'online';
   database: 'healthy' | 'unavailable';
   aiEngine: EngineStatus;
@@ -174,7 +195,7 @@ export interface SystemHealthDTO {
     memory: false;
     tools: false;
     automation: false;
-    desktop: false;
+    desktop: true;
   };
 }
 

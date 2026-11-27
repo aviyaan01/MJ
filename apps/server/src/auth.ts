@@ -74,7 +74,23 @@ export function verifySessionToken(
   }
 }
 
+function isLoopbackHost(hostname: string | undefined): boolean {
+  if (!hostname) return false;
+  const host = hostname.split(':')[0]?.trim().toLowerCase() ?? '';
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+}
+
+export function shouldUseSecureCookie(
+  request: FastifyRequest,
+  config: ServerConfig,
+): boolean {
+  if (config.appEnv !== 'production') return false;
+  if (request.protocol === 'https') return true;
+  return !isLoopbackHost(request.hostname);
+}
+
 export function setSessionCookie(
+  request: FastifyRequest,
   reply: FastifyReply,
   token: string,
   config: ServerConfig,
@@ -83,17 +99,21 @@ export function setSessionCookie(
     httpOnly: true,
     sameSite: 'lax',
     path: '/',
-    secure: config.appEnv === 'production',
+    secure: shouldUseSecureCookie(request, config),
     maxAge: SESSION_TTL_SECONDS,
   });
 }
 
-export function clearSessionCookie(reply: FastifyReply, config: ServerConfig): void {
+export function clearSessionCookie(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  config: ServerConfig,
+): void {
   reply.clearCookie(SESSION_COOKIE_NAME, {
     httpOnly: true,
     sameSite: 'lax',
     path: '/',
-    secure: config.appEnv === 'production',
+    secure: shouldUseSecureCookie(request, config),
   });
 }
 

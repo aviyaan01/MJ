@@ -44,6 +44,14 @@ export function estimateTtsCostUsd(
   return Number(((Math.max(0, characterCount) / 1_000_000) * ttsRatePerMillionCharsUsd).toFixed(6));
 }
 
+export function estimateSttCostUsd(
+  durationSeconds: number,
+  sttRatePerHourUsd: number,
+): number {
+  const hours = Math.max(0, durationSeconds) / 3600;
+  return Number((hours * sttRatePerHourUsd).toFixed(6));
+}
+
 export function evaluateBudgetStatus(
   monthlySpendUsd: number,
   dailySpendUsd: number,
@@ -56,11 +64,32 @@ export function evaluateBudgetStatus(
     level = 'soft_cap_warning';
   }
 
+  const roundedMonth = Number(monthlySpendUsd.toFixed(6));
+  const roundedDay = Number(dailySpendUsd.toFixed(6));
+
+  const percentOfSoftCap =
+    budget.softCapUsd > 0
+      ? Number(Math.min(999, (monthlySpendUsd / budget.softCapUsd) * 100).toFixed(1))
+      : null;
+  const percentOfHardCap =
+    budget.hardCapUsd > 0
+      ? Number(Math.min(999, (monthlySpendUsd / budget.hardCapUsd) * 100).toFixed(1))
+      : null;
+
+  const remainingSoftCapUsd =
+    budget.softCapUsd > 0 ? Number(Math.max(0, budget.softCapUsd - monthlySpendUsd).toFixed(6)) : null;
+  const remainingHardCapUsd =
+    budget.hardCapUsd > 0 ? Number(Math.max(0, budget.hardCapUsd - monthlySpendUsd).toFixed(6)) : null;
+
   return {
     level,
-    monthlySpendUsd: Number(monthlySpendUsd.toFixed(6)),
-    dailySpendUsd: Number(dailySpendUsd.toFixed(6)),
+    monthlySpendUsd: roundedMonth,
+    dailySpendUsd: roundedDay,
     softCapUsd: budget.softCapUsd,
     hardCapUsd: budget.hardCapUsd,
+    percentOfSoftCap,
+    percentOfHardCap,
+    remainingSoftCapUsd,
+    remainingHardCapUsd,
   };
 }

@@ -160,8 +160,8 @@ export function SettingsView({
     availableVoices.length > 0
       ? availableVoices
       : settings?.voice.availableVoices ?? [
-          { id: 'ara', label: 'Ara', description: 'Warm and conversational' },
-        ];
+        { id: 'ara', label: 'Ara', description: 'Warm and conversational' },
+      ];
 
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-8 lg:py-8">
@@ -930,7 +930,8 @@ export function SettingsView({
                       ['Stage 1 (Active)', 'Web Dashboard, Grok Responses Text Chat & Security'],
                       ['Stage 2 (Active)', 'Grok Realtime Voice, Ephemeral Tokens & Bangla/Banglish'],
                       ['Stage 3 (Planned)', 'Long-Term Memory, Tool Calling, Web Search, Files & Automation'],
-                      ['Stage 4 (Planned)', 'Windows Tauri Desktop Companion & OS Permissions'],
+                      ['Stage 4 (Active)', 'Windows Tauri Companion, Granular Permissions & Audit Log'],
+                      ['Stage 5 (Active)', 'Usage & Spend-vs-Budget Dashboard, Latency & Delivery Package'],
                     ] as const
                   ).map(([stage, desc]) => (
                     <div

@@ -7,6 +7,7 @@ import {
   RecordVoiceUsageSchema,
   TtsRequestSchema,
   VoiceClientSecretRequestSchema,
+  estimateSttCostUsd,
   estimateTtsCostUsd,
   estimateVoiceDurationCostUsd,
   validateInput,
@@ -24,6 +25,7 @@ import {
 } from '@mj/ai';
 import type { MjDatabaseRepository } from '@mj/database';
 import type { ServerConfig } from '../config.js';
+import type { PermissionsStore } from '../permissionsStore.js';
 import type { RuntimeSettingsStore } from '../settingsStore.js';
 
 export interface VoiceGateway {
@@ -47,6 +49,7 @@ const SttBodySchema = z.object({
   filename: z.string().max(120).optional(),
   mimeType: z.string().max(80).optional(),
   languageMode: LanguageModeSchema.optional(),
+  durationSeconds: z.number().min(0).max(86400).optional(),
 });
 
 export function createDefaultVoiceGateway(config: ServerConfig): VoiceGateway {
@@ -70,10 +73,18 @@ export function registerVoiceRoutes(
     config: ServerConfig;
     repo: MjDatabaseRepository;
     settingsStore: RuntimeSettingsStore;
+    permissionsStore: PermissionsStore;
     voiceGateway: VoiceGateway;
     requireSession: (request: FastifyRequest) => Promise<void>;
   },
 ): void {
+  let cachedVoices: {
+    keyPresent: boolean;
+    fetchedAtMs: number;
+    voices: Array<{ id: string; label: string; description: string }>;
+  } | null = null;
+  const VOICES_CACHE_TTL_MS = 5 * 60 * 1000;
+
   /**
    * Generates a short-lived xAI Realtime ephemeral client secret server-side.
    * Never exposes the permanent XAI_API_KEY to the browser.
@@ -91,6 +102,30 @@ export function registerVoiceRoutes(
     },
     async (request) => {
       const body = validateInput(VoiceClientSecretRequestSchema, request.body ?? {});
+
+      const permissions = await deps.permissionsStore.getPermissions();
+      if (!permissions.microphoneAccess || !permissions.voiceSessionAccess || !permissions.externalWebServices) {
+        const disabledKey = !permissions.microphoneAccess
+          ? 'microphoneAccess'
+          : !permissions.voiceSessionAccess
+            ? 'voiceSessionAccess'
+            : 'externalWebServices';
+        await deps.repo.recordAuditLog({
+          capability: disabledKey,
+          action: 'Blocked realtime voice ephemeral token issuance',
+          target: 'wss://api.x.ai/v1/realtime',
+          outcome: 'denied',
+          source: 'server',
+          detail: `Blocked because "${disabledKey}" is disabled in Privacy & Permissions.`,
+        });
+        throw new AppError({
+          code: ErrorCodes.PERMISSION_DENIED,
+          category: 'privacy',
+          statusCode: 403,
+          requestId: request.id,
+          message: `Voice session blocked because "${disabledKey}" is disabled in Privacy & Permissions.`,
+        });
+      }
 
       if (!deps.config.apiKeyConfigured) {
         throw new AppError({
@@ -121,7 +156,23 @@ export function registerVoiceRoutes(
       const voice = body.voice ?? settings.voice.voiceId;
       const model = settings.voice.voiceModel;
 
-      const secret = await deps.voiceGateway.createClientSecret(300);
+      const startedAt = Date.now();
+      let secret: EphemeralSecretResult;
+      try {
+        secret = await deps.voiceGateway.createClientSecret(300);
+      } catch (err) {
+        const code = err instanceof AppError ? err.code : ErrorCodes.VOICE_SERVICE_UNAVAILABLE;
+        await deps.repo.recordUsageLog({
+          conversationId: body.conversationId,
+          kind: 'voice_realtime',
+          model,
+          status: 'error',
+          latencyMs: Date.now() - startedAt,
+          errorCode: code,
+        });
+        throw err;
+      }
+
       const instructions = buildMjVoiceInstructions({
         assistantName: settings.assistantName,
         responseStyle: settings.responseStyle,
@@ -145,12 +196,35 @@ export function registerVoiceRoutes(
   );
 
   app.get('/api/voice/voices', { preHandler: deps.requireSession }, async () => {
+    const now = Date.now();
+    if (
+      cachedVoices &&
+      cachedVoices.keyPresent === deps.config.apiKeyConfigured &&
+      now - cachedVoices.fetchedAtMs < VOICES_CACHE_TTL_MS
+    ) {
+      return { voices: cachedVoices.voices };
+    }
     const voices = await deps.voiceGateway.listVoices();
+    cachedVoices = {
+      keyPresent: deps.config.apiKeyConfigured,
+      fetchedAtMs: now,
+      voices,
+    };
     return { voices };
   });
 
   app.post('/api/voice/tts', { preHandler: deps.requireSession }, async (request, reply) => {
     const body = validateInput(TtsRequestSchema, request.body ?? {});
+    const permissions = await deps.permissionsStore.getPermissions();
+    if (!permissions.voiceSessionAccess || !permissions.externalWebServices) {
+      throw new AppError({
+        code: ErrorCodes.PERMISSION_DENIED,
+        category: 'privacy',
+        statusCode: 403,
+        requestId: request.id,
+        message: 'Speech synthesis is disabled in Privacy & Permissions.',
+      });
+    }
 
     if (!deps.config.apiKeyConfigured) {
       throw new AppError({
@@ -173,11 +247,24 @@ export function registerVoiceRoutes(
     }
 
     const startedAt = Date.now();
-    const result = await deps.voiceGateway.synthesizeSpeech({
-      text: body.text,
-      voiceId: body.voiceId ?? settings.voice.voiceId,
-      languageMode: body.languageMode ?? settings.voice.languageMode,
-    });
+    let result: TtsSynthesisResult;
+    try {
+      result = await deps.voiceGateway.synthesizeSpeech({
+        text: body.text,
+        voiceId: body.voiceId ?? settings.voice.voiceId,
+        languageMode: body.languageMode ?? settings.voice.languageMode,
+      });
+    } catch (err) {
+      const code = err instanceof AppError ? err.code : ErrorCodes.VOICE_SERVICE_UNAVAILABLE;
+      await deps.repo.recordUsageLog({
+        kind: 'tts',
+        model: 'xai-tts',
+        status: 'error',
+        latencyMs: Date.now() - startedAt,
+        errorCode: code,
+      });
+      throw err;
+    }
 
     const costUsd = estimateTtsCostUsd(
       body.text.length,
@@ -203,6 +290,16 @@ export function registerVoiceRoutes(
     { preHandler: deps.requireSession, bodyLimit: 12 * 1024 * 1024 },
     async (request) => {
     const body = validateInput(SttBodySchema, request.body ?? {});
+    const permissions = await deps.permissionsStore.getPermissions();
+    if (!permissions.microphoneAccess || !permissions.voiceSessionAccess || !permissions.externalWebServices) {
+      throw new AppError({
+        code: ErrorCodes.PERMISSION_DENIED,
+        category: 'privacy',
+        statusCode: 403,
+        requestId: request.id,
+        message: 'Speech transcription is disabled in Privacy & Permissions.',
+      });
+    }
 
     if (!deps.config.apiKeyConfigured) {
       throw new AppError({
@@ -216,18 +313,35 @@ export function registerVoiceRoutes(
     const settings = await deps.settingsStore.getPublicSettings();
     const startedAt = Date.now();
     const audioBytes = new Uint8Array(Buffer.from(body.audioBase64, 'base64'));
-    const result = await deps.voiceGateway.transcribeSpeech({
-      audioBytes,
-      filename: body.filename ?? 'audio.webm',
-      mimeType: body.mimeType ?? 'audio/webm',
-      languageMode: body.languageMode ?? settings.voice.languageMode,
-    });
+    let result: SttTranscriptionResult;
+    try {
+      result = await deps.voiceGateway.transcribeSpeech({
+        audioBytes,
+        filename: body.filename ?? 'audio.webm',
+        mimeType: body.mimeType ?? 'audio/webm',
+        languageMode: body.languageMode ?? settings.voice.languageMode,
+      });
+    } catch (err) {
+      const code = err instanceof AppError ? err.code : ErrorCodes.VOICE_SERVICE_UNAVAILABLE;
+      await deps.repo.recordUsageLog({
+        kind: 'stt',
+        model: 'grok-voice-transcribe-2.0',
+        status: 'error',
+        latencyMs: Date.now() - startedAt,
+        errorCode: code,
+      });
+      throw err;
+    }
+
+    const durationSec = body.durationSeconds ?? 0;
+    const sttCost = estimateSttCostUsd(durationSec, settings.budget.sttRatePerHourUsd);
 
     await deps.repo.recordUsageLog({
       kind: 'stt',
       model: 'grok-voice-transcribe-2.0',
       status: 'success',
-      estimatedCostUsd: 0,
+      voiceSeconds: durationSec,
+      estimatedCostUsd: sttCost,
       latencyMs: Date.now() - startedAt,
     });
 

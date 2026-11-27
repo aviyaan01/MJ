@@ -1,12 +1,19 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import {
+  DEFAULT_PERMISSIONS_STATE,
   ErrorCodes,
   VoiceStates,
+  type AllowlistEntryDTO,
+  type AllowlistKind,
+  type AuditLogEntryDTO,
   type AuthSessionDTO,
   type ChatStreamEvent,
+  type ConnectivityCheckDTO,
+  type ControllablePermissionKey,
   type ConversationDTO,
   type LanguageMode,
   type MessageDTO,
+  type PermissionsStateDTO,
   type PublicSettingsDTO,
   type StructuredErrorPayload,
   type SystemHealthDTO,
@@ -15,11 +22,32 @@ import {
 } from '@mj/shared';
 import { MjVoiceService, VOICE_STATE_META } from '@mj/voice';
 import { ApiClientError, mjApi } from './api/client.js';
-import { ChatWorkspace } from './components/ChatWorkspace.js';
 import { HomeDashboard } from './components/HomeDashboard.js';
-import { SettingsView } from './components/SettingsView.js';
+import { MicActiveBanner } from './components/MicActiveBanner.js';
 import { Sidebar, type ActiveNavTab } from './components/Sidebar.js';
 import { UnlockGate } from './components/UnlockGate.js';
+import {
+  syncTauriMicTray,
+  tauriRevokeAllPermissions,
+  tauriSetSinglePermission,
+} from './desktop/desktopBridge.js';
+import { WakeWordListener } from './voice/wakeWordListener.js';
+
+const ChatWorkspace = lazy(() =>
+  import('./components/ChatWorkspace.js').then((m) => ({ default: m.ChatWorkspace })),
+);
+const DesktopView = lazy(() =>
+  import('./components/DesktopView.js').then((m) => ({ default: m.DesktopView })),
+);
+const PrivacyCenterView = lazy(() =>
+  import('./components/PrivacyCenterView.js').then((m) => ({ default: m.PrivacyCenterView })),
+);
+const UsageDashboardView = lazy(() =>
+  import('./components/UsageDashboardView.js').then((m) => ({ default: m.UsageDashboardView })),
+);
+const SettingsView = lazy(() =>
+  import('./components/SettingsView.js').then((m) => ({ default: m.SettingsView })),
+);
 
 export function App() {
   const [activeTab, setActiveTab] = useState<ActiveNavTab>('home');
@@ -30,6 +58,9 @@ export function App() {
   const [authError, setAuthError] = useState<string | null>(null);
 
   const [health, setHealth] = useState<SystemHealthDTO | null>(null);
+  const [backendLatencyMs, setBackendLatencyMs] = useState<number | null>(null);
+  const [connectivityCheck, setConnectivityCheck] = useState<ConnectivityCheckDTO | null>(null);
+  const [checkingConnectivity, setCheckingConnectivity] = useState(false);
   const [settings, setSettings] = useState<PublicSettingsDTO | null>(null);
   const [usage, setUsage] = useState<UsageSummaryDTO | null>(null);
   const [availableVoices, setAvailableVoices] = useState<
@@ -55,6 +86,14 @@ export function App() {
   const [liveAssistantTranscript, setLiveAssistantTranscript] = useState('');
   const [hasLastResponseToSpeak, setHasLastResponseToSpeak] = useState(false);
 
+  const [permissions, setPermissions] = useState<PermissionsStateDTO>(DEFAULT_PERMISSIONS_STATE);
+  const [allowlist, setAllowlist] = useState<AllowlistEntryDTO[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntryDTO[]>([]);
+  const [wakeWordActive, setWakeWordActive] = useState(false);
+  const [wakeWordStatusMessage, setWakeWordStatusMessage] = useState(
+    'Wake-word standby is OFF.',
+  );
+
   const [activeError, setActiveError] = useState<StructuredErrorPayload | null>(null);
   const [lastRetryAction, setLastRetryAction] = useState<(() => void) | null>(null);
   const [latestHomeExchange, setLatestHomeExchange] = useState<{
@@ -65,8 +104,15 @@ export function App() {
 
   const streamAbortRef = useRef<AbortController | null>(null);
   const voiceServiceRef = useRef<MjVoiceService | null>(null);
+  const wakeListenerRef = useRef<WakeWordListener | null>(null);
+  const startVoiceRef = useRef<() => Promise<void>>(async () => {});
+  const permissionsRef = useRef<PermissionsStateDTO>(DEFAULT_PERMISSIONS_STATE);
   const activeConversationRef = useRef<ConversationDTO | null>(null);
   const settingsRef = useRef<PublicSettingsDTO | null>(null);
+
+  useEffect(() => {
+    permissionsRef.current = permissions;
+  }, [permissions]);
 
   useEffect(() => {
     activeConversationRef.current = activeConversation;
@@ -239,25 +285,66 @@ export function App() {
   }, [ensureActiveConversationId]);
 
   const loadHealth = useCallback(async () => {
+    const started = performance.now();
     try {
       const h = await mjApi.getHealth();
       setHealth(h);
+      setBackendLatencyMs(Math.max(1, Math.round(performance.now() - started)));
     } catch {
       setHealth(null);
+      setBackendLatencyMs(null);
+    }
+  }, []);
+
+  const handleCheckConnectivity = useCallback(async () => {
+    setCheckingConnectivity(true);
+    try {
+      const result = await mjApi.checkUsageConnectivity();
+      setConnectivityCheck(result);
+    } catch (err) {
+      const payload: StructuredErrorPayload =
+        err instanceof ApiClientError
+          ? err.payload
+          : {
+              code: ErrorCodes.NETWORK_DISCONNECTED,
+              category: 'network',
+              statusCode: 503,
+              message: err instanceof Error ? err.message : 'Connectivity check failed.',
+              retryable: true,
+            };
+      setActiveError(payload);
+    } finally {
+      setCheckingConnectivity(false);
+    }
+  }, []);
+
+  const refreshAuditLogs = useCallback(async () => {
+    try {
+      const res = await mjApi.listAuditLogs();
+      setAuditLogs(res.entries);
+    } catch {
+      // ignore background audit refresh failure
     }
   }, []);
 
   const loadAuthenticatedWorkspace = useCallback(async () => {
-    const [settingsRes, usageRes, convRes, voicesRes] = await Promise.all([
-      mjApi.getSettings(),
-      mjApi.getUsage(),
-      mjApi.listConversations(),
-      mjApi.getAvailableVoices().catch(() => ({ voices: [] })),
-    ]);
+    const [settingsRes, usageRes, convRes, voicesRes, permRes, allowRes, auditRes] =
+      await Promise.all([
+        mjApi.getSettings(),
+        mjApi.getUsage(),
+        mjApi.listConversations(),
+        mjApi.getAvailableVoices().catch(() => ({ voices: [] })),
+        mjApi.getPrivacyPermissions(),
+        mjApi.listAllowlist(),
+        mjApi.listAuditLogs(),
+      ]);
     setSettings(settingsRes);
     setSelectedModelOverride(settingsRes.activeModel);
     setUsage(usageRes);
     setConversations(convRes.conversations);
+    setPermissions(permRes.permissions);
+    setAllowlist(allowRes.entries);
+    setAuditLogs(auditRes.entries);
     if (voicesRes.voices.length > 0) {
       setAvailableVoices(voicesRes.voices);
     }
@@ -339,12 +426,16 @@ export function App() {
 
   const handleLogout = async () => {
     streamAbortRef.current?.abort();
+    wakeListenerRef.current?.stop();
     await voiceServiceRef.current?.stopSession('manual');
     const sess = await mjApi.logout();
     setSession(sess);
     setConversations([]);
     setActiveConversation(null);
     setMessages([]);
+    setPermissions(DEFAULT_PERMISSIONS_STATE);
+    setAllowlist([]);
+    setAuditLogs([]);
   };
 
   const handleSelectConversation = async (id: string) => {
@@ -713,15 +804,46 @@ export function App() {
     setUsage(refreshedUsage);
   };
 
-  const handleStartVoice = async () => {
+  const handleStartVoice = useCallback(async () => {
     setActiveError(null);
+    const currentPerms = permissionsRef.current;
+    if (!currentPerms.microphoneAccess || !currentPerms.voiceSessionAccess) {
+      const blockedByMic = !currentPerms.microphoneAccess;
+      setActiveError({
+        code: ErrorCodes.PERMISSION_DENIED,
+        category: 'privacy',
+        statusCode: 403,
+        message: blockedByMic
+          ? 'Microphone access is disabled in Privacy & Permissions.'
+          : 'Realtime voice sessions are disabled in Privacy & Permissions.',
+        retryable: false,
+      });
+      void mjApi
+        .recordAuditLog({
+          capability: blockedByMic ? 'microphoneAccess' : 'voiceSessionAccess',
+          action: 'Blocked realtime voice session start',
+          target: 'realtime_voice',
+          outcome: 'denied',
+          source: 'web',
+          detail: 'Permission toggled OFF in Privacy Center.',
+        })
+        .then(() => refreshAuditLogs())
+        .catch(() => {});
+      return;
+    }
+
+    wakeListenerRef.current?.stop();
     setInteractionMode('voice');
     await ensureActiveConversationId();
     setLastRetryAction(() => () => {
-      void voiceServiceRef.current?.startSession();
+      void startVoiceRef.current();
     });
     await voiceServiceRef.current?.startSession();
-  };
+  }, [ensureActiveConversationId, refreshAuditLogs]);
+
+  useEffect(() => {
+    startVoiceRef.current = handleStartVoice;
+  }, [handleStartVoice]);
 
   const handleStopVoice = () => {
     void voiceServiceRef.current?.stopSession('manual');
@@ -747,6 +869,123 @@ export function App() {
     await handleSaveSettings({ voice: { languageMode: mode } });
   };
 
+  const handleTogglePermission = useCallback(
+    async (key: ControllablePermissionKey, enabled: boolean) => {
+      const res = await mjApi.setSinglePermission(key, enabled);
+      setPermissions(res.permissions);
+      await tauriSetSinglePermission(key, enabled);
+      if (key === 'microphoneAccess' && !enabled) {
+        wakeListenerRef.current?.stop();
+        await voiceServiceRef.current?.stopSession('manual');
+      }
+      if (key === 'voiceSessionAccess' && !enabled) {
+        await voiceServiceRef.current?.stopSession('manual');
+      }
+      await refreshAuditLogs();
+    },
+    [refreshAuditLogs],
+  );
+
+  const handleRevokeAllDesktop = useCallback(async () => {
+    wakeListenerRef.current?.stop();
+    const res = await mjApi.revokeDesktopPermissions();
+    setPermissions(res.permissions);
+    await tauriRevokeAllPermissions();
+    await refreshAuditLogs();
+  }, [refreshAuditLogs]);
+
+  const handleAddAllowlist = useCallback(
+    async (entry: { kind: AllowlistKind; label: string; target: string }) => {
+      const res = await mjApi.addAllowlistEntry(entry);
+      setAllowlist((prev) => [res.entry, ...prev]);
+      await refreshAuditLogs();
+    },
+    [refreshAuditLogs],
+  );
+
+  const handleRemoveAllowlist = useCallback(
+    async (id: string) => {
+      await mjApi.deleteAllowlistEntry(id);
+      setAllowlist((prev) => prev.filter((item) => item.id !== id));
+      await refreshAuditLogs();
+    },
+    [refreshAuditLogs],
+  );
+
+  const handleExportData = useCallback(async () => {
+    const bundle = await mjApi.exportPersonalData();
+    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `mj-assistant-export-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    await refreshAuditLogs();
+  }, [refreshAuditLogs]);
+
+  const handleClearConversations = useCallback(async () => {
+    await mjApi.clearAllConversations();
+    setConversations([]);
+    setActiveConversation(null);
+    setMessages([]);
+    setLatestHomeExchange(null);
+    await refreshAuditLogs();
+  }, [refreshAuditLogs]);
+
+  const handleStopAllMic = useCallback(async () => {
+    wakeListenerRef.current?.stop();
+    await voiceServiceRef.current?.stopSession('manual');
+    if (permissionsRef.current.wakeWordStandby) {
+      await handleTogglePermission('wakeWordStandby', false);
+    }
+  }, [handleTogglePermission]);
+
+  // Initialize optional Wake-Word Standby listener (defaults OFF, Section 14)
+  useEffect(() => {
+    const listener = new WakeWordListener(
+      (transcript) => {
+        const current = permissionsRef.current;
+        if (!current.microphoneAccess || !current.voiceSessionAccess) {
+          void mjApi
+            .recordAuditLog({
+              capability: 'wakeWordStandby',
+              action: 'Wake-word activation blocked',
+              target: transcript || 'hey mj',
+              outcome: 'denied',
+              source: 'web',
+              detail: 'microphoneAccess or voiceSessionAccess is OFF.',
+            })
+            .then(() => refreshAuditLogs())
+            .catch(() => {});
+          return;
+        }
+        void mjApi
+          .recordAuditLog({
+            capability: 'wakeWordStandby',
+            action: 'Wake-word triggered voice session',
+            target: transcript || 'hey mj',
+            outcome: 'allowed',
+            source: 'web',
+          })
+          .then(() => refreshAuditLogs())
+          .catch(() => {});
+        void startVoiceRef.current();
+      },
+      (status) => {
+        setWakeWordActive(status.active);
+        setWakeWordStatusMessage(status.message);
+      },
+    );
+    wakeListenerRef.current = listener;
+    return () => {
+      listener.stop();
+      wakeListenerRef.current = null;
+    };
+  }, [refreshAuditLogs]);
+
   const micActive =
     voiceState === 'requesting_permission' ||
     voiceState === 'connecting' ||
@@ -755,6 +994,37 @@ export function App() {
     voiceState === 'speaking' ||
     voiceState === 'interrupted' ||
     voiceState === 'reconnecting';
+
+  useEffect(() => {
+    const shouldStandby =
+      Boolean(session?.authenticated) &&
+      permissions.wakeWordStandby &&
+      permissions.microphoneAccess &&
+      !micActive;
+    if (shouldStandby) {
+      wakeListenerRef.current?.start();
+    } else {
+      wakeListenerRef.current?.stop();
+    }
+  }, [
+    session?.authenticated,
+    permissions.wakeWordStandby,
+    permissions.microphoneAccess,
+    micActive,
+  ]);
+
+  useEffect(() => {
+    void syncTauriMicTray(micActive || wakeWordActive, wakeWordActive && !micActive);
+  }, [micActive, wakeWordActive]);
+
+  useEffect(() => {
+    if (
+      session?.authenticated &&
+      (activeTab === 'privacy' || activeError?.code === ErrorCodes.PERMISSION_DENIED)
+    ) {
+      void refreshAuditLogs();
+    }
+  }, [activeTab, activeError?.code, session?.authenticated, refreshAuditLogs]);
 
   if (authLoading) {
     return (
@@ -779,11 +1049,18 @@ export function App() {
         health={health}
         session={session}
         voiceState={voiceState}
-        micActive={micActive}
+        micActive={micActive || wakeWordActive}
         onLogout={() => void handleLogout()}
       />
 
       <main className="min-w-0">
+        <MicActiveBanner
+          liveVoiceActive={micActive}
+          voiceMuted={voiceMuted}
+          wakeWordStandbyActive={wakeWordActive}
+          onStopAllMic={() => void handleStopAllMic()}
+        />
+
         {activeTab === 'home' && (
           <HomeDashboard
             health={health}
@@ -818,58 +1095,117 @@ export function App() {
               setActiveTab('chat');
             }}
             onNavigateChat={() => setActiveTab('chat')}
+            onNavigateUsage={() => setActiveTab('usage')}
             onNavigateSettings={() => setActiveTab('settings')}
           />
         )}
 
-        {activeTab === 'chat' && (
-          <ChatWorkspace
-            conversations={conversations}
-            activeConversation={activeConversation}
-            messages={messages}
-            searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
-            settings={settings}
-            usage={usage}
-            streamingState={streamingState}
-            streamStatusDetail={streamStatusDetail}
-            voiceState={voiceState}
-            voiceDetail={voiceDetail}
-            voiceMuted={voiceMuted}
-            liveUserTranscript={liveUserTranscript}
-            liveAssistantTranscript={liveAssistantTranscript}
-            activeError={activeError}
-            selectedModelOverride={selectedModelOverride}
-            onSelectModelOverride={setSelectedModelOverride}
-            onSelectConversation={(id) => void handleSelectConversation(id)}
-            onCreateConversation={() => void handleCreateConversation()}
-            onRenameConversation={handleRenameConversation}
-            onDeleteConversation={handleDeleteConversation}
-            onSendMessage={(content) => void sendMessageFromChat(content)}
-            onRegenerate={() => void handleRegenerate()}
-            onStopStream={handleStopStream}
-            onRetryLast={handleRetryLast}
-            onStartVoice={() => void handleStartVoice()}
-            onStopVoice={handleStopVoice}
-            onToggleMute={handleToggleMute}
-            onInterruptVoice={handleInterruptVoice}
-            onSpeakText={handleSpeakText}
-          />
-        )}
+        <Suspense
+          fallback={
+            <div
+              className="grid min-h-[50vh] place-items-center text-xs"
+              style={{ color: 'var(--mj-text-muted)' }}
+            >
+              Loading workspace…
+            </div>
+          }
+        >
+          {activeTab === 'chat' && (
+            <ChatWorkspace
+              conversations={conversations}
+              activeConversation={activeConversation}
+              messages={messages}
+              searchQuery={searchQuery}
+              onSearchChange={setSearchQuery}
+              settings={settings}
+              usage={usage}
+              streamingState={streamingState}
+              streamStatusDetail={streamStatusDetail}
+              voiceState={voiceState}
+              voiceDetail={voiceDetail}
+              voiceMuted={voiceMuted}
+              liveUserTranscript={liveUserTranscript}
+              liveAssistantTranscript={liveAssistantTranscript}
+              activeError={activeError}
+              selectedModelOverride={selectedModelOverride}
+              onSelectModelOverride={setSelectedModelOverride}
+              onSelectConversation={(id) => void handleSelectConversation(id)}
+              onCreateConversation={() => void handleCreateConversation()}
+              onRenameConversation={handleRenameConversation}
+              onDeleteConversation={handleDeleteConversation}
+              onSendMessage={(content) => void sendMessageFromChat(content)}
+              onRegenerate={() => void handleRegenerate()}
+              onStopStream={handleStopStream}
+              onRetryLast={handleRetryLast}
+              onStartVoice={() => void handleStartVoice()}
+              onStopVoice={handleStopVoice}
+              onToggleMute={handleToggleMute}
+              onInterruptVoice={handleInterruptVoice}
+              onSpeakText={handleSpeakText}
+            />
+          )}
 
-        {activeTab === 'settings' && (
-          <SettingsView
-            settings={settings}
-            usage={usage}
-            session={session}
-            availableVoices={availableVoices}
-            onSaveSettings={handleSaveSettings}
-            onRefreshUsage={async () => {
-              const u = await mjApi.getUsage();
-              setUsage(u);
-            }}
-          />
-        )}
+          {activeTab === 'usage' && (
+            <UsageDashboardView
+              health={health}
+              backendLatencyMs={backendLatencyMs}
+              online={online}
+              voiceState={voiceState}
+              settings={settings}
+              usage={usage}
+              connectivityCheck={connectivityCheck}
+              checkingConnectivity={checkingConnectivity}
+              onRefreshUsage={async () => {
+                const u = await mjApi.getUsage();
+                setUsage(u);
+              }}
+              onCheckConnectivity={handleCheckConnectivity}
+              onSaveSettings={handleSaveSettings}
+            />
+          )}
+
+          {activeTab === 'desktop' && (
+            <DesktopView
+              permissions={permissions}
+              allowlist={allowlist}
+              onAuditUpdated={refreshAuditLogs}
+              onNavigatePrivacy={() => setActiveTab('privacy')}
+            />
+          )}
+
+          {activeTab === 'privacy' && (
+            <PrivacyCenterView
+              permissions={permissions}
+              allowlist={allowlist}
+              auditLogs={auditLogs}
+              conversationCount={conversations.length}
+              session={session}
+              wakeWordStatusMessage={wakeWordStatusMessage}
+              onTogglePermission={handleTogglePermission}
+              onRevokeAllDesktop={handleRevokeAllDesktop}
+              onAddAllowlist={handleAddAllowlist}
+              onRemoveAllowlist={handleRemoveAllowlist}
+              onRefreshAuditLogs={refreshAuditLogs}
+              onExportData={handleExportData}
+              onClearConversations={handleClearConversations}
+              onLogout={handleLogout}
+            />
+          )}
+
+          {activeTab === 'settings' && (
+            <SettingsView
+              settings={settings}
+              usage={usage}
+              session={session}
+              availableVoices={availableVoices}
+              onSaveSettings={handleSaveSettings}
+              onRefreshUsage={async () => {
+                const u = await mjApi.getUsage();
+                setUsage(u);
+              }}
+            />
+          )}
+        </Suspense>
       </main>
     </div>
   );
