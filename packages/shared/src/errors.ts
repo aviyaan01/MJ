@@ -241,9 +241,33 @@ export function inferHttpStatus(code: ErrorCode): number {
   }
 }
 
+/**
+ * Redacts API keys, bearer/ephemeral tokens, bot tokens, credentials, email addresses,
+ * and sensitive query/path fragments before anything reaches logs or external alert payloads.
+ */
 export function sanitizeDiagnosticText(input: string): string {
   return input
     .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [REDACTED]')
     .replace(/xai-[A-Za-z0-9_-]{8,}/g, 'xai-[REDACTED]')
-    .replace(/(api[_-]?key|secret|token|password)\s*[:=]\s*[^\s,;]+/gi, '$1=[REDACTED]');
+    .replace(/\b(re|ek|sk|pk)_[A-Za-z0-9_-]{8,}\b/g, '$1_[REDACTED]')
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-[REDACTED]')
+    .replace(/bot\d{5,}:[A-Za-z0-9_-]{10,}/gi, 'bot[REDACTED]')
+    .replace(/\b\d{6,12}:AA[A-Za-z0-9_-]{16,}\b/g, '[TELEGRAM_TOKEN_REDACTED]')
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[REDACTED_EMAIL]')
+    .replace(/([A-Za-z]:\\Users\\|\/Users\/|\/home\/)[^\\/\s"']+/gi, '$1[USER]')
+    .replace(
+      /(api[_-]?key|secret|token|password|passcode|authorization)\s*[:=]\s*[^\s,;]+/gi,
+      '$1=[REDACTED]',
+    )
+    .replace(/([?&](?:q|query|search|token|passcode|key|secret)=)[^&\s]*/gi, '$1[REDACTED]');
+}
+
+/**
+ * Strips query parameters from URLs written to HTTP server logs so search queries
+ * (for example `/api/conversations?q=...`) or tokens never appear in log files.
+ */
+export function sanitizeUrlForLog(rawUrl: string): string {
+  const qIndex = rawUrl.indexOf('?');
+  if (qIndex === -1) return rawUrl;
+  return `${rawUrl.slice(0, qIndex)}?[REDACTED]`;
 }

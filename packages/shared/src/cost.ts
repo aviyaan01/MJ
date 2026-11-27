@@ -5,6 +5,7 @@ import type { BudgetSettings, BudgetStatusSummary, TokenUsage } from './types.js
  * Users can override these rates in Settings -> Usage.
  */
 export const DEFAULT_BUDGET_SETTINGS: BudgetSettings = {
+  dailyCapUsd: 2.0,
   softCapUsd: 10,
   hardCapUsd: 25,
   inputRatePerMillionUsd: 2.0,
@@ -64,8 +65,19 @@ export function evaluateBudgetStatus(
     level = 'soft_cap_warning';
   }
 
+  const dailyCapUsd = budget.dailyCapUsd ?? 0;
+  const dailyLevel: BudgetStatusSummary['dailyLevel'] =
+    dailyCapUsd > 0 && dailySpendUsd >= dailyCapUsd ? 'daily_cap_exceeded' : 'ok';
+
   const roundedMonth = Number(monthlySpendUsd.toFixed(6));
   const roundedDay = Number(dailySpendUsd.toFixed(6));
+
+  const percentOfDailyCap =
+    dailyCapUsd > 0
+      ? Number(Math.min(999, (dailySpendUsd / dailyCapUsd) * 100).toFixed(1))
+      : null;
+  const remainingDailyCapUsd =
+    dailyCapUsd > 0 ? Number(Math.max(0, dailyCapUsd - dailySpendUsd).toFixed(6)) : null;
 
   const percentOfSoftCap =
     budget.softCapUsd > 0
@@ -83,10 +95,14 @@ export function evaluateBudgetStatus(
 
   return {
     level,
+    dailyLevel,
     monthlySpendUsd: roundedMonth,
     dailySpendUsd: roundedDay,
+    dailyCapUsd,
     softCapUsd: budget.softCapUsd,
     hardCapUsd: budget.hardCapUsd,
+    percentOfDailyCap,
+    remainingDailyCapUsd,
     percentOfSoftCap,
     percentOfHardCap,
     remainingSoftCapUsd,

@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { AppError, ErrorCodes, type ConnectivityCheckDTO } from '@mj/shared';
 import type { XaiResponsesClient } from '@mj/ai';
 import type { MjDatabaseRepository } from '@mj/database';
+import type { AlertMonitor } from '../alerting.js';
 import type { ServerConfig } from '../config.js';
 import type { RuntimeSettingsStore } from '../settingsStore.js';
 import type { VoiceGateway } from './voice.js';
@@ -14,12 +15,17 @@ export function registerUsageRoutes(
     settingsStore: RuntimeSettingsStore;
     xaiClient: XaiResponsesClient;
     voiceGateway: VoiceGateway;
+    alertMonitor: AlertMonitor;
     requireSession: (request: FastifyRequest) => Promise<void>;
   },
 ): void {
   app.get('/api/usage', { preHandler: deps.requireSession }, async () => {
     const settings = await deps.settingsStore.getPublicSettings();
-    return deps.repo.getUsageSummary(settings.budget);
+    const summary = await deps.repo.getUsageSummary(settings.budget);
+    return {
+      ...summary,
+      alerting: deps.alertMonitor.getStatus(),
+    };
   });
 
   app.post(
@@ -68,6 +74,8 @@ export function registerUsageRoutes(
         const modelAvailable =
           modelIds.length > 0 ? modelIds.includes(settings.activeModel) : null;
 
+        void deps.alertMonitor.recordApiOutcome({ ok: true });
+
         return {
           checkedAt,
           apiKeyConfigured: true,
@@ -94,6 +102,8 @@ export function registerUsageRoutes(
                 statusCode: 503,
                 cause: err,
               });
+
+        void deps.alertMonitor.recordApiOutcome({ ok: false, code: appErr.code });
 
         return {
           checkedAt,

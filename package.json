@@ -20,6 +20,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:migrate": "npm run migrate --workspace=@mj/database",
+    "db:backup": "tsx ./database/src/backupCli.ts",
+    "db:restore": "tsx ./database/src/restoreCli.ts",
     "audit:deps": "npm audit --audit-level=moderate"
   },
   "devDependencies": {

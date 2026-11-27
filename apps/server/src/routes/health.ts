@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { SystemHealthDTO } from '@mj/shared';
 import type { MjDatabaseHandle } from '@mj/database';
+import type { AlertMonitor } from '../alerting.js';
 import type { ServerConfig } from '../config.js';
 import type { RuntimeSettingsStore } from '../settingsStore.js';
 
@@ -9,11 +10,15 @@ export interface HealthRouteDeps {
   dbHandle: MjDatabaseHandle;
   settingsStore: RuntimeSettingsStore;
   startedAtMs: number;
+  alertMonitor?: AlertMonitor;
 }
 
 export function registerHealthRoutes(app: FastifyInstance, deps: HealthRouteDeps): void {
   const buildHealthPayload = async (): Promise<{ dbOk: boolean; payload: SystemHealthDTO }> => {
     const dbOk = deps.dbHandle.ping();
+    if (!dbOk) {
+      void deps.alertMonitor?.notifyUptimeDegraded('SQLite database ping failed on health check');
+    }
     const settings = await deps.settingsStore.getPublicSettings();
 
     const engineState: SystemHealthDTO['aiEngine'] = !deps.config.apiKeyConfigured

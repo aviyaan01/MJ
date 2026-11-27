@@ -10,10 +10,12 @@ node_modules/
 
 # Local SQLite database & runtime data
 data/
+backups/
 *.db
 *.db-shm
 *.db-wal
 *.sqlite
+*.mjbak
 
 # Build outputs
 dist/

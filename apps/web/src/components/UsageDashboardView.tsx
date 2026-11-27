@@ -3,6 +3,7 @@ import {
   Activity,
   AlertTriangle,
   AudioLines,
+  BellRing,
   Check,
   Cpu,
   Database,
@@ -14,6 +15,7 @@ import {
   RefreshCw,
   Save,
   Server,
+  ShieldCheck,
   Wifi,
 } from 'lucide-react';
 import { Panel, StatusPill } from '@mj/ui';
@@ -83,6 +85,7 @@ export function UsageDashboardView({
   onCheckConnectivity,
   onSaveSettings,
 }: UsageDashboardViewProps) {
+  const [dailyCapUsd, setDailyCapUsd] = useState(2);
   const [softCapUsd, setSoftCapUsd] = useState(10);
   const [hardCapUsd, setHardCapUsd] = useState(25);
   const [inputRate, setInputRate] = useState(2);
@@ -98,6 +101,7 @@ export function UsageDashboardView({
 
   useEffect(() => {
     if (!settings) return;
+    setDailyCapUsd(settings.budget.dailyCapUsd ?? 2);
     setSoftCapUsd(settings.budget.softCapUsd);
     setHardCapUsd(settings.budget.hardCapUsd);
     setInputRate(settings.budget.inputRatePerMillionUsd);
@@ -116,6 +120,18 @@ export function UsageDashboardView({
 
   const monthSpend = usage?.month.estimatedCostUsd ?? 0;
   const daySpend = usage?.today.estimatedCostUsd ?? 0;
+  const dailyCap = usage?.budgetStatus.dailyCapUsd ?? dailyCapUsd;
+  const dailyLevel =
+    usage?.budgetStatus.dailyLevel ??
+    (dailyCap > 0 && daySpend >= dailyCap ? 'daily_cap_exceeded' : 'ok');
+  const dailyExceeded = dailyLevel === 'daily_cap_exceeded';
+  const dailyProgressPct =
+    dailyCap > 0 ? Math.min(100, Number(((daySpend / dailyCap) * 100).toFixed(1))) : 0;
+  const dailyRemaining =
+    usage?.budgetStatus.remainingDailyCapUsd ??
+    (dailyCap > 0 ? Math.max(0, dailyCap - daySpend) : null);
+  const dailyOverAmount = dailyCap > 0 ? Math.max(0, daySpend - dailyCap) : 0;
+
   const hardCap = usage?.budgetStatus.hardCapUsd ?? hardCapUsd;
   const softCap = usage?.budgetStatus.softCapUsd ?? softCapUsd;
   const budgetLevel = usage?.budgetStatus.level ?? 'ok';
@@ -142,6 +158,7 @@ export function UsageDashboardView({
   const monthRequests = usage?.month.requestCount ?? 0;
   const errorRatePct =
     monthRequests > 0 ? ((monthErrors / monthRequests) * 100).toFixed(1) : '0.0';
+  const alerting = usage?.alerting;
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -160,6 +177,7 @@ export function UsageDashboardView({
     try {
       await onSaveSettings({
         budget: {
+          dailyCapUsd: Number(dailyCapUsd),
           softCapUsd: Number(softCapUsd),
           hardCapUsd: Number(hardCapUsd),
           inputRatePerMillionUsd: Number(inputRate),
@@ -354,17 +372,140 @@ export function UsageDashboardView({
             tone={
               budgetLevel === 'hard_cap_reached'
                 ? 'error'
-                : budgetLevel === 'soft_cap_warning'
+                : dailyExceeded || budgetLevel === 'soft_cap_warning'
                   ? 'warn'
                   : 'good'
             }
           >
             {budgetLevel === 'hard_cap_reached'
               ? 'Hard Cap Reached (Requests Paused)'
-              : budgetLevel === 'soft_cap_warning'
-                ? 'Soft Warning Threshold Exceeded'
-                : 'Within Monthly Budget'}
+              : dailyExceeded
+                ? 'Daily Spend Budget Crossed'
+                : budgetLevel === 'soft_cap_warning'
+                  ? 'Soft Warning Threshold Exceeded'
+                  : 'Within Monthly & Daily Budget'}
           </StatusPill>
+        </div>
+
+        {/* Daily Spend vs Budget Warning Alert */}
+        {(dailyExceeded || budgetLevel !== 'ok') && (
+          <div
+            role="alert"
+            className="flex flex-wrap items-start gap-2.5 rounded-2xl px-4 py-3 text-xs"
+            style={{
+              backgroundColor:
+                budgetLevel === 'hard_cap_reached' || dailyExceeded
+                  ? 'rgba(240, 138, 138, 0.1)'
+                  : 'rgba(227, 190, 126, 0.1)',
+              border:
+                budgetLevel === 'hard_cap_reached' || dailyExceeded
+                  ? '1px solid rgba(240, 138, 138, 0.38)'
+                  : '1px solid rgba(227, 190, 126, 0.38)',
+              color:
+                budgetLevel === 'hard_cap_reached' || dailyExceeded
+                  ? '#F8C7C7'
+                  : '#F4DFB4',
+            }}
+          >
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div className="space-y-1">
+              {dailyExceeded && (
+                <div>
+                  <strong className="font-medium">Daily Budget Warning:</strong> Today&apos;s estimated spend (
+                  <span className="font-mono">${daySpend.toFixed(4)}</span>) crossed your daily budget (
+                  <span className="font-mono">${dailyCap.toFixed(2)}</span>
+                  {dailyOverAmount > 0 ? ` — $${dailyOverAmount.toFixed(4)} over` : ''}).
+                </div>
+              )}
+              {budgetLevel === 'hard_cap_reached' && (
+                <div>
+                  <strong className="font-medium">Monthly Hard Cap Reached:</strong> New paid AI/voice requests are paused until the hard cap is raised.
+                </div>
+              )}
+              {budgetLevel === 'soft_cap_warning' && (
+                <div>
+                  <strong className="font-medium">Monthly Soft Warning:</strong> Monthly spend reached ${monthSpend.toFixed(4)} (soft cap ${softCap.toFixed(2)}).
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Daily Spend vs Daily Budget Bar */}
+        <div
+          className="rounded-2xl p-4"
+          style={{
+            backgroundColor: '#07090E',
+            border: dailyExceeded
+              ? '1px solid rgba(240, 138, 138, 0.35)'
+              : '1px solid var(--mj-border-subtle)',
+          }}
+        >
+          <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+            <div className="flex items-baseline gap-2">
+              <span className="font-mono text-xl font-medium text-[#EDF3F8] tabular-nums">
+                ${daySpend.toFixed(4)}
+              </span>
+              <span className="text-xs" style={{ color: 'var(--mj-text-muted)' }}>
+                spent today vs daily budget
+              </span>
+            </div>
+            <div
+              className="font-mono text-xs"
+              style={{
+                color: dailyExceeded
+                  ? 'var(--mj-status-error)'
+                  : dailyProgressPct >= 80
+                    ? 'var(--mj-status-warn)'
+                    : 'var(--mj-accent-ice)',
+              }}
+            >
+              {dailyCap > 0
+                ? `${dailyProgressPct}% of $${dailyCap.toFixed(2)} daily budget`
+                : 'Daily budget alert Off ($0)'}
+            </div>
+          </div>
+
+          <div
+            role="progressbar"
+            aria-label="Daily spend against daily budget"
+            aria-valuenow={Math.round(dailyProgressPct)}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            className="h-2.5 w-full overflow-hidden rounded-full"
+            style={{ backgroundColor: 'rgba(255, 255, 255, 0.08)' }}
+          >
+            <div
+              className="h-full rounded-full transition-all"
+              style={{
+                width: `${daySpend > 0 && dailyCap > 0 ? Math.max(dailyProgressPct, 2) : 0}%`,
+                background: dailyExceeded
+                  ? 'var(--mj-status-error)'
+                  : dailyProgressPct >= 80
+                    ? 'var(--mj-status-warn)'
+                    : 'linear-gradient(90deg, #5F8EAE, #7FD1AE)',
+              }}
+            />
+          </div>
+
+          <div
+            className="mt-2 flex flex-wrap items-center justify-between gap-2 font-mono text-[11px]"
+            style={{ color: 'var(--mj-text-subtle)' }}
+          >
+            <span>
+              Daily Status:{' '}
+              <strong style={{ color: dailyExceeded ? 'var(--mj-status-error)' : 'var(--mj-status-good)' }}>
+                {dailyExceeded ? 'EXCEEDED' : 'WITHIN LIMIT'}
+              </strong>
+            </span>
+            <span>
+              {dailyRemaining !== null
+                ? dailyExceeded
+                  ? `$${dailyOverAmount.toFixed(4)} over daily budget`
+                  : `$${dailyRemaining.toFixed(4)} remaining today`
+                : 'Set a Daily Budget ($) below to enable daily alerts'}
+            </span>
+          </div>
         </div>
 
         {/* Visual Progress Bar */}
@@ -529,8 +670,9 @@ export function UsageDashboardView({
 
           <form onSubmit={handleSaveBudget} className="space-y-3">
             <div className="grid grid-cols-2 gap-2.5">
-              <NumberField id="dash-soft-cap" label="Soft Cap ($)" value={softCapUsd} step={0.5} onChange={setSoftCapUsd} />
-              <NumberField id="dash-hard-cap" label="Hard Cap ($)" value={hardCapUsd} step={0.5} onChange={setHardCapUsd} />
+              <NumberField id="dash-daily-cap" label="Daily Budget ($)" value={dailyCapUsd} step={0.25} onChange={setDailyCapUsd} />
+              <NumberField id="dash-soft-cap" label="Monthly Soft ($)" value={softCapUsd} step={0.5} onChange={setSoftCapUsd} />
+              <NumberField id="dash-hard-cap" label="Monthly Hard ($)" value={hardCapUsd} step={0.5} onChange={setHardCapUsd} />
               <NumberField id="dash-in-rate" label="Input $/1M" value={inputRate} step={0.05} onChange={setInputRate} />
               <NumberField id="dash-out-rate" label="Output $/1M" value={outputRate} step={0.05} onChange={setOutputRate} />
               <NumberField id="dash-cache-rate" label="Cached $/1M" value={cachedRate} step={0.05} onChange={setCachedRate} />
@@ -645,6 +787,59 @@ export function UsageDashboardView({
           )}
         </Panel>
       </div>
+
+      {/* Uptime, Error-Rate Alerting & Log Redaction Panel */}
+      <Panel className="space-y-3 p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <BellRing className="h-4 w-4" style={{ color: 'var(--mj-accent-ice)' }} />
+            <h2 className="text-sm font-medium text-[#EDF3F8]">
+              Uptime, Crash &amp; Error-Rate Alerting
+            </h2>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-[11px]">
+            <StatusPill tone={alerting?.emailConfigured ? 'good' : 'neutral'}>
+              Email: {alerting?.emailConfigured ? 'Configured' : 'Off'}
+            </StatusPill>
+            <StatusPill tone={alerting?.telegramConfigured ? 'good' : 'neutral'}>
+              Telegram: {alerting?.telegramConfigured ? 'Configured' : 'Off'}
+            </StatusPill>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <MetricBox
+            label={`Rolling API Error Rate (${alerting?.windowMinutes ?? 15}m)`}
+            value={`${alerting?.currentErrorRatePct ?? 0}% (${alerting?.currentWindowErrors ?? 0}/${alerting?.currentWindowRequests ?? 0})`}
+            warn={
+              (alerting?.currentWindowRequests ?? 0) >= (alerting?.minSampleRequests ?? 5) &&
+              (alerting?.currentErrorRatePct ?? 0) >= (alerting?.errorRateThresholdPct ?? 25)
+            }
+          />
+          <MetricBox
+            label="Alert Trigger Threshold"
+            value={`>= ${alerting?.errorRateThresholdPct ?? 25}% (min ${alerting?.minSampleRequests ?? 5} req)`}
+          />
+          <MetricBox
+            label="Last Dispatched Alert"
+            value={
+              alerting?.lastAlertAt
+                ? `${alerting.lastAlertReason ?? 'alert'} (${alerting.lastDeliveryStatus})`
+                : 'None triggered'
+            }
+          />
+        </div>
+
+        <div
+          className="flex flex-wrap items-center gap-2 text-[11px]"
+          style={{ color: 'var(--mj-text-subtle)' }}
+        >
+          <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-[#7FD1AE]" />
+          <span>
+            Strict Log Redaction Active: API keys, bearer/ephemeral tokens, bot tokens, email addresses, query strings, and prompt texts are scrubbed from server logs and outbound alerts.
+          </span>
+        </div>
+      </Panel>
 
       {/* Section 16 Architecture & Model Stability Footer */}
       <Panel className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5 text-xs">

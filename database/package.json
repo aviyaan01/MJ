@@ -13,7 +13,9 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "migrate": "tsx ./src/runMigrations.ts"
+    "migrate": "tsx ./src/runMigrations.ts",
+    "backup": "tsx ./src/backupCli.ts",
+    "restore": "tsx ./src/restoreCli.ts"
   },
   "dependencies": {
     "@mj/shared": "*",

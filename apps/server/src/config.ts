@@ -4,6 +4,8 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 import type { ReasoningEffort } from '@mj/shared';
+import type { AlertingConfig } from './alerting.js';
+import type { BackupSchedulerConfig } from './backupScheduler.js';
 
 export interface ServerConfig {
   appEnv: 'development' | 'test' | 'production';
@@ -30,6 +32,8 @@ export interface ServerConfig {
   serveWebDist: boolean;
   cookieSameSite: 'lax' | 'strict' | 'none';
   cookieDomain?: string;
+  alerting: AlertingConfig;
+  backup: BackupSchedulerConfig;
   rootDir: string;
 }
 
@@ -179,6 +183,57 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
   const rawCookieDomain = (env.COOKIE_DOMAIN ?? '').trim();
   const cookieDomain = rawCookieDomain && !isPlaceholderValue(rawCookieDomain) ? rawCookieDomain : undefined;
 
+  const cleanEnvSecret = (val: string | undefined): string | undefined => {
+    const trimmed = (val ?? '').trim();
+    return trimmed && !isPlaceholderValue(trimmed) ? trimmed : undefined;
+  };
+  const clampNumber = (val: string | undefined, fallback: number, min: number, max: number): number => {
+    const parsed = Number(val);
+    return Number.isFinite(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
+  };
+  const smtpPort = clampNumber(env.ALERT_SMTP_PORT, 587, 1, 65535);
+  const rawSmtpSecure = (env.ALERT_SMTP_SECURE ?? '').trim().toLowerCase();
+  const smtpSecure =
+    rawSmtpSecure === 'true' ? true : rawSmtpSecure === 'false' ? false : smtpPort === 465;
+
+  const alerting: AlertingConfig = {
+    appEnv,
+    telegramBotToken: cleanEnvSecret(env.ALERT_TELEGRAM_BOT_TOKEN),
+    telegramChatId: cleanEnvSecret(env.ALERT_TELEGRAM_CHAT_ID),
+    resendApiKey: cleanEnvSecret(env.ALERT_RESEND_API_KEY),
+    smtpHost: cleanEnvSecret(env.ALERT_SMTP_HOST),
+    smtpPort,
+    smtpSecure,
+    smtpUser: cleanEnvSecret(env.ALERT_SMTP_USER),
+    smtpPass: cleanEnvSecret(env.ALERT_SMTP_PASS),
+    emailFrom: cleanEnvSecret(env.ALERT_EMAIL_FROM),
+    emailTo: cleanEnvSecret(env.ALERT_EMAIL_TO),
+    errorRateThresholdPct: clampNumber(env.ALERT_ERROR_RATE_PCT, 25, 1, 100),
+    minSampleRequests: clampNumber(env.ALERT_MIN_REQUESTS, 5, 1, 500),
+    windowMinutes: clampNumber(env.ALERT_WINDOW_MINUTES, 15, 1, 1440),
+    cooldownMinutes: clampNumber(env.ALERT_COOLDOWN_MINUTES, 15, 1, 1440),
+  };
+
+  const rawBackupEnabled = (env.BACKUP_ENABLED ?? '').trim().toLowerCase();
+  const backupEnabled =
+    rawBackupEnabled === 'false' ? false : rawBackupEnabled === 'true' ? true : appEnv !== 'test';
+  const rawBackupDir = (env.BACKUP_DIR ?? './data/backups').trim() || './data/backups';
+  const explicitBackupKey = cleanEnvSecret(env.BACKUP_ENCRYPTION_KEY);
+  const backupEncryptionKey =
+    explicitBackupKey && explicitBackupKey.length >= 16
+      ? explicitBackupKey
+      : !authSecretEphemeral && authSecret.length >= 16
+        ? authSecret
+        : undefined;
+
+  const backup: BackupSchedulerConfig = {
+    enabled: backupEnabled,
+    dir: resolve(rootDir, rawBackupDir),
+    ...(backupEncryptionKey ? { encryptionKey: backupEncryptionKey } : {}),
+    intervalHours: clampNumber(env.BACKUP_INTERVAL_HOURS, 24, 1, 168),
+    retentionCount: clampNumber(env.BACKUP_RETENTION_COUNT, 14, 1, 365),
+  };
+
   return {
     appEnv,
     host: (env.HOST ?? '127.0.0.1').trim(),
@@ -204,6 +259,8 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
     serveWebDist,
     cookieSameSite,
     ...(cookieDomain ? { cookieDomain } : {}),
+    alerting,
+    backup,
     rootDir,
   };
 }

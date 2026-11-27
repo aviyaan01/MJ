@@ -15,6 +15,7 @@ import {
 } from '@mj/shared';
 import { XaiResponsesClient, buildMjSystemPrompt } from '@mj/ai';
 import type { MjDatabaseRepository } from '@mj/database';
+import type { AlertMonitor } from '../alerting.js';
 import type { ServerConfig } from '../config.js';
 import type { PermissionsStore } from '../permissionsStore.js';
 import type { RuntimeSettingsStore } from '../settingsStore.js';
@@ -25,6 +26,7 @@ export interface ConversationRouteDeps {
   settingsStore: RuntimeSettingsStore;
   permissionsStore: PermissionsStore;
   xaiClient: XaiResponsesClient;
+  alertMonitor?: AlertMonitor;
   requireSession: (request: FastifyRequest) => Promise<void>;
 }
 
@@ -162,6 +164,9 @@ async function streamAssistantTurn(params: {
       settings.budget,
     );
 
+    void deps.alertMonitor?.recordApiOutcome({ ok: true });
+    void deps.alertMonitor?.notifyDailyBudgetCrossed(budgetStatus);
+
     writeSseEvent(reply, {
       type: 'usage',
       usage: result.usage,
@@ -239,6 +244,8 @@ async function streamAssistantTurn(params: {
         latencyMs,
         errorCode: appErr.code,
       });
+
+      void deps.alertMonitor?.recordApiOutcome({ ok: false, code: appErr.code });
 
       writeSseEvent(reply, {
         type: 'error',

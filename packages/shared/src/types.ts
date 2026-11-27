@@ -67,6 +67,7 @@ export interface ConversationDetailDTO {
 }
 
 export interface BudgetSettings {
+  dailyCapUsd?: number;
   softCapUsd: number;
   hardCapUsd: number;
   inputRatePerMillionUsd: number;
@@ -109,14 +110,40 @@ export interface PublicSettingsDTO {
 
 export interface BudgetStatusSummary {
   level: 'ok' | 'soft_cap_warning' | 'hard_cap_reached';
+  dailyLevel?: 'ok' | 'daily_cap_exceeded';
   monthlySpendUsd: number;
   dailySpendUsd: number;
+  dailyCapUsd?: number;
   softCapUsd: number;
   hardCapUsd: number;
+  percentOfDailyCap?: number | null;
+  remainingDailyCapUsd?: number | null;
   percentOfSoftCap: number | null;
   percentOfHardCap: number | null;
   remainingSoftCapUsd: number | null;
   remainingHardCapUsd: number | null;
+}
+
+export type AlertEventReason =
+  | 'crash'
+  | 'high_error_rate'
+  | 'daily_budget_exceeded'
+  | 'uptime_down';
+
+export interface AlertingStatusDTO {
+  emailConfigured: boolean;
+  telegramConfigured: boolean;
+  errorRateThresholdPct: number;
+  minSampleRequests: number;
+  windowMinutes: number;
+  currentWindowRequests: number;
+  currentWindowErrors: number;
+  currentErrorRatePct: number;
+  cooldownMinutes: number;
+  lastAlertAt: string | null;
+  lastAlertReason: AlertEventReason | null;
+  lastDeliveryStatus: 'idle' | 'sent' | 'partial_failure' | 'failed';
+  alertsSentCount: number;
 }
 
 export interface ChannelUsageBreakdown {
@@ -146,6 +173,7 @@ export interface UsageSummaryDTO {
   today: UsagePeriodSummary;
   month: UsagePeriodSummary;
   budgetStatus: BudgetStatusSummary;
+  alerting?: AlertingStatusDTO;
   recentEvents: Array<{
     id: string;
     kind: UsageKind;

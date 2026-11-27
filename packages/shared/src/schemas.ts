@@ -67,6 +67,7 @@ export const UpdateSettingsSchema = z.object({
   compactDensity: z.boolean().optional(),
   budget: z
     .object({
+      dailyCapUsd: z.number().min(0).max(10000).optional(),
       softCapUsd: z.number().min(0).max(10000).optional(),
       hardCapUsd: z.number().min(0).max(10000).optional(),
       inputRatePerMillionUsd: z.number().min(0).max(500).optional(),

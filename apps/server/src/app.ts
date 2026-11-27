@@ -5,14 +5,16 @@ import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
-import { AppError, ErrorCodes } from '@mj/shared';
+import { AppError, ErrorCodes, sanitizeDiagnosticText, sanitizeUrlForLog } from '@mj/shared';
 import { XaiResponsesClient } from '@mj/ai';
 import {
   MjDatabaseRepository,
   createDatabase,
   type MjDatabaseHandle,
 } from '@mj/database';
+import { AlertMonitor } from './alerting.js';
 import { createSessionGuard } from './auth.js';
+import { DailyBackupScheduler } from './backupScheduler.js';
 import { loadServerConfig, type ServerConfig } from './config.js';
 import { PermissionsStore } from './permissionsStore.js';
 import { RuntimeSettingsStore } from './settingsStore.js';
@@ -34,6 +36,7 @@ export interface BuildServerOptions {
   config?: ServerConfig;
   xaiClient?: XaiResponsesClient;
   voiceGateway?: VoiceGateway;
+  alertMonitor?: AlertMonitor;
   dbHandle?: MjDatabaseHandle;
   logger?: boolean;
   webDistDir?: string;
@@ -46,6 +49,8 @@ export interface MjServerContext {
   repo: MjDatabaseRepository;
   settingsStore: RuntimeSettingsStore;
   permissionsStore: PermissionsStore;
+  alertMonitor: AlertMonitor;
+  backupScheduler: DailyBackupScheduler;
 }
 
 export async function buildServer(options: BuildServerOptions = {}): Promise<MjServerContext> {
@@ -55,6 +60,8 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
   const settingsStore = new RuntimeSettingsStore(repo, config);
   const permissionsStore = new PermissionsStore(repo);
   const shortcutsStore = new ShortcutsStore(repo);
+  const alertMonitor = options.alertMonitor ?? new AlertMonitor(config.alerting);
+  const backupScheduler = new DailyBackupScheduler(dbHandle, config.backup, alertMonitor);
   const xaiClient =
     options.xaiClient ??
     new XaiResponsesClient({
@@ -73,13 +80,33 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
       options.logger ??
       (config.appEnv !== 'test'
         ? {
-            level: config.appEnv === 'production' ? 'info' : 'warn',
-            redact: [
-              'req.headers.authorization',
-              'req.headers.cookie',
-              'res.headers["set-cookie"]',
-            ],
-          }
+          level: config.appEnv === 'production' ? 'info' : 'warn',
+          redact: [
+            'req.headers.authorization',
+            'req.headers.cookie',
+            'req.headers["x-api-key"]',
+            'req.headers["x-forwarded-for"]',
+            'req.headers["x-real-ip"]',
+            'req.headers["proxy-authorization"]',
+            'req.remoteAddress',
+            'res.headers["set-cookie"]',
+          ],
+          serializers: {
+            req(request) {
+              return {
+                method: request.method,
+                url: sanitizeUrlForLog(request.url),
+              };
+            },
+            err(err) {
+              return {
+                type: err.name || 'Error',
+                message: sanitizeDiagnosticText(err.message || 'Server error'),
+                stack: sanitizeDiagnosticText(err.stack || ''),
+              };
+            },
+          },
+        }
         : false),
     bodyLimit: 256 * 1024,
     trustProxy: config.appEnv === 'production',
@@ -145,6 +172,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
     dbHandle,
     settingsStore,
     startedAtMs,
+    alertMonitor,
   });
   registerAuthRoutes(app, config);
   registerSettingsRoutes(app, { settingsStore, requireSession });
@@ -154,6 +182,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
     settingsStore,
     xaiClient,
     voiceGateway,
+    alertMonitor,
     requireSession,
   });
   registerPrivacyRoutes(app, {
@@ -174,6 +203,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
     settingsStore,
     permissionsStore,
     voiceGateway,
+    alertMonitor,
     requireSession,
   });
   registerConversationRoutes(app, {
@@ -182,6 +212,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
     settingsStore,
     permissionsStore,
     xaiClient,
+    alertMonitor,
     requireSession,
   });
 
@@ -267,13 +298,20 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
       return reply.status(valErr.statusCode).send({ error: valErr.toPayload() });
     }
 
+    const sanitizedDetail =
+      err instanceof Error ? sanitizeDiagnosticText(err.message) : 'Unexpected server error';
+
     request.log.error(
       {
         reqId: request.id,
         errName: err instanceof Error ? err.name : 'UnknownError',
+        detail: sanitizedDetail,
       },
       'Unhandled server error',
     );
+
+    void alertMonitor.recordApiOutcome({ ok: false, code: ErrorCodes.INTERNAL_ERROR });
+    void alertMonitor.notifyCrash('http_request_handler', err);
 
     const internalErr = new AppError({
       code: ErrorCodes.INTERNAL_ERROR,
@@ -285,6 +323,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
   });
 
   app.addHook('onClose', async () => {
+    backupScheduler.stop();
     if (!options.dbHandle) {
       dbHandle.close();
     }
@@ -297,5 +336,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
     repo,
     settingsStore,
     permissionsStore,
+    alertMonitor,
+    backupScheduler,
   };
 }

@@ -24,6 +24,7 @@ import {
   type TtsSynthesisResult,
 } from '@mj/ai';
 import type { MjDatabaseRepository } from '@mj/database';
+import type { AlertMonitor } from '../alerting.js';
 import type { ServerConfig } from '../config.js';
 import type { PermissionsStore } from '../permissionsStore.js';
 import type { RuntimeSettingsStore } from '../settingsStore.js';
@@ -96,6 +97,7 @@ export function registerVoiceRoutes(
     settingsStore: RuntimeSettingsStore;
     permissionsStore: PermissionsStore;
     voiceGateway: VoiceGateway;
+    alertMonitor?: AlertMonitor;
     requireSession: (request: FastifyRequest) => Promise<void>;
   },
 ): void {
@@ -117,6 +119,7 @@ export function registerVoiceRoutes(
     const startedAt = Date.now();
     try {
       const value = await fn();
+      void deps.alertMonitor?.recordApiOutcome({ ok: true });
       return { value, latencyMs: Date.now() - startedAt };
     } catch (err) {
       const code = err instanceof AppError ? err.code : ErrorCodes.VOICE_SERVICE_UNAVAILABLE;
@@ -128,6 +131,9 @@ export function registerVoiceRoutes(
         latencyMs: Date.now() - startedAt,
         errorCode: code,
       });
+      if (!(err instanceof AppError) || err.statusCode >= 500 || err.statusCode === 429) {
+        void deps.alertMonitor?.recordApiOutcome({ ok: false, code });
+      }
       throw err;
     }
   }
@@ -308,6 +314,11 @@ export function registerVoiceRoutes(
       latencyMs,
     });
 
+    if (deps.alertMonitor) {
+      const updatedUsage = await deps.repo.getUsageSummary(settings.budget);
+      void deps.alertMonitor.notifyDailyBudgetCrossed(updatedUsage.budgetStatus);
+    }
+
     return reply
       .header('Content-Type', ttsAudio.contentType)
       .header('Cache-Control', 'no-store')
@@ -365,6 +376,11 @@ export function registerVoiceRoutes(
         latencyMs,
       });
 
+      if (deps.alertMonitor) {
+        const updatedUsage = await deps.repo.getUsageSummary(settings.budget);
+        void deps.alertMonitor.notifyDailyBudgetCrossed(updatedUsage.budgetStatus);
+      }
+
       return sttResult;
     },
   );
@@ -387,6 +403,11 @@ export function registerVoiceRoutes(
       latencyMs: 0,
       errorCode: body.errorCode,
     });
+
+    if (deps.alertMonitor) {
+      const updatedUsage = await deps.repo.getUsageSummary(settings.budget);
+      void deps.alertMonitor.notifyDailyBudgetCrossed(updatedUsage.budgetStatus);
+    }
 
     return { recorded: true, estimatedCostUsd };
   });
