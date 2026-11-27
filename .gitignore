@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Environment files (never commit secrets)
+.env
+.env.*
+!.env.example
+
+# Local SQLite database & runtime data
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+
+# Build outputs
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# Logs & OS artifacts
+logs/
+*.log
+.DS_Store
+Thumbs.db
+
+# Coverage & test artifacts
+coverage/
+.vitest/

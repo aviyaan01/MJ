@@ -1,0 +1,202 @@
+:root {
+  color-scheme: dark;
+
+  /* Core Obsidian Dark Palette (Section 04) */
+  --mj-bg-primary: #07080b;
+  --mj-bg-secondary: #0d1017;
+  --mj-bg-elevated: #121722;
+  --mj-bg-glass: rgba(13, 16, 23, 0.88);
+  --mj-bg-glass-elevated: rgba(18, 23, 34, 0.92);
+
+  /* Typography (WCAG AA+ verified against #07080B, #0D1017, #121722) */
+  --mj-text-primary: #edf3f8;
+  --mj-text-secondary: #c7d4e1;
+  --mj-text-muted: #9eb0c3;
+  --mj-text-subtle: #8b9cb0;
+
+  /* Cool Ice Blue & Silver Accents */
+  --mj-accent-ice: #c7e3f5;
+  --mj-accent-blue: #9ac6e6;
+  --mj-accent-blue-soft: rgba(154, 198, 230, 0.14);
+  --mj-accent-silver: #d4e0ec;
+
+  /* Semantic Status Colors (WCAG AA verified) */
+  --mj-status-good: #7fd1ae;
+  --mj-status-warn: #e3be7e;
+  --mj-status-error: #f08a8a;
+
+  /* Precision Borders & Shadows */
+  --mj-border-subtle: rgba(208, 225, 241, 0.09);
+  --mj-border-strong: rgba(208, 225, 241, 0.18);
+  --mj-border-focus: rgba(154, 198, 230, 0.85);
+  --mj-shadow-panel: 0 22px 68px rgba(0, 0, 0, 0.42);
+  --mj-shadow-orb: 0 0 32px rgba(154, 198, 230, 0.22), 0 0 90px rgba(96, 150, 194, 0.15);
+
+  --mj-font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    sans-serif;
+  --mj-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  background-color: var(--mj-bg-primary);
+  color: var(--mj-text-primary);
+  font-family: var(--mj-font-sans);
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(ellipse at 54% 16%, rgba(96, 145, 186, 0.12), transparent 38%),
+    radial-gradient(ellipse at 92% 84%, rgba(81, 114, 148, 0.07), transparent 32%),
+    linear-gradient(145deg, #080a0f 0%, #07080b 55%, #090c12 100%);
+  color: var(--mj-text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+/* Precision focus rings for keyboard navigation */
+:where(button, a, input, textarea, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--mj-border-focus);
+  outline-offset: 2px;
+}
+
+/* Subtle Obsidian scrollbars */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(199, 227, 245, 0.16);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(199, 227, 245, 0.28);
+}
+
+/* MJ Core Orb & Waveform Animations */
+@keyframes mjOrbBreathe {
+  0%,
+  100% {
+    transform: scale(0.985);
+    filter: brightness(0.98);
+  }
+  50% {
+    transform: scale(1.02);
+    filter: brightness(1.06);
+  }
+}
+
+@keyframes mjOrbStream {
+  0%,
+  100% {
+    transform: scale(0.99);
+    filter: brightness(1.06);
+  }
+  50% {
+    transform: scale(1.055);
+    filter: brightness(1.2);
+  }
+}
+
+@keyframes mjOrbitSpin {
+  to {
+    transform: rotate(338deg) scaleY(0.77);
+  }
+}
+
+@keyframes mjOrbitSpinReverse {
+  to {
+    transform: rotate(-298deg) scaleY(0.9);
+  }
+}
+
+@keyframes mjWaveBar {
+  0% {
+    transform: scaleY(0.45);
+    opacity: 0.35;
+  }
+  100% {
+    transform: scaleY(2.2);
+    opacity: 0.92;
+  }
+}
+
+.mj-orb-idle .mj-orb-core {
+  animation: mjOrbBreathe 5.2s ease-in-out infinite;
+}
+
+.mj-orb-connecting .mj-orb-core {
+  animation: mjOrbBreathe 1.4s ease-in-out infinite;
+}
+
+.mj-orb-connecting .mj-orb-orbit-one {
+  animation: mjOrbitSpin 9s linear infinite;
+}
+
+.mj-orb-streaming .mj-orb-core {
+  animation: mjOrbStream 0.85s ease-in-out infinite;
+}
+
+.mj-orb-streaming .mj-orb-orbit-one {
+  animation: mjOrbitSpin 4.8s linear infinite;
+}
+
+.mj-orb-streaming .mj-orb-orbit-two {
+  animation: mjOrbitSpinReverse 7s linear infinite;
+}
+
+.mj-orb-streaming .mj-sound-bars i {
+  animation: mjWaveBar 0.45s ease-in-out infinite alternate;
+}
+
+.mj-orb-connecting .mj-sound-bars i {
+  animation: mjWaveBar 0.85s ease-in-out infinite alternate;
+}
+
+.mj-sound-bars i:nth-child(2n) {
+  animation-delay: 0.12s;
+}
+
+.mj-sound-bars i:nth-child(3n) {
+  animation-delay: 0.24s;
+}
+
+.mj-sound-bars i:nth-child(5n) {
+  animation-delay: 0.35s;
+}
+
+/* Respect OS reduced motion AND explicit in-app reduced motion setting (Section 04) */
+@media (prefers-reduced-motion: reduce) {
+  html[data-motion='system'] *,
+  html[data-motion='system'] *::before,
+  html[data-motion='system'] *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+html[data-motion='reduce'] *,
+html[data-motion='reduce'] *::before,
+html[data-motion='reduce'] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}

@@ -1,0 +1,29 @@
+{
+  "name": "mj-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "database"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n server,web -c cyan,blue \"npm run dev --workspace=@mj/server\" \"npm run dev --workspace=@mj/web\"",
+    "dev:server": "npm run dev --workspace=@mj/server",
+    "dev:web": "npm run dev --workspace=@mj/web",
+    "build": "npm run typecheck && npm run build --workspace=@mj/web && npm run build --workspace=@mj/server",
+    "typecheck": "npm run typecheck --workspace=@mj/shared && npm run typecheck --workspace=@mj/ai && npm run typecheck --workspace=@mj/voice && npm run typecheck --workspace=@mj/database && npm run typecheck --workspace=@mj/ui && npm run typecheck --workspace=@mj/server && npm run typecheck --workspace=@mj/web",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:migrate": "npm run migrate --workspace=@mj/database",
+    "audit:deps": "npm audit --audit-level=moderate"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "concurrently": "^9.1.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.2"
+  }
+}
