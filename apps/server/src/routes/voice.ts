@@ -44,10 +44,31 @@ export interface VoiceGateway {
   }) => Promise<SttTranscriptionResult>;
 }
 
+const ALLOWED_STT_MIME_TYPES = new Set([
+  'audio/webm',
+  'audio/webm;codecs=opus',
+  'audio/ogg',
+  'audio/ogg;codecs=opus',
+  'audio/mp4',
+  'audio/mpeg',
+  'audio/wav',
+  'audio/x-wav',
+  'audio/flac',
+  'audio/aac',
+]);
+
 const SttBodySchema = z.object({
   audioBase64: z.string().min(4).max(12_000_000),
   filename: z.string().max(120).optional(),
-  mimeType: z.string().max(80).optional(),
+  // Restrict to known browser audio MIME types to prevent MIME-confusion attacks.
+  mimeType: z
+    .string()
+    .max(80)
+    .optional()
+    .refine(
+      (v) => v === undefined || ALLOWED_STT_MIME_TYPES.has(v.toLowerCase().split(';')[0]!.trim()),
+      { message: 'mimeType must be a supported audio type (e.g. audio/webm, audio/ogg, audio/mp4).' },
+    ),
   languageMode: LanguageModeSchema.optional(),
   durationSeconds: z.number().min(0).max(86400).optional(),
 });

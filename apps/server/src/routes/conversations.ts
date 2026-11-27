@@ -261,7 +261,9 @@ export function registerConversationRoutes(
 ): void {
   app.get('/api/conversations', { preHandler: deps.requireSession }, async (request) => {
     const query = request.query as { q?: string };
-    const conversations = await deps.repo.listConversations(query?.q);
+    // Clamp search query length to prevent sending unbounded strings into the DB LIKE expression.
+    const rawQ = typeof query?.q === 'string' ? query.q.slice(0, 200).trim() : undefined;
+    const conversations = await deps.repo.listConversations(rawQ || undefined);
     return { conversations };
   });
 

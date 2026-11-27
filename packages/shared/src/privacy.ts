@@ -135,7 +135,9 @@ export const CreateAuditLogSchema = z
     action: z.string().trim().min(1).max(120),
     target: z.string().trim().min(1).max(240),
     outcome: z.enum(['allowed', 'denied', 'cancelled', 'error']),
-    source: z.enum(['web', 'server', 'desktop-tauri']),
+    // 'server' is excluded: the browser cannot legitimately claim server authority.
+    // All server-originated audit log entries are written directly by backend code, not via this API endpoint.
+    source: z.enum(['web', 'desktop-tauri']),
     detail: z.string().trim().max(400).optional(),
   })
   .strict();
