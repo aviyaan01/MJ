@@ -8,6 +8,8 @@ import {
   type VoiceState,
 } from '@mj/shared';
 import {
+  GEMINI_LIVE_INPUT_SAMPLE_RATE,
+  GEMINI_LIVE_OUTPUT_SAMPLE_RATE,
   XAI_REALTIME_SAMPLE_RATE,
   computeRmsLevel,
   float32ToPcm16Base64,
@@ -31,10 +33,13 @@ export interface VoiceServiceCallbacks {
   onAssistantTranscriptDelta?: (delta: string) => void;
   onAssistantTranscriptDone?: (fullText: string) => void;
   onError?: (error: StructuredErrorPayload) => void;
+  onFreeFallbackRequested?: (secret: VoiceClientSecretDTO) => void;
+  onTtsFallbackRequested?: (text: string) => boolean;
   onSessionEnded?: (summary: {
     durationSeconds: number;
     status: 'success' | 'error' | 'aborted';
     errorCode?: string;
+    modelUsed?: string;
   }) => void;
 }
 
@@ -76,6 +81,8 @@ export class MjVoiceService {
   private workletBlobUrl: string | null = null;
 
   private ws: WebSocket | null = null;
+  private activeProtocol: 'gemini-live' | 'xai-realtime' = 'gemini-live';
+  private activeVoiceModelUsed: string | undefined;
   private activeSources = new Set<AudioBufferSourceNode>();
   private nextPlaybackTime = 0;
   private levelRafId: number | null = null;
@@ -182,12 +189,15 @@ export class MjVoiceService {
 
     const startedAt = this.sessionStartedAtMs;
     this.sessionStartedAtMs = null;
+    const modelUsed = this.activeVoiceModelUsed;
+    this.activeVoiceModelUsed = undefined;
 
     if (startedAt !== null) {
       const durationSeconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
       this.callbacks.onSessionEnded?.({
         durationSeconds,
         status: reason === 'manual' ? 'success' : 'error',
+        ...(modelUsed ? { modelUsed } : {}),
       });
     }
 
@@ -305,6 +315,9 @@ export class MjVoiceService {
       source.start();
     } catch (err) {
       if (controller.signal.aborted) return;
+      if (this.callbacks.onTtsFallbackRequested?.(trimmed)) {
+        return;
+      }
       const appErr = toVoiceAppError(err, ErrorCodes.AUDIO_PLAYBACK_FAILED, 'voice');
       this.emitVoiceError(appErr);
     }
@@ -332,12 +345,49 @@ export class MjVoiceService {
 
     if (this.manualStop) return;
 
-    const wsUrl = secret.realtimeUrl.includes('?')
-      ? secret.realtimeUrl
-      : `${secret.realtimeUrl}?model=${encodeURIComponent(secret.model)}`;
+    this.ws = null;
+
+    if (secret.protocol === 'free-browser') {
+      this.sessionStartedAtMs = null;
+      await this.teardownAudioOnly();
+      this.stateMachine.reset();
+      if (this.callbacks.onFreeFallbackRequested) {
+        this.callbacks.onFreeFallbackRequested(secret);
+      } else {
+        this.emitVoiceError(
+          new AppError({
+            code: ErrorCodes.VOICE_SERVICE_UNAVAILABLE,
+            category: 'voice',
+            statusCode: 503,
+            message: 'Cloud realtime voice unconfigured; switch to free-browser-voice.',
+          }),
+        );
+      }
+      return;
+    }
+
+    const inferredProtocol: 'gemini-live' | 'xai-realtime' =
+      secret.protocol === 'xai-realtime' ||
+      (!secret.protocol && secret.realtimeUrl.includes('api.x.ai'))
+        ? 'xai-realtime'
+        : 'gemini-live';
+    this.activeProtocol = inferredProtocol;
+    this.activeVoiceModelUsed = secret.model;
+
+    let wsUrl: string;
+    let socket: WebSocket;
+    if (inferredProtocol === 'gemini-live') {
+      const sep = secret.realtimeUrl.includes('?') ? '&' : '?';
+      wsUrl = `${secret.realtimeUrl}${sep}access_token=${encodeURIComponent(secret.token)}`;
+      socket = new WebSocket(wsUrl);
+    } else {
+      wsUrl = secret.realtimeUrl.includes('?')
+        ? secret.realtimeUrl
+        : `${secret.realtimeUrl}?model=${encodeURIComponent(secret.model)}`;
+      socket = new WebSocket(wsUrl, [`xai-client-secret.${secret.token}`]);
+    }
 
     let opened = false;
-    const socket = new WebSocket(wsUrl, [`xai-client-secret.${secret.token}`]);
     this.ws = socket;
 
     socket.onopen = () => {
@@ -348,38 +398,69 @@ export class MjVoiceService {
       opened = true;
       this.reconnectAttempts = 0;
 
-      const sessionUpdatePayload = {
-        type: 'session.update',
-        session: {
-          voice: secret.voice || this.options.voiceId,
-          instructions: secret.instructions,
-          turn_detection: {
-            type: 'server_vad',
-          },
-          audio: {
-            input: {
-              format: {
-                type: 'audio/pcm',
-                rate: XAI_REALTIME_SAMPLE_RATE,
+      if (inferredProtocol === 'gemini-live') {
+        const modelResource = secret.model.startsWith('models/')
+          ? secret.model
+          : `models/${secret.model}`;
+        const setupPayload = {
+          setup: {
+            model: modelResource,
+            generationConfig: {
+              responseModalities: ['AUDIO'],
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: {
+                    voiceName: mapToGeminiPrebuiltVoice(secret.voice || this.options.voiceId),
+                  },
+                },
               },
             },
-            output: {
-              format: {
-                type: 'audio/pcm',
-                rate: XAI_REALTIME_SAMPLE_RATE,
+            systemInstruction: {
+              parts: [{ text: secret.instructions }],
+            },
+            inputAudioTranscription: {},
+            outputAudioTranscription: {},
+          },
+        };
+        socket.send(JSON.stringify(setupPayload));
+      } else {
+        const sessionUpdatePayload = {
+          type: 'session.update',
+          session: {
+            voice: secret.voice || this.options.voiceId,
+            instructions: secret.instructions,
+            turn_detection: {
+              type: 'server_vad',
+            },
+            audio: {
+              input: {
+                format: {
+                  type: 'audio/pcm',
+                  rate: XAI_REALTIME_SAMPLE_RATE,
+                },
+              },
+              output: {
+                format: {
+                  type: 'audio/pcm',
+                  rate: XAI_REALTIME_SAMPLE_RATE,
+                },
               },
             },
           },
-        },
-      };
+        };
+        socket.send(JSON.stringify(sessionUpdatePayload));
+      }
 
-      socket.send(JSON.stringify(sessionUpdatePayload));
       this.stateMachine.transition(VoiceStates.LISTENING);
     };
 
     socket.onmessage = (event) => {
       if (typeof event.data !== 'string') return;
-      this.handleRealtimeServerEvent(event.data);
+      if (this.activeProtocol === 'gemini-live') {
+        this.handleGeminiServerEvent(event.data);
+      } else {
+        this.handleRealtimeServerEvent(event.data);
+      }
     };
 
     socket.onerror = () => {
@@ -540,7 +621,7 @@ export class MjVoiceService {
       const msg =
         typeof errObj.message === 'string'
           ? errObj.message
-          : 'Grok voice session returned an error.';
+          : 'Realtime voice session returned an error.';
       this.emitVoiceError(
         new AppError({
           code: ErrorCodes.VOICE_SERVICE_UNAVAILABLE,
@@ -549,6 +630,125 @@ export class MjVoiceService {
           message: msg,
         }),
       );
+    }
+  }
+
+  private handleGeminiServerEvent(rawJson: string): void {
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(rawJson) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+
+    if (payload.error && typeof payload.error === 'object') {
+      const errObj = payload.error as Record<string, unknown>;
+      const msg =
+        typeof errObj.message === 'string'
+          ? errObj.message
+          : 'Gemini Live session returned an error.';
+      this.emitVoiceError(
+        new AppError({
+          code: ErrorCodes.VOICE_SERVICE_UNAVAILABLE,
+          category: 'voice',
+          statusCode: 502,
+          message: msg,
+        }),
+      );
+      return;
+    }
+
+    if (payload.setupComplete !== undefined) {
+      if (this.stateMachine.getState() === VoiceStates.CONNECTING) {
+        this.stateMachine.transition(VoiceStates.LISTENING);
+      }
+      return;
+    }
+
+    const sc =
+      payload.serverContent && typeof payload.serverContent === 'object'
+        ? (payload.serverContent as Record<string, unknown>)
+        : null;
+    if (!sc) return;
+
+    if (sc.interrupted === true) {
+      this.flushPlaybackQueue();
+      this.responseActive = false;
+      this.stateMachine.transition(VoiceStates.INTERRUPTED);
+      setTimeout(() => {
+        if (
+          this.stateMachine.getState() === VoiceStates.INTERRUPTED &&
+          this.ws?.readyState === WebSocket.OPEN
+        ) {
+          this.stateMachine.transition(VoiceStates.LISTENING);
+        }
+      }, 180);
+      return;
+    }
+
+    const inputTrans =
+      sc.inputTranscription && typeof sc.inputTranscription === 'object'
+        ? (sc.inputTranscription as Record<string, unknown>)
+        : null;
+    if (inputTrans && typeof inputTrans.text === 'string' && inputTrans.text.trim()) {
+      this.callbacks.onUserTranscript?.(inputTrans.text.trim());
+    }
+
+    const outputTrans =
+      sc.outputTranscription && typeof sc.outputTranscription === 'object'
+        ? (sc.outputTranscription as Record<string, unknown>)
+        : null;
+    if (outputTrans && typeof outputTrans.text === 'string' && outputTrans.text.length > 0) {
+      this.responseActive = true;
+      this.currentAssistantTranscript += outputTrans.text;
+      this.callbacks.onAssistantTranscriptDelta?.(outputTrans.text);
+    }
+
+    const modelTurn =
+      sc.modelTurn && typeof sc.modelTurn === 'object'
+        ? (sc.modelTurn as Record<string, unknown>)
+        : null;
+    const parts = Array.isArray(modelTurn?.parts) ? (modelTurn.parts as Array<Record<string, unknown>>) : [];
+    for (const part of parts) {
+      const inlineData =
+        part.inlineData && typeof part.inlineData === 'object'
+          ? (part.inlineData as Record<string, unknown>)
+          : null;
+      if (inlineData && typeof inlineData.data === 'string' && inlineData.data.length > 0) {
+        this.responseActive = true;
+        if (this.stateMachine.getState() !== VoiceStates.SPEAKING) {
+          this.stateMachine.transition(VoiceStates.SPEAKING);
+        }
+        const mime = typeof inlineData.mimeType === 'string' ? inlineData.mimeType : '';
+        const rateMatch = /rate=(\d+)/.exec(mime);
+        const outputRate = rateMatch?.[1] ? Number(rateMatch[1]) : GEMINI_LIVE_OUTPUT_SAMPLE_RATE;
+        this.enqueuePcmAudioChunk(
+          inlineData.data,
+          Number.isFinite(outputRate) && outputRate > 0 ? outputRate : GEMINI_LIVE_OUTPUT_SAMPLE_RATE,
+        );
+      } else if (
+        typeof part.text === 'string' &&
+        part.text.length > 0 &&
+        part.thought !== true &&
+        !outputTrans
+      ) {
+        this.responseActive = true;
+        this.currentAssistantTranscript += part.text;
+        this.callbacks.onAssistantTranscriptDelta?.(part.text);
+      }
+    }
+
+    if (sc.turnComplete === true) {
+      this.responseActive = false;
+      const finalText = this.currentAssistantTranscript.trim();
+      if (finalText) {
+        this.lastAssistantText = finalText;
+        this.callbacks.onAssistantTranscriptDone?.(finalText);
+      }
+      this.currentAssistantTranscript = '';
+      if (this.activeSources.size === 0 && this.ws?.readyState === WebSocket.OPEN) {
+        this.stateMachine.transition(VoiceStates.LISTENING);
+      }
     }
   }
 
@@ -628,14 +828,33 @@ export class MjVoiceService {
         return;
       }
 
-      const resampled = resampleFloat32(samples, ctx.sampleRate, XAI_REALTIME_SAMPLE_RATE);
+      const targetRate =
+        this.activeProtocol === 'gemini-live'
+          ? GEMINI_LIVE_INPUT_SAMPLE_RATE
+          : XAI_REALTIME_SAMPLE_RATE;
+      const resampled = resampleFloat32(samples, ctx.sampleRate, targetRate);
       const base64Audio = float32ToPcm16Base64(resampled);
-      this.ws.send(
-        JSON.stringify({
-          type: 'input_audio_buffer.append',
-          audio: base64Audio,
-        }),
-      );
+      if (this.activeProtocol === 'gemini-live') {
+        this.ws.send(
+          JSON.stringify({
+            realtimeInput: {
+              mediaChunks: [
+                {
+                  mimeType: `audio/pcm;rate=${targetRate}`,
+                  data: base64Audio,
+                },
+              ],
+            },
+          }),
+        );
+      } else {
+        this.ws.send(
+          JSON.stringify({
+            type: 'input_audio_buffer.append',
+            audio: base64Audio,
+          }),
+        );
+      }
     };
 
     let attachedWorklet = false;
@@ -673,12 +892,15 @@ export class MjVoiceService {
     this.startOutputLevelLoop();
   }
 
-  private enqueuePcmAudioChunk(base64Pcm16: string): void {
+  private enqueuePcmAudioChunk(
+    base64Pcm16: string,
+    sampleRate = XAI_REALTIME_SAMPLE_RATE,
+  ): void {
     if (!this.audioContext || !this.outputGainNode) return;
     const samples = pcm16Base64ToFloat32(base64Pcm16);
     if (samples.length === 0) return;
 
-    const buffer = this.audioContext.createBuffer(1, samples.length, XAI_REALTIME_SAMPLE_RATE);
+    const buffer = this.audioContext.createBuffer(1, samples.length, sampleRate);
     buffer.copyToChannel(samples, 0);
 
     const source = this.audioContext.createBufferSource();
@@ -911,4 +1133,27 @@ export function mapBrowserVoiceError(err: unknown): AppError {
     statusCode: 503,
     cause: err,
   });
+}
+
+function mapToGeminiPrebuiltVoice(voiceId: string | undefined): string {
+  switch ((voiceId ?? '').trim().toLowerCase()) {
+    case 'sal':
+      return 'Charon';
+    case 'rex':
+      return 'Fenrir';
+    case 'eve':
+      return 'Kore';
+    case 'leo':
+      return 'Puck';
+    case 'aoede':
+    case 'charon':
+    case 'fenrir':
+    case 'kore':
+    case 'puck':
+    case 'zephyr':
+      return voiceId!.trim().charAt(0).toUpperCase() + voiceId!.trim().slice(1).toLowerCase();
+    case 'ara':
+    default:
+      return 'Aoede';
+  }
 }

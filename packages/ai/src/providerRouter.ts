@@ -16,13 +16,15 @@ export interface ProviderEndpointConfig {
   xai: { apiKey: string; baseUrl: string; model: string; models: string[] };
   ollama: { enabled: boolean; baseUrl: string; model: string };
   groq: { apiKey: string; baseUrl: string; model: string };
-  gemini: { apiKey: string; baseUrl: string; model: string };
+  gemini: { apiKey: string; baseUrl: string; model: string; paidTier?: boolean };
   openrouter: { apiKey: string; baseUrl: string; model: string };
   cerebras: { apiKey: string; baseUrl: string; model: string };
   mistral: { apiKey: string; baseUrl: string; model: string };
   github: { apiKey: string; baseUrl: string; model: string };
   timeoutMs: number;
   maxRetries?: number;
+  cooldownMs?: number;
+  nowMs?: () => number;
   fetchImpl?: typeof fetch;
   xaiClientOverride?: XaiResponsesClient;
 }
@@ -32,10 +34,28 @@ export interface RoutedResponseResult extends CreateResponseResult {
   isFree: boolean;
 }
 
+export interface ProviderRoutingCandidatePreview {
+  id: ConcreteAiProviderId;
+  name: string;
+  baseUrl: string;
+  endpointUrl: string;
+  isFree: boolean;
+  isLocal: boolean;
+  inCooldown: boolean;
+}
+
+export interface ProviderRoutingPreview {
+  primary: ProviderRoutingCandidatePreview | null;
+  candidates: ProviderRoutingCandidatePreview[];
+  hasFreeCandidate: boolean;
+  hasLocalCandidate: boolean;
+}
+
 interface InternalProviderEntry {
   id: ConcreteAiProviderId;
   name: string;
   baseUrl: string;
+  apiFormat: 'xai-responses' | 'openai-chat';
   freeTier: boolean;
   requiresKey: boolean;
   defaultModel: string;
@@ -44,6 +64,35 @@ interface InternalProviderEntry {
   costNote: string;
   client: XaiResponsesClient;
 }
+
+export function isLoopbackBaseUrl(baseUrl: string): boolean {
+  try {
+    const parsed = new URL(baseUrl);
+    const host = parsed.hostname.toLowerCase();
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
+  } catch {
+    return false;
+  }
+}
+
+const DEFAULT_PROVIDER_COOLDOWN_MS = 5 * 60_000;
+
+const AUTO_PROVIDER_PRIORITY: readonly ConcreteAiProviderId[] = [
+  'gemini',
+  'ollama',
+  'groq',
+  'openrouter',
+  'cerebras',
+  'mistral',
+  'github',
+  'xai',
+];
+
+const COOLDOWN_ERROR_CODES = new Set<string>([
+  ErrorCodes.INVALID_API_KEY,
+  ErrorCodes.UNAUTHORIZED,
+  ErrorCodes.INSUFFICIENT_CREDITS,
+]);
 
 const FAILOVER_ELIGIBLE_CODES = new Set<string>([
   ErrorCodes.INSUFFICIENT_CREDITS,
@@ -57,11 +106,17 @@ const FAILOVER_ELIGIBLE_CODES = new Set<string>([
 
 export class ProviderRouterClient {
   private readonly entries = new Map<ConcreteAiProviderId, InternalProviderEntry>();
+  private readonly cooldownUntilMs = new Map<ConcreteAiProviderId, number>();
+  private readonly cooldownErrors = new Map<ConcreteAiProviderId, AppError>();
   private readonly fetchImpl: typeof fetch;
+  private readonly cooldownMs: number;
+  private readonly nowMs: () => number;
   private lastOllamaProbeMs = 0;
 
   constructor(private readonly cfg: ProviderEndpointConfig) {
     this.fetchImpl = cfg.fetchImpl ?? fetch;
+    this.cooldownMs = Math.max(0, cfg.cooldownMs ?? DEFAULT_PROVIDER_COOLDOWN_MS);
+    this.nowMs = cfg.nowMs ?? (() => Date.now());
     const defMap = new Map(AI_PROVIDER_CATALOG.map((d) => [d.id, d]));
 
     const registerOpenAiProvider = (
@@ -71,6 +126,7 @@ export class ProviderRouterClient {
         baseUrl: string;
         defaultModel: string;
         configured: boolean;
+        freeTierOverride?: boolean;
         allowEmptyApiKey?: boolean;
         extraHeaders?: Record<string, string>;
       },
@@ -81,7 +137,8 @@ export class ProviderRouterClient {
         id,
         name: def.name,
         baseUrl: opts.baseUrl,
-        freeTier: def.freeTier,
+        apiFormat: 'openai-chat',
+        freeTier: opts.freeTierOverride ?? def.freeTier,
         requiresKey: def.requiresKey,
         defaultModel: opts.defaultModel,
         models,
@@ -94,6 +151,7 @@ export class ProviderRouterClient {
           timeoutMs: cfg.timeoutMs,
           maxRetries: cfg.maxRetries ?? 2,
           apiFormat: 'openai-chat',
+          providerId: id,
           allowEmptyApiKey: opts.allowEmptyApiKey,
           extraHeaders: opts.extraHeaders,
           fetchImpl: this.fetchImpl,
@@ -106,6 +164,7 @@ export class ProviderRouterClient {
       id: 'xai',
       name: xaiDef.name,
       baseUrl: cfg.xai.baseUrl,
+      apiFormat: 'xai-responses',
       freeTier: false,
       requiresKey: true,
       defaultModel: cfg.xai.model,
@@ -137,6 +196,7 @@ export class ProviderRouterClient {
       baseUrl: cfg.gemini.baseUrl,
       defaultModel: cfg.gemini.model,
       configured: cfg.gemini.apiKey.trim().length > 0,
+      freeTierOverride: !(cfg.gemini.paidTier ?? false),
     });
 
     registerOpenAiProvider('openrouter', {
@@ -224,17 +284,7 @@ export class ProviderRouterClient {
   }
 
   public listProviderCatalog(): ProviderInfoDTO[] {
-    const order: ConcreteAiProviderId[] = [
-      'ollama',
-      'groq',
-      'gemini',
-      'openrouter',
-      'cerebras',
-      'mistral',
-      'github',
-      'xai',
-    ];
-    return order
+    return AUTO_PROVIDER_PRIORITY
       .map((id) => this.entries.get(id))
       .filter((e): e is InternalProviderEntry => Boolean(e))
       .map((e) => ({
@@ -252,6 +302,104 @@ export class ProviderRouterClient {
 
   public getProviderInfo(id: ConcreteAiProviderId): ProviderInfoDTO | undefined {
     return this.listProviderCatalog().find((p) => p.id === id);
+  }
+
+  public isInCooldown(id: ConcreteAiProviderId): boolean {
+    const until = this.cooldownUntilMs.get(id);
+    if (until === undefined) return false;
+    if (this.nowMs() >= until) {
+      this.cooldownUntilMs.delete(id);
+      this.cooldownErrors.delete(id);
+      return false;
+    }
+    return true;
+  }
+
+  public getCooldownRemainingMs(id: ConcreteAiProviderId): number {
+    const until = this.cooldownUntilMs.get(id);
+    if (until === undefined) return 0;
+    const rem = until - this.nowMs();
+    if (rem <= 0) {
+      this.cooldownUntilMs.delete(id);
+      this.cooldownErrors.delete(id);
+      return 0;
+    }
+    return rem;
+  }
+
+  public clearCooldown(id?: ConcreteAiProviderId): void {
+    if (id) {
+      this.cooldownUntilMs.delete(id);
+      this.cooldownErrors.delete(id);
+      return;
+    }
+    this.cooldownUntilMs.clear();
+    this.cooldownErrors.clear();
+  }
+
+  private shouldTriggerCooldown(err: AppError): boolean {
+    return (
+      err.statusCode === 401 ||
+      err.statusCode === 403 ||
+      COOLDOWN_ERROR_CODES.has(err.code)
+    );
+  }
+
+  private recordCooldown(id: ConcreteAiProviderId, err: AppError): void {
+    if (this.cooldownMs <= 0 || !this.shouldTriggerCooldown(err)) return;
+    this.cooldownUntilMs.set(id, this.nowMs() + this.cooldownMs);
+    this.cooldownErrors.set(id, err);
+  }
+
+  private getEndpointUrl(entry: InternalProviderEntry): string {
+    const clean = entry.baseUrl.replace(/\/+$/, '');
+    if (entry.apiFormat === 'xai-responses') {
+      return clean.endsWith('/responses') ? clean : `${clean}/responses`;
+    }
+    return clean.endsWith('/chat/completions') ? clean : `${clean}/chat/completions`;
+  }
+
+  private isEntryFreeForModel(entry: InternalProviderEntry, requestedModel?: string): boolean {
+    if (entry.id === 'xai') return false;
+    if (entry.id === 'gemini') return entry.freeTier;
+    if (entry.id === 'openrouter') {
+      const m = (requestedModel?.trim() || entry.defaultModel).toLowerCase();
+      return m === 'openrouter/free' || m.endsWith(':free');
+    }
+    return entry.freeTier;
+  }
+
+  public resolveRoutingPreview(
+    requestedProvider: AiProviderId,
+    requestedModel?: string,
+  ): ProviderRoutingPreview {
+    const ordered = this.buildCandidateOrder(requestedProvider, requestedModel, {
+      excludeCooldown: false,
+      allowUnconfiguredExplicit: true,
+    });
+    const toPreview = (entry: InternalProviderEntry): ProviderRoutingCandidatePreview => ({
+      id: entry.id,
+      name: entry.name,
+      baseUrl: entry.baseUrl,
+      endpointUrl: this.getEndpointUrl(entry),
+      isFree: this.isEntryFreeForModel(entry, requestedModel),
+      isLocal: isLoopbackBaseUrl(entry.baseUrl),
+      inCooldown: this.isInCooldown(entry.id),
+    });
+
+    const previews = ordered.map(toPreview);
+    return {
+      primary: previews[0] ?? null,
+      candidates: previews,
+      hasFreeCandidate: previews.some((c) => {
+        const entry = this.entries.get(c.id);
+        return Boolean(entry?.configured && c.isFree);
+      }),
+      hasLocalCandidate: previews.some((c) => {
+        const entry = this.entries.get(c.id);
+        return Boolean(entry?.configured && c.isLocal);
+      }),
+    };
   }
 
   public inferProviderForModel(model: string): ConcreteAiProviderId | null {
@@ -272,65 +420,102 @@ export class ProviderRouterClient {
   private buildCandidateOrder(
     requestedProvider: AiProviderId,
     requestedModel?: string,
+    filters: {
+      freeOnly?: boolean;
+      localOnly?: boolean;
+      excludeCooldown?: boolean;
+      allowUnconfiguredExplicit?: boolean;
+    } = {},
   ): InternalProviderEntry[] {
+    const matchesFilters = (entry: InternalProviderEntry, checkConfigured: boolean): boolean => {
+      if (checkConfigured && !entry.configured) return false;
+      if (filters.localOnly && !isLoopbackBaseUrl(entry.baseUrl)) return false;
+      if (filters.freeOnly && !this.isEntryFreeForModel(entry, requestedModel)) return false;
+      if (filters.excludeCooldown && this.isInCooldown(entry.id)) return false;
+      return true;
+    };
+
     if (requestedProvider !== 'auto') {
       const explicit = this.entries.get(requestedProvider);
-      return explicit ? [explicit] : [];
+      if (!explicit) return [];
+      const passes = matchesFilters(explicit, !(filters.allowUnconfiguredExplicit ?? false));
+      return passes ? [explicit] : [];
     }
 
-    const freePriority: ConcreteAiProviderId[] = [
-      'groq',
-      'gemini',
-      'openrouter',
-      'cerebras',
-      'mistral',
-      'github',
-      'ollama',
-    ];
-    const configuredFree = freePriority
-      .map((id) => this.entries.get(id)!)
-      .filter((e) => e.configured);
-
-    const xai = this.entries.get('xai');
-    const inferred = requestedModel ? this.inferProviderForModel(requestedModel) : null;
-
     const ordered: InternalProviderEntry[] = [];
-    const pushUnique = (entry?: InternalProviderEntry) => {
-      if (entry && entry.configured && !ordered.some((o) => o.id === entry.id)) {
+    const pushIfEligible = (entry?: InternalProviderEntry) => {
+      if (!entry) return;
+      if (!matchesFilters(entry, true)) return;
+      if (!ordered.some((o) => o.id === entry.id)) {
         ordered.push(entry);
       }
     };
 
-    if (inferred) {
-      pushUnique(this.entries.get(inferred));
-    }
-    if (xai?.configured && inferred === 'xai') {
-      pushUnique(xai);
-    }
-    for (const freeEntry of configuredFree) {
-      pushUnique(freeEntry);
-    }
-    if (xai?.configured) {
-      pushUnique(xai);
+    // Only promote inferred free/local model when caller explicitly picked a non-Gemini/non-xAI model;
+    // never promote xAI ahead of Gemini or free/local providers because a model starts with `grok-*`.
+    const inferred = requestedModel ? this.inferProviderForModel(requestedModel) : null;
+    if (inferred && inferred !== 'xai' && inferred !== 'gemini') {
+      pushIfEligible(this.entries.get(inferred));
     }
 
-    // If nothing at all is configured, keep xai as sentinel so INVALID_API_KEY surfaces cleanly
-    return ordered.length > 0 ? ordered : xai ? [xai] : [];
+    for (const id of AUTO_PROVIDER_PRIORITY) {
+      pushIfEligible(this.entries.get(id));
+    }
+
+    return ordered;
   }
 
   public async createResponse(
-    params: CreateResponseParams & { provider?: AiProviderId },
+    params: CreateResponseParams & {
+      provider?: AiProviderId;
+      freeOnly?: boolean;
+      localOnly?: boolean;
+    },
   ): Promise<RoutedResponseResult> {
     await this.refreshLocalOllamaModels(false);
 
     const requestedProvider = params.provider ?? 'auto';
-    const candidates = this.buildCandidateOrder(requestedProvider, params.model);
-    if (candidates.length === 0) {
+    const eligibleNoCooldown = this.buildCandidateOrder(requestedProvider, params.model, {
+      freeOnly: params.freeOnly,
+      localOnly: params.localOnly,
+      excludeCooldown: false,
+      allowUnconfiguredExplicit: requestedProvider !== 'auto',
+    });
+
+    if (eligibleNoCooldown.length === 0) {
+      if (params.freeOnly) {
+        throw new AppError({
+          code: ErrorCodes.BUDGET_EXCEEDED,
+          category: 'budget',
+          statusCode: 429,
+        });
+      }
+      if (params.localOnly) {
+        throw new AppError({
+          code: ErrorCodes.PERMISSION_DENIED,
+          category: 'privacy',
+          statusCode: 403,
+          message: 'External AI requests are disabled in Privacy & Permissions.',
+        });
+      }
       throw new AppError({
         code: ErrorCodes.INVALID_API_KEY,
         category: 'api',
         statusCode: 502,
       });
+    }
+
+    const candidates = eligibleNoCooldown.filter((entry) => !this.isInCooldown(entry.id));
+    if (candidates.length === 0) {
+      const firstId = eligibleNoCooldown[0]!.id;
+      throw (
+        this.cooldownErrors.get(firstId) ??
+        new AppError({
+          code: ErrorCodes.INVALID_API_KEY,
+          category: 'api',
+          statusCode: 502,
+        })
+      );
     }
 
     let lastError: AppError | undefined;
@@ -351,10 +536,11 @@ export class ProviderRouterClient {
           ...params,
           model: effectiveModel,
         });
+        this.clearCooldown(candidate.id);
         return {
           ...result,
           providerId: candidate.id,
-          isFree: candidate.freeTier,
+          isFree: this.isEntryFreeForModel(candidate, effectiveModel),
         };
       } catch (err) {
         const appErr =
@@ -366,6 +552,7 @@ export class ProviderRouterClient {
                 statusCode: 502,
                 cause: err,
               });
+        this.recordCooldown(candidate.id, appErr);
         lastError = appErr;
 
         const hasNext = i < candidates.length - 1;
@@ -402,15 +589,55 @@ export class ProviderRouterClient {
     latencyMs: number;
   }> {
     await this.refreshLocalOllamaModels(true);
-    const candidates = this.buildCandidateOrder(requestedProvider);
-    const primary = candidates[0] ?? this.entries.get('xai')!;
-    const { modelIds, latencyMs } = await primary.client.listAvailableModelIds(timeoutMs);
-    return {
-      providerId: primary.id,
-      providerName: primary.name,
-      modelChecked: primary.defaultModel,
-      modelIds,
-      latencyMs,
-    };
+    const candidates = this.buildCandidateOrder(requestedProvider, undefined, {
+      excludeCooldown: true,
+      allowUnconfiguredExplicit: requestedProvider !== 'auto',
+    });
+    const list = candidates.length > 0 ? candidates : [this.entries.get('xai')!];
+    let lastError: AppError | undefined;
+
+    for (let i = 0; i < list.length; i++) {
+      const candidate = list[i]!;
+      try {
+        const { modelIds, latencyMs } = await candidate.client.listAvailableModelIds(timeoutMs);
+        this.clearCooldown(candidate.id);
+        return {
+          providerId: candidate.id,
+          providerName: candidate.name,
+          modelChecked: candidate.defaultModel,
+          modelIds,
+          latencyMs,
+        };
+      } catch (err) {
+        const appErr =
+          err instanceof AppError
+            ? err
+            : new AppError({
+                code: ErrorCodes.UPSTREAM_ERROR,
+                category: 'api',
+                statusCode: 502,
+                cause: err,
+              });
+        this.recordCooldown(candidate.id, appErr);
+        lastError = appErr;
+        if (
+          requestedProvider === 'auto' &&
+          i < list.length - 1 &&
+          FAILOVER_ELIGIBLE_CODES.has(appErr.code)
+        ) {
+          continue;
+        }
+        throw appErr;
+      }
+    }
+
+    throw (
+      lastError ??
+      new AppError({
+        code: ErrorCodes.UPSTREAM_ERROR,
+        category: 'api',
+        statusCode: 502,
+      })
+    );
   }
 }

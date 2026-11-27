@@ -310,4 +310,87 @@ describe('XaiResponsesClient (Section 02 & Section 07)', () => {
       message: 'service unavailable',
     });
   });
+
+  it('maps Gemini 400/403 invalid key, 429 quota exceeded, and 5xx clearly while redacting AIza keys in diagnostic logs', async () => {
+    const fakeGeminiKey = 'AIzaSyTestSecretGeminiKey1234567890ABCDEFG';
+    const makeGeminiClient = (status: number, payload: unknown) =>
+      new XaiResponsesClient({
+        apiKey: fakeGeminiKey,
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+        defaultModel: 'gemini-2.5-flash',
+        providerId: 'gemini',
+        apiFormat: 'openai-chat',
+        timeoutMs: 5000,
+        maxRetries: 0,
+        fetchImpl: async () => new Response(JSON.stringify(payload), { status }),
+      });
+
+    // 400 API_KEY_INVALID -> clear message + redacted raw diagnostic
+    try {
+      await makeGeminiClient(400, {
+        error: {
+          code: 400,
+          message: `API key not valid for ${fakeGeminiKey}. Please pass a valid API key.`,
+          status: 'INVALID_ARGUMENT',
+          details: [{ reason: 'API_KEY_INVALID' }],
+        },
+      }).createResponse({
+        instructions: 'Sys',
+        input: [{ role: 'user', content: 'hi' }],
+        stream: false,
+      });
+      throw new Error('Expected error');
+    } catch (err) {
+      const appErr = err as import('@mj/shared').AppError;
+      expect(appErr.code).toBe(ErrorCodes.INVALID_API_KEY);
+      expect(appErr.message).toBe('Gemini API key invalid, Google AI Studio check koro');
+      expect(appErr.upstreamDiagnostic).not.toContain(fakeGeminiKey);
+      expect(appErr.upstreamDiagnostic).toContain('AIza[REDACTED]');
+      expect(JSON.stringify(appErr.toPayload())).not.toContain(fakeGeminiKey);
+    }
+
+    // 403 permission denied -> same clear Gemini key message
+    await expect(
+      makeGeminiClient(403, {
+        error: { status: 'PERMISSION_DENIED', message: 'API key does not have permission' },
+      }).createResponse({
+        instructions: 'Sys',
+        input: [{ role: 'user', content: 'hi' }],
+        stream: false,
+      }),
+    ).rejects.toMatchObject({
+      code: ErrorCodes.INVALID_API_KEY,
+      message: 'Gemini API key invalid, Google AI Studio check koro',
+    });
+
+    // 429 quota exceeded -> clear quota message
+    await expect(
+      makeGeminiClient(429, {
+        error: {
+          code: 429,
+          status: 'RESOURCE_EXHAUSTED',
+          message: 'You exceeded your current quota, please check your plan and billing details.',
+        },
+      }).createResponse({
+        instructions: 'Sys',
+        input: [{ role: 'user', content: 'hi' }],
+        stream: false,
+      }),
+    ).rejects.toMatchObject({
+      code: ErrorCodes.RATE_LIMITED,
+      message: 'Gemini free quota sesh, kichukkhon por abar chesta koro',
+    });
+
+    // 5xx -> clear unavailable message
+    await expect(
+      makeGeminiClient(503, { error: { message: 'Gemini backend overloaded' } }).createResponse({
+        instructions: 'Sys',
+        input: [{ role: 'user', content: 'hi' }],
+        stream: false,
+      }),
+    ).rejects.toMatchObject({
+      code: ErrorCodes.UPSTREAM_ERROR,
+      message: 'Gemini service unavailable, ektu por abar chesta koro',
+    });
+  });
 });

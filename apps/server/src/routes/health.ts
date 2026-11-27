@@ -15,6 +15,57 @@ export interface HealthRouteDeps {
   providerRouter?: ProviderRouterClient;
 }
 
+export const DEFAULT_HEALTH_WATCHDOG_INTERVAL_MS = 60_000;
+
+/**
+ * Periodically checks local SQLite health even when `/health` receives no HTTP traffic,
+ * dispatching `uptime_down` alerts whenever the database ping fails.
+ */
+export class HealthWatchdog {
+  private timer: NodeJS.Timeout | null = null;
+  private readonly intervalMs: number;
+
+  constructor(
+    private readonly deps: {
+      dbHandle: MjDatabaseHandle;
+      alertMonitor?: AlertMonitor;
+      intervalMs?: number;
+    },
+  ) {
+    this.intervalMs = deps.intervalMs ?? DEFAULT_HEALTH_WATCHDOG_INTERVAL_MS;
+  }
+
+  public async runCheck(): Promise<boolean> {
+    let dbOk = false;
+    try {
+      dbOk = this.deps.dbHandle.ping();
+    } catch {
+      dbOk = false;
+    }
+    if (!dbOk) {
+      await this.deps.alertMonitor?.notifyUptimeDegraded(
+        'Background health watchdog: SQLite database ping failed',
+      );
+    }
+    return dbOk;
+  }
+
+  public start(): void {
+    if (this.intervalMs <= 0 || this.timer) return;
+    this.timer = setInterval(() => {
+      void this.runCheck();
+    }, this.intervalMs);
+    this.timer.unref();
+  }
+
+  public stop(): void {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+}
+
 export function registerHealthRoutes(app: FastifyInstance, deps: HealthRouteDeps): void {
   const buildHealthPayload = async (): Promise<{ dbOk: boolean; payload: SystemHealthDTO }> => {
     const dbOk = deps.dbHandle.ping();

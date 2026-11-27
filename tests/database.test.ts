@@ -1,6 +1,14 @@
+import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { DEFAULT_BUDGET_SETTINGS } from '@mj/shared';
-import { MjDatabaseRepository, createDatabase, type MjDatabaseHandle } from '@mj/database';
+import {
+  MjDatabaseRepository,
+  createDatabase,
+  findMonorepoRoot,
+  resolveSqlitePath,
+  type MjDatabaseHandle,
+} from '@mj/database';
+import { loadServerConfig } from '../apps/server/src/config.js';
 
 describe('SQLite + Drizzle Database Layer', () => {
   const handles: MjDatabaseHandle[] = [];
@@ -90,5 +98,32 @@ describe('SQLite + Drizzle Database Layer', () => {
     const deleted = await repo.deleteConversation(conv.id);
     expect(deleted).toBe(true);
     expect(await repo.getConversationDetail(conv.id)).toBeNull();
+  });
+
+  it('resolves relative DATABASE_URL consistently from monorepo root for both server and database workspace', () => {
+    const rootDir = findMonorepoRoot();
+    const expectedDbPath = resolve(rootDir, 'data', 'mj-assistant.db');
+
+    expect(resolveSqlitePath('./data/mj-assistant.db')).toBe(expectedDbPath);
+    expect(resolveSqlitePath('file:./data/mj-assistant.db')).toBe(expectedDbPath);
+    expect(resolveSqlitePath('./data/mj-assistant.db', resolve(rootDir, 'database'))).not.toBe(
+      resolveSqlitePath('./data/mj-assistant.db'),
+    );
+
+    const cfg = loadServerConfig({
+      APP_ENV: 'development',
+      DATABASE_URL: './data/mj-assistant.db',
+      AUTH_SECRET: 'test-signing-secret-must-be-at-least-32-bytes-long',
+    });
+    expect(cfg.databaseUrl).toBe(expectedDbPath);
+
+    const prodDefaultCors = loadServerConfig({
+      APP_ENV: 'production',
+      DATABASE_URL: ':memory:',
+      AUTH_SECRET: 'test-signing-secret-must-be-at-least-32-bytes-long',
+      APP_ACCESS_PASSCODE: 'prod-pass-123',
+    });
+    expect(prodDefaultCors.corsOrigins).toEqual(['tauri://localhost', 'http://tauri.localhost']);
+    expect(cfg.corsOrigins).toEqual(['http://localhost:5173', 'http://127.0.0.1:5173']);
   });
 });

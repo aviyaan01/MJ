@@ -1,5 +1,6 @@
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { drizzle, type SqliteRemoteDatabase } from 'drizzle-orm/sqlite-proxy';
 import { AppError, ErrorCodes } from '@mj/shared';
@@ -16,7 +17,58 @@ export interface MjDatabaseHandle {
   close: () => void;
 }
 
-export function resolveSqlitePath(databaseUrl: string): string {
+export function findMonorepoRoot(
+  startDir = dirname(fileURLToPath(import.meta.url)),
+): string {
+  let current = resolve(startDir);
+  for (let i = 0; i < 8; i++) {
+    if (
+      existsSync(resolve(current, '.env.example')) ||
+      existsSync(resolve(current, 'tsconfig.base.json'))
+    ) {
+      return current;
+    }
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return resolve(process.cwd());
+}
+
+export function loadRootEnvIntoProcess(): string {
+  const rootDir = findMonorepoRoot();
+  const envPath = resolve(rootDir, '.env');
+  if (existsSync(envPath)) {
+    const lines = readFileSync(envPath, 'utf8').split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eqIdx = trimmed.indexOf('=');
+      if (eqIdx <= 0) continue;
+      const key = trimmed.slice(0, eqIdx).trim();
+      let val = trimmed.slice(eqIdx + 1).trim();
+      if (
+        (val.startsWith('"') && val.endsWith('"')) ||
+        (val.startsWith("'") && val.endsWith("'"))
+      ) {
+        val = val.slice(1, -1);
+      }
+      if (process.env[key] === undefined) {
+        process.env[key] = val;
+      }
+    }
+  }
+  return rootDir;
+}
+
+/**
+ * Resolves `DATABASE_URL` cleanly from the MJ monorepo root (`MJ/data/mj-assistant.db`
+ * by default) so both `@mj/server` and `@mj/database` scripts use the exact same DB file.
+ */
+export function resolveSqlitePath(
+  databaseUrl: string,
+  rootDir = findMonorepoRoot(),
+): string {
   const trimmed = databaseUrl.trim();
   if (!trimmed || trimmed === ':memory:') {
     return ':memory:';
@@ -25,7 +77,7 @@ export function resolveSqlitePath(databaseUrl: string): string {
   if (withoutScheme === ':memory:') {
     return ':memory:';
   }
-  return resolve(withoutScheme);
+  return resolve(rootDir, withoutScheme);
 }
 
 function normalizeSqlParams(params: unknown[]): SQLInputValue[] {

@@ -247,8 +247,12 @@ export function inferHttpStatus(code: ErrorCode): number {
  */
 export function sanitizeDiagnosticText(input: string): string {
   return input
-    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [REDACTED]')
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
     .replace(/xai-[A-Za-z0-9_-]{8,}/g, 'xai-[REDACTED]')
+    .replace(/AIza[0-9A-Za-z_-]{35,}/g, 'AIza[REDACTED]')
+    .replace(/\bgsk_[A-Za-z0-9_-]{8,}\b/g, 'gsk_[REDACTED]')
+    .replace(/\bgithub_pat_[A-Za-z0-9_]{12,}\b/g, 'github_pat_[REDACTED]')
+    .replace(/\bgh[pousr]_[A-Za-z0-9_]{8,}\b/g, 'ghp_[REDACTED]')
     .replace(/\b(re|ek|sk|pk)_[A-Za-z0-9_-]{8,}\b/g, '$1_[REDACTED]')
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-[REDACTED]')
     .replace(/bot\d{5,}:[A-Za-z0-9_-]{10,}/gi, 'bot[REDACTED]')
@@ -256,7 +260,7 @@ export function sanitizeDiagnosticText(input: string): string {
     .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[REDACTED_EMAIL]')
     .replace(/([A-Za-z]:\\Users\\|\/Users\/|\/home\/)[^\\/\s"']+/gi, '$1[USER]')
     .replace(
-      /(api[_-]?key|secret|token|password|passcode|authorization)\s*[:=]\s*[^\s,;]+/gi,
+      /(api[_-]?key|x-goog-api-key|secret|token|password|passcode|authorization)\s*[:=]\s*[^\s,;]+/gi,
       '$1=[REDACTED]',
     )
     .replace(/([?&](?:q|query|search|token|passcode|key|secret)=)[^&\s]*/gi, '$1[REDACTED]');

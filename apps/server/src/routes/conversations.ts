@@ -18,6 +18,7 @@ import {
   ProviderRouterClient,
   XaiResponsesClient,
   buildMjSystemPrompt,
+  isLoopbackBaseUrl,
 } from '@mj/ai';
 import type { MjDatabaseRepository } from '@mj/database';
 import type { AlertMonitor } from '../alerting.js';
@@ -65,6 +66,89 @@ function beginSseStream(reply: FastifyReply): void {
   });
 }
 
+async function prepareChatPreflight(params: {
+  requestId: string;
+  deps: ConversationRouteDeps;
+  modelOverride?: string;
+  providerOverride?: AiProviderId;
+}): Promise<{
+  activeProvider: AiProviderId;
+  activeModel: string;
+  freeOnly: boolean;
+  localOnly: boolean;
+}> {
+  const { requestId, deps, modelOverride, providerOverride } = params;
+  if (deps.providerRouter) {
+    await deps.providerRouter.refreshLocalOllamaModels(false);
+  }
+
+  const anyReady = deps.providerRouter
+    ? deps.providerRouter.hasAnyConfiguredProvider()
+    : deps.config.apiKeyConfigured;
+  if (!anyReady) {
+    throw new AppError({
+      code: ErrorCodes.INVALID_API_KEY,
+      category: 'api',
+      statusCode: 502,
+      requestId,
+    });
+  }
+
+  const settings = await deps.settingsStore.getPublicSettings();
+  const activeProvider = providerOverride ?? settings.activeProvider ?? 'gemini';
+  const activeModel = modelOverride?.trim() || settings.activeModel;
+
+  const fallbackXaiUrl = `${deps.config.xaiBaseUrl.replace(/\/+$/, '')}/responses`;
+  const preview = deps.providerRouter?.resolveRoutingPreview(activeProvider, activeModel) ?? null;
+  const targetEndpoint = preview?.primary?.endpointUrl ?? fallbackXaiUrl;
+  const targetName = preview?.primary?.name ?? 'xAI Grok';
+
+  let localOnly = false;
+  const permissions = await deps.permissionsStore.getPermissions();
+  if (!permissions.externalWebServices) {
+    const canRunLocalLoopback = preview
+      ? preview.hasLocalCandidate
+      : isLoopbackBaseUrl(deps.config.xaiBaseUrl);
+    if (!canRunLocalLoopback) {
+      await deps.repo.recordAuditLog({
+        capability: 'externalWebServices',
+        action: `Blocked outbound ${targetName} API chat request`,
+        target: targetEndpoint,
+        outcome: 'denied',
+        source: 'server',
+        detail: 'externalWebServices is disabled in Privacy & Permissions.',
+      });
+      throw new AppError({
+        code: ErrorCodes.PERMISSION_DENIED,
+        category: 'privacy',
+        statusCode: 403,
+        requestId,
+        message: 'External AI requests are disabled in Privacy & Permissions.',
+      });
+    }
+    localOnly = true;
+  }
+
+  let freeOnly = false;
+  const usageSummary = await deps.repo.getUsageSummary(settings.budget);
+  if (usageSummary.budgetStatus.level === 'hard_cap_reached') {
+    const hasFreeEligible = preview
+      ? preview.candidates.some((c) => c.isFree && (!localOnly || c.isLocal))
+      : localOnly && isLoopbackBaseUrl(deps.config.xaiBaseUrl);
+    if (!hasFreeEligible) {
+      throw new AppError({
+        code: ErrorCodes.BUDGET_EXCEEDED,
+        category: 'budget',
+        statusCode: 429,
+        requestId,
+      });
+    }
+    freeOnly = true;
+  }
+
+  return { activeProvider, activeModel, freeOnly, localOnly };
+}
+
 async function streamAssistantTurn(params: {
   request: FastifyRequest;
   reply: FastifyReply;
@@ -73,12 +157,14 @@ async function streamAssistantTurn(params: {
   userMessageId: string;
   modelOverride?: string;
   providerOverride?: AiProviderId;
+  freeOnly?: boolean;
+  localOnly?: boolean;
   streamOverride?: boolean;
   updatedTitle?: string;
 }): Promise<void> {
   const { request, reply, deps, conversationId, userMessageId } = params;
   const settings = await deps.settingsStore.getPublicSettings();
-  const activeProvider = params.providerOverride ?? settings.activeProvider ?? 'auto';
+  const activeProvider = params.providerOverride ?? settings.activeProvider ?? 'gemini';
   const activeModel = params.modelOverride?.trim() || settings.activeModel;
   const useStreaming = params.streamOverride ?? settings.streamResponses;
 
@@ -131,6 +217,8 @@ async function streamAssistantTurn(params: {
           maxOutputTokens: settings.maxOutputTokens,
           stream: useStreaming,
           timeoutMs: settings.timeoutMs,
+          freeOnly: params.freeOnly,
+          localOnly: params.localOnly,
           signal: abortController.signal,
           onStatus: (phase, detail) => {
             writeSseEvent(reply, { type: 'status', phase, detail });
@@ -369,50 +457,12 @@ export function registerConversationRoutes(
         });
       }
 
-      if (deps.providerRouter) {
-        await deps.providerRouter.refreshLocalOllamaModels(false);
-      }
-      const anyReady = deps.providerRouter
-        ? deps.providerRouter.hasAnyConfiguredProvider()
-        : deps.config.apiKeyConfigured;
-      if (!anyReady) {
-        throw new AppError({
-          code: ErrorCodes.INVALID_API_KEY,
-          category: 'api',
-          statusCode: 502,
-          requestId: request.id,
-        });
-      }
-
-      const permissions = await deps.permissionsStore.getPermissions();
-      if (!permissions.externalWebServices) {
-        await deps.repo.recordAuditLog({
-          capability: 'externalWebServices',
-          action: 'Blocked outbound Grok API chat request',
-          target: 'https://api.x.ai/v1/responses',
-          outcome: 'denied',
-          source: 'server',
-          detail: 'externalWebServices is disabled in Privacy & Permissions.',
-        });
-        throw new AppError({
-          code: ErrorCodes.PERMISSION_DENIED,
-          category: 'privacy',
-          statusCode: 403,
-          requestId: request.id,
-          message: 'External AI requests are disabled in Privacy & Permissions.',
-        });
-      }
-
-      const settings = await deps.settingsStore.getPublicSettings();
-      const usageSummary = await deps.repo.getUsageSummary(settings.budget);
-      if (usageSummary.budgetStatus.level === 'hard_cap_reached') {
-        throw new AppError({
-          code: ErrorCodes.BUDGET_EXCEEDED,
-          category: 'budget',
-          statusCode: 429,
-          requestId: request.id,
-        });
-      }
+      const preflight = await prepareChatPreflight({
+        requestId: request.id,
+        deps,
+        modelOverride: body.model,
+        providerOverride: body.provider,
+      });
 
       const shouldAutoTitle =
         existing.conversation.title === 'New conversation' && existing.messages.length === 0;
@@ -437,8 +487,10 @@ export function registerConversationRoutes(
         deps,
         conversationId: id,
         userMessageId: userMessage.id,
-        modelOverride: body.model,
-        providerOverride: body.provider,
+        modelOverride: preflight.activeModel,
+        providerOverride: preflight.activeProvider,
+        freeOnly: preflight.freeOnly,
+        localOnly: preflight.localOnly,
         streamOverride: body.stream,
         updatedTitle,
       });
@@ -462,50 +514,12 @@ export function registerConversationRoutes(
         });
       }
 
-      if (deps.providerRouter) {
-        await deps.providerRouter.refreshLocalOllamaModels(false);
-      }
-      const anyReady = deps.providerRouter
-        ? deps.providerRouter.hasAnyConfiguredProvider()
-        : deps.config.apiKeyConfigured;
-      if (!anyReady) {
-        throw new AppError({
-          code: ErrorCodes.INVALID_API_KEY,
-          category: 'api',
-          statusCode: 502,
-          requestId: request.id,
-        });
-      }
-
-      const permissions = await deps.permissionsStore.getPermissions();
-      if (!permissions.externalWebServices) {
-        await deps.repo.recordAuditLog({
-          capability: 'externalWebServices',
-          action: 'Blocked outbound Grok API chat request',
-          target: 'https://api.x.ai/v1/responses',
-          outcome: 'denied',
-          source: 'server',
-          detail: 'externalWebServices is disabled in Privacy & Permissions.',
-        });
-        throw new AppError({
-          code: ErrorCodes.PERMISSION_DENIED,
-          category: 'privacy',
-          statusCode: 403,
-          requestId: request.id,
-          message: 'External AI requests are disabled in Privacy & Permissions.',
-        });
-      }
-
-      const settings = await deps.settingsStore.getPublicSettings();
-      const usageSummary = await deps.repo.getUsageSummary(settings.budget);
-      if (usageSummary.budgetStatus.level === 'hard_cap_reached') {
-        throw new AppError({
-          code: ErrorCodes.BUDGET_EXCEEDED,
-          category: 'budget',
-          statusCode: 429,
-          requestId: request.id,
-        });
-      }
+      const preflight = await prepareChatPreflight({
+        requestId: request.id,
+        deps,
+        modelOverride: body.model,
+        providerOverride: body.provider,
+      });
 
       const msgs = existing.messages;
       const lastMsg = msgs[msgs.length - 1];
@@ -541,8 +555,10 @@ export function registerConversationRoutes(
         deps,
         conversationId: id,
         userMessageId: targetUserMessage.id,
-        modelOverride: body.model,
-        providerOverride: body.provider,
+        modelOverride: preflight.activeModel,
+        providerOverride: preflight.activeProvider,
+        freeOnly: preflight.freeOnly,
+        localOnly: preflight.localOnly,
         streamOverride: body.stream,
       });
     },

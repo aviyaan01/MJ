@@ -1,42 +1,6 @@
-import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { createDatabase } from './client.js';
+import { createDatabase, loadRootEnvIntoProcess, resolveSqlitePath } from './client.js';
 import { createEncryptedDatabaseBackup } from './backup.js';
-
-function loadRootEnvIfPresent(): string {
-  let dir = process.cwd();
-  for (let i = 0; i < 6; i++) {
-    const envPath = resolve(dir, '.env');
-    if (existsSync(envPath)) {
-      const lines = readFileSync(envPath, 'utf8').split(/\r?\n/);
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#')) continue;
-        const eqIdx = trimmed.indexOf('=');
-        if (eqIdx <= 0) continue;
-        const key = trimmed.slice(0, eqIdx).trim();
-        let val = trimmed.slice(eqIdx + 1).trim();
-        if (
-          (val.startsWith('"') && val.endsWith('"')) ||
-          (val.startsWith("'") && val.endsWith("'"))
-        ) {
-          val = val.slice(1, -1);
-        }
-        if (process.env[key] === undefined) {
-          process.env[key] = val;
-        }
-      }
-      return dir;
-    }
-    if (existsSync(resolve(dir, 'tsconfig.base.json'))) {
-      return dir;
-    }
-    const parent = resolve(dir, '..');
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return process.cwd();
-}
 
 function resolveKeyFromEnv(): string {
   const explicit = (process.env.BACKUP_ENCRYPTION_KEY ?? '').trim();
@@ -52,8 +16,8 @@ function resolveKeyFromEnv(): string {
   );
 }
 
-const rootDir = loadRootEnvIfPresent();
-const dbUrl = process.env.DATABASE_URL || resolve(rootDir, 'data', 'mj-assistant.db');
+const rootDir = loadRootEnvIntoProcess();
+const dbUrl = resolveSqlitePath(process.env.DATABASE_URL || './data/mj-assistant.db', rootDir);
 const backupDir = process.env.BACKUP_DIR
   ? resolve(rootDir, process.env.BACKUP_DIR)
   : resolve(rootDir, 'data', 'backups');

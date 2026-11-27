@@ -15,11 +15,15 @@ import {
   type VoiceClientSecretDTO,
 } from '@mj/shared';
 import {
+  GEMINI_TTS_DEFAULT_MODEL,
   buildMjVoiceInstructions,
+  createGeminiLiveEphemeralToken,
   createRealtimeClientSecret,
   fetchAvailableVoices,
   synthesizeSpeech,
+  synthesizeSpeechWithGemini,
   transcribeSpeech,
+  transcribeSpeechWithGemini,
   transcribeSpeechWithGroqFree,
   type EphemeralSecretResult,
   type SttTranscriptionResult,
@@ -32,7 +36,10 @@ import type { PermissionsStore } from '../permissionsStore.js';
 import type { RuntimeSettingsStore } from '../settingsStore.js';
 
 export interface VoiceGateway {
-  createClientSecret: (expiresAfterSeconds?: number) => Promise<EphemeralSecretResult>;
+  createClientSecret: (
+    expiresAfterSeconds?: number,
+    requestedModel?: string,
+  ) => Promise<EphemeralSecretResult>;
   synthesizeSpeech: (params: {
     text: string;
     voiceId?: string;
@@ -45,6 +52,15 @@ export interface VoiceGateway {
     mimeType: string;
     languageMode?: 'auto' | 'en' | 'bn' | 'banglish';
   }) => Promise<SttTranscriptionResult>;
+}
+
+export function isFreeVoiceModel(model: string, config: ServerConfig): boolean {
+  const normalized = model.trim().toLowerCase();
+  if (!normalized) return false;
+  if (normalized === 'free-browser-voice') return true;
+  if (normalized.includes('whisper') || normalized.startsWith('groq-')) return true;
+  if (normalized.startsWith('gemini-')) return !config.aiProviders.gemini.paidTier;
+  return false;
 }
 
 const ALLOWED_STT_MIME_TYPES = new Set([
@@ -80,19 +96,137 @@ export function createDefaultVoiceGateway(
   config: ServerConfig,
   fetchImpl?: typeof fetch,
 ): VoiceGateway {
-  const apiConfig = {
+  const xaiApiConfig = {
     apiKey: config.xaiApiKey,
     baseUrl: config.xaiBaseUrl,
     ...(fetchImpl ? { fetchImpl } : {}),
   };
 
+  const geminiKey = config.aiProviders.gemini.apiKey;
+  const geminiVoiceConfig = {
+    apiKey: geminiKey,
+    baseUrl: config.aiProviders.gemini.baseUrl,
+    paidTier: config.aiProviders.gemini.paidTier,
+    ...(fetchImpl ? { fetchImpl } : {}),
+  };
+
+  const groqKey = config.aiProviders.groq.apiKey;
+  const preferXaiOnly = config.aiProviders.defaultProvider === 'xai';
+
+  const makeFreeBrowserFallback = (): EphemeralSecretResult => ({
+    token: 'free-browser-voice',
+    expiresAt: Math.floor(Date.now() / 1000) + 3600,
+    protocol: 'free-browser',
+    realtimeUrl: 'browser://free-speech',
+    model: 'free-browser-voice',
+  });
+
   return {
-    createClientSecret: (expiresAfterSeconds = 300) =>
-      createRealtimeClientSecret(apiConfig, expiresAfterSeconds),
-    synthesizeSpeech: (params) => synthesizeSpeech(apiConfig, params),
-    listVoices: () => fetchAvailableVoices(apiConfig),
+    createClientSecret: async (expiresAfterSeconds = 300, requestedModel?: string) => {
+      const explicitGrokVoice = Boolean(requestedModel?.trim().toLowerCase().startsWith('grok-'));
+      if (preferXaiOnly || (explicitGrokVoice && config.apiKeyConfigured)) {
+        const secret = await createRealtimeClientSecret(xaiApiConfig, expiresAfterSeconds);
+        return {
+          ...secret,
+          protocol: 'xai-realtime',
+          realtimeUrl: config.xaiRealtimeUrl,
+          model: requestedModel || config.xaiVoiceModel,
+        };
+      }
+
+      if (geminiKey) {
+        try {
+          const liveModel =
+            requestedModel && requestedModel.startsWith('gemini-')
+              ? requestedModel
+              : config.geminiLiveModel;
+          const secret = await createGeminiLiveEphemeralToken(
+            { ...geminiVoiceConfig, model: liveModel },
+            Math.max(expiresAfterSeconds, 300),
+          );
+          return {
+            ...secret,
+            protocol: 'gemini-live',
+            realtimeUrl: config.geminiRealtimeUrl,
+            model: liveModel,
+          };
+        } catch {
+          return makeFreeBrowserFallback();
+        }
+      }
+
+      return makeFreeBrowserFallback();
+    },
+
+    synthesizeSpeech: async (params) => {
+      if (!preferXaiOnly && geminiKey) {
+        try {
+          return await synthesizeSpeechWithGemini(
+            { ...geminiVoiceConfig, model: GEMINI_TTS_DEFAULT_MODEL },
+            params,
+          );
+        } catch (err) {
+          if (!config.apiKeyConfigured) throw err;
+        }
+      }
+
+      if (config.apiKeyConfigured) {
+        try {
+          const res = await synthesizeSpeech(xaiApiConfig, params);
+          return { ...res, modelUsed: 'xai-tts', isFree: false };
+        } catch (err) {
+          if (geminiKey) {
+            return synthesizeSpeechWithGemini(
+              { ...geminiVoiceConfig, model: GEMINI_TTS_DEFAULT_MODEL },
+              params,
+            );
+          }
+          throw err;
+        }
+      }
+
+      throw new AppError({
+        code: ErrorCodes.INVALID_API_KEY,
+        category: 'api',
+        statusCode: 502,
+      });
+    },
+
+    listVoices: async () => {
+      if (!preferXaiOnly && !config.apiKeyConfigured) {
+        return [
+          { id: 'ara', label: 'Ara (Aoede)', description: 'Warm conversational Gemini Live voice' },
+          { id: 'sal', label: 'Sal (Charon)', description: 'Balanced informative Gemini Live voice' },
+          { id: 'rex', label: 'Rex (Fenrir)', description: 'Crisp analytical Gemini Live voice' },
+          { id: 'eve', label: 'Eve (Kore)', description: 'Clear firm Gemini Live voice' },
+          { id: 'leo', label: 'Leo (Puck)', description: 'Upbeat natural Gemini Live voice' },
+        ];
+      }
+      return fetchAvailableVoices(xaiApiConfig);
+    },
+
     transcribeSpeech: async (params) => {
-      const groqKey = config.aiProviders.groq.apiKey;
+      if (!preferXaiOnly && geminiKey) {
+        try {
+          return await transcribeSpeechWithGemini(
+            { ...geminiVoiceConfig, model: config.aiProviders.gemini.model },
+            params,
+          );
+        } catch (err) {
+          if (groqKey) {
+            return transcribeSpeechWithGroqFree(
+              {
+                apiKey: groqKey,
+                baseUrl: config.aiProviders.groq.baseUrl,
+                ...(fetchImpl ? { fetchImpl } : {}),
+              },
+              params,
+            );
+          }
+          if (!config.apiKeyConfigured) throw err;
+        }
+      }
+
       if (!config.apiKeyConfigured && groqKey) {
         return transcribeSpeechWithGroqFree(
           {
@@ -103,8 +237,10 @@ export function createDefaultVoiceGateway(
           params,
         );
       }
+
       try {
-        return await transcribeSpeech(apiConfig, params);
+        const res = await transcribeSpeech(xaiApiConfig, params);
+        return { ...res, modelUsed: 'grok-voice-transcribe-2.0', isFree: false };
       } catch (err) {
         if (
           groqKey &&
@@ -236,18 +372,13 @@ export function registerVoiceRoutes(
         });
       }
 
-      if (!deps.config.apiKeyConfigured) {
-        throw new AppError({
-          code: ErrorCodes.INVALID_API_KEY,
-          category: 'api',
-          statusCode: 502,
-          requestId: request.id,
-        });
-      }
-
       const settings = await deps.settingsStore.getPublicSettings();
+      const targetVoiceModel = settings.voice.voiceModel;
       const usageSummary = await deps.repo.getUsageSummary(settings.budget);
-      if (usageSummary.budgetStatus.level === 'hard_cap_reached') {
+      if (
+        usageSummary.budgetStatus.level === 'hard_cap_reached' &&
+        !isFreeVoiceModel(targetVoiceModel, deps.config)
+      ) {
         throw new AppError({
           code: ErrorCodes.BUDGET_EXCEEDED,
           category: 'budget',
@@ -263,16 +394,15 @@ export function registerVoiceRoutes(
 
       const languageMode = body.languageMode ?? settings.voice.languageMode;
       const voice = body.voice ?? settings.voice.voiceId;
-      const model = settings.voice.voiceModel;
 
       const { value: ephemeralSecret } = await runTrackedVoiceOp(
         request,
         {
           kind: 'voice_realtime',
-          model,
+          model: targetVoiceModel,
           conversationId: body.conversationId,
         },
-        () => deps.voiceGateway.createClientSecret(300),
+        () => deps.voiceGateway.createClientSecret(300, targetVoiceModel),
       );
 
       const instructions = buildMjVoiceInstructions({
@@ -282,11 +412,20 @@ export function registerVoiceRoutes(
         contextTurns,
       });
 
+      const resolvedModel = ephemeralSecret.model ?? targetVoiceModel;
+      const resolvedRealtimeUrl =
+        ephemeralSecret.realtimeUrl ??
+        (ephemeralSecret.protocol === 'gemini-live' ||
+        (deps.config.aiProviders.gemini.apiKey && !resolvedModel.startsWith('grok-'))
+          ? deps.config.geminiRealtimeUrl
+          : deps.config.xaiRealtimeUrl);
+
       const dto: VoiceClientSecretDTO = {
         token: ephemeralSecret.token,
         expiresAt: ephemeralSecret.expiresAt,
-        realtimeUrl: deps.config.xaiRealtimeUrl,
-        model,
+        realtimeUrl: resolvedRealtimeUrl,
+        ...(ephemeralSecret.protocol ? { protocol: ephemeralSecret.protocol } : {}),
+        model: resolvedModel,
         voice,
         languageMode,
         instructions,
@@ -328,7 +467,7 @@ export function registerVoiceRoutes(
       });
     }
 
-    if (!deps.config.apiKeyConfigured) {
+    if (!deps.config.apiKeyConfigured && !deps.config.aiProviders.gemini.apiKey) {
       throw new AppError({
         code: ErrorCodes.INVALID_API_KEY,
         category: 'api',
@@ -338,8 +477,12 @@ export function registerVoiceRoutes(
     }
 
     const settings = await deps.settingsStore.getPublicSettings();
+    const isFreeGeminiTtsAvailable =
+      Boolean(deps.config.aiProviders.gemini.apiKey) &&
+      !deps.config.aiProviders.gemini.paidTier &&
+      deps.config.aiProviders.defaultProvider !== 'xai';
     const usageSummary = await deps.repo.getUsageSummary(settings.budget);
-    if (usageSummary.budgetStatus.level === 'hard_cap_reached') {
+    if (usageSummary.budgetStatus.level === 'hard_cap_reached' && !isFreeGeminiTtsAvailable) {
       throw new AppError({
         code: ErrorCodes.BUDGET_EXCEEDED,
         category: 'budget',
@@ -348,9 +491,10 @@ export function registerVoiceRoutes(
       });
     }
 
+    const expectedTtsModel = isFreeGeminiTtsAvailable ? GEMINI_TTS_DEFAULT_MODEL : 'xai-tts';
     const { value: ttsAudio, latencyMs } = await runTrackedVoiceOp(
       request,
-      { kind: 'tts', model: 'xai-tts' },
+      { kind: 'tts', model: expectedTtsModel },
       () =>
         deps.voiceGateway.synthesizeSpeech({
           text: body.text,
@@ -359,14 +503,15 @@ export function registerVoiceRoutes(
         }),
     );
 
-    const costUsd = estimateTtsCostUsd(
-      body.text.length,
-      settings.budget.ttsRatePerMillionCharsUsd,
-    );
+    const actualTtsModel = ttsAudio.modelUsed ?? expectedTtsModel;
+    const isFreeTts = ttsAudio.isFree ?? isFreeVoiceModel(actualTtsModel, deps.config);
+    const costUsd = isFreeTts
+      ? 0
+      : estimateTtsCostUsd(body.text.length, settings.budget.ttsRatePerMillionCharsUsd);
 
     await deps.repo.recordUsageLog({
       kind: 'tts',
-      model: 'xai-tts',
+      model: actualTtsModel,
       status: 'success',
       estimatedCostUsd: costUsd,
       latencyMs,
@@ -399,7 +544,11 @@ export function registerVoiceRoutes(
         });
       }
 
-      if (!deps.config.apiKeyConfigured && !deps.config.aiProviders.groq.apiKey) {
+      if (
+        !deps.config.apiKeyConfigured &&
+        !deps.config.aiProviders.groq.apiKey &&
+        !deps.config.aiProviders.gemini.apiKey
+      ) {
         throw new AppError({
           code: ErrorCodes.INVALID_API_KEY,
           category: 'api',
@@ -410,10 +559,16 @@ export function registerVoiceRoutes(
 
       const settings = await deps.settingsStore.getPublicSettings();
       const audioBytes = new Uint8Array(Buffer.from(body.audioBase64, 'base64'));
+      const defaultSttModel =
+        deps.config.aiProviders.defaultProvider !== 'xai' && deps.config.aiProviders.gemini.apiKey
+          ? deps.config.aiProviders.gemini.model
+          : deps.config.aiProviders.groq.apiKey && !deps.config.apiKeyConfigured
+            ? 'whisper-large-v3-turbo'
+            : 'grok-voice-transcribe-2.0';
 
       const { value: sttResult, latencyMs } = await runTrackedVoiceOp(
         request,
-        { kind: 'stt', model: 'grok-voice-transcribe-2.0' },
+        { kind: 'stt', model: defaultSttModel },
         () =>
           deps.voiceGateway.transcribeSpeech({
             audioBytes,
@@ -424,11 +579,17 @@ export function registerVoiceRoutes(
       );
 
       const durationSec = body.durationSeconds ?? 0;
-      const sttCost = estimateSttCostUsd(durationSec, settings.budget.sttRatePerHourUsd);
+      const actualSttModel = sttResult.modelUsed ?? defaultSttModel;
+      const isFreeStt =
+        sttResult.isFree ??
+        (sttResult.modelUsed !== undefined ? isFreeVoiceModel(sttResult.modelUsed, deps.config) : false);
+      const sttCost = isFreeStt
+        ? 0
+        : estimateSttCostUsd(durationSec, settings.budget.sttRatePerHourUsd);
 
       await deps.repo.recordUsageLog({
         kind: 'stt',
-        model: 'grok-voice-transcribe-2.0',
+        model: actualSttModel,
         status: 'success',
         voiceSeconds: durationSec,
         estimatedCostUsd: sttCost,
@@ -447,10 +608,13 @@ export function registerVoiceRoutes(
   app.post('/api/voice/usage', { preHandler: deps.requireSession }, async (request) => {
     const body = validateInput(RecordVoiceUsageSchema, request.body ?? {});
     const settings = await deps.settingsStore.getPublicSettings();
-    const estimatedCostUsd = estimateVoiceDurationCostUsd(
-      body.durationSeconds,
-      settings.budget.voiceRatePerMinuteUsd,
-    );
+    const isFree = isFreeVoiceModel(body.model, deps.config);
+    const estimatedCostUsd = isFree
+      ? 0
+      : estimateVoiceDurationCostUsd(
+          body.durationSeconds,
+          settings.budget.voiceRatePerMinuteUsd,
+        );
 
     await deps.repo.recordUsageLog({
       conversationId: body.conversationId,

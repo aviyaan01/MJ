@@ -1,4 +1,6 @@
 export const XAI_REALTIME_SAMPLE_RATE = 24000;
+export const GEMINI_LIVE_INPUT_SAMPLE_RATE = 16000;
+export const GEMINI_LIVE_OUTPUT_SAMPLE_RATE = 24000;
 
 /**
  * Linear-interpolation resampler converting browser microphone Float32 PCM

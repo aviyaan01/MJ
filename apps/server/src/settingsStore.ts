@@ -72,11 +72,18 @@ export class RuntimeSettingsStore {
       .filter((p) => p.configured)
       .flatMap((p) => p.models);
 
+    const autoDefaultProvider =
+      providers.find((p) => p.id === 'gemini' && p.configured) ??
+      providers.find((p) => p.freeTier && p.configured) ??
+      providers.find((p) => p.id === 'gemini') ??
+      providers.find((p) => p.configured);
+
     const activeModel =
       saved.activeModel?.trim() ||
       (activeProvider !== 'auto'
         ? providers.find((p) => p.id === activeProvider)?.defaultModel
-        : undefined) ||
+        : autoDefaultProvider?.defaultModel) ||
+      this.config.aiProviders.gemini.model ||
       this.config.xaiTextModel;
 
     const availableModels = Array.from(

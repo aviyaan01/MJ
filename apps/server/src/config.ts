@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
+import { findMonorepoRoot, resolveSqlitePath } from '@mj/database';
 import type { AiProviderId, ReasoningEffort } from '@mj/shared';
 import type { AlertingConfig } from './alerting.js';
 import type { BackupSchedulerConfig } from './backupScheduler.js';
@@ -22,6 +23,8 @@ export interface ServerConfig {
   availableModels: string[];
   xaiVoiceModel: string;
   availableVoiceModels: string[];
+  geminiRealtimeUrl: string;
+  geminiLiveModel: string;
   xaiTimeoutMs: number;
   xaiMaxOutputTokens: number;
   xaiReasoningEffort: ReasoningEffort;
@@ -38,7 +41,7 @@ export interface ServerConfig {
     defaultProvider: AiProviderId;
     ollama: { enabled: boolean; baseUrl: string; model: string };
     groq: { apiKey: string; baseUrl: string; model: string };
-    gemini: { apiKey: string; baseUrl: string; model: string };
+    gemini: { apiKey: string; baseUrl: string; model: string; paidTier: boolean };
     openrouter: { apiKey: string; baseUrl: string; model: string };
     cerebras: { apiKey: string; baseUrl: string; model: string };
     mistral: { apiKey: string; baseUrl: string; model: string };
@@ -55,20 +58,16 @@ const DEFAULT_SUGGESTED_MODELS = [
   'grok-3',
 ];
 
-const DEFAULT_VOICE_MODELS = ['grok-voice-latest', 'grok-voice-3.0'];
+const DEFAULT_VOICE_MODELS = [
+  'gemini-2.5-flash-native-audio-preview-12-2025',
+  'free-browser-voice',
+  'grok-voice-latest',
+  'grok-voice-3.0',
+];
 
-function findMonorepoRoot(startDir: string): string {
-  let current = startDir;
-  for (let i = 0; i < 6; i++) {
-    if (existsSync(resolve(current, '.env.example')) || existsSync(resolve(current, 'tsconfig.base.json'))) {
-      return current;
-    }
-    const parent = dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  return process.cwd();
-}
+const DEFAULT_GEMINI_LIVE_MODEL = 'gemini-2.5-flash-native-audio-preview-12-2025';
+const DEFAULT_GEMINI_REALTIME_URL =
+  'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained';
 
 export function isPlaceholderValue(value: string | undefined): boolean {
   if (!value) return true;
@@ -87,6 +86,11 @@ function deriveRealtimeUrl(baseUrl: string): string {
   const trimmed = baseUrl.replace(/\/+$/, '');
   const wsBase = trimmed.replace(/^https:/i, 'wss:').replace(/^http:/i, 'ws:');
   return wsBase.endsWith('/realtime') ? wsBase : `${wsBase}/realtime`;
+}
+
+function cleanEnvSecret(val: string | undefined): string | undefined {
+  const trimmed = (val ?? '').trim();
+  return trimmed && !isPlaceholderValue(trimmed) ? trimmed : undefined;
 }
 
 export function loadServerConfig(envOverrides?: Record<string, string | undefined>): ServerConfig {
@@ -121,6 +125,10 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
   }
   const xaiRealtimeUrl = deriveRealtimeUrl(rawBaseUrl);
 
+  const geminiDefaultModel = !isPlaceholderValue(env.GEMINI_MODEL)
+    ? env.GEMINI_MODEL!.trim()
+    : 'gemini-2.5-flash';
+
   const xaiTextModel = !isPlaceholderValue(env.XAI_TEXT_MODEL)
     ? env.XAI_TEXT_MODEL!.trim()
     : 'grok-4.7';
@@ -131,24 +139,35 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
     .filter(Boolean);
 
   const availableModels = Array.from(
-    new Set([xaiTextModel, ...extraModels, ...DEFAULT_SUGGESTED_MODELS]),
+    new Set([
+      geminiDefaultModel,
+      'gemini-2.5-pro',
+      xaiTextModel,
+      ...extraModels,
+      ...DEFAULT_SUGGESTED_MODELS,
+    ]),
   );
 
+  const geminiApiKey = cleanEnvSecret(env.GEMINI_API_KEY) ?? '';
+  const geminiLiveModel = !isPlaceholderValue(env.GEMINI_LIVE_MODEL)
+    ? env.GEMINI_LIVE_MODEL!.trim()
+    : DEFAULT_GEMINI_LIVE_MODEL;
+  const geminiRealtimeUrl =
+    (env.GEMINI_REALTIME_URL ?? '').trim() || DEFAULT_GEMINI_REALTIME_URL;
+
+  const isLegacyXaiOnlyTest = appEnv === 'test' && apiKeyConfigured && !geminiApiKey && !env.AI_PROVIDER;
   const xaiVoiceModel = !isPlaceholderValue(env.XAI_VOICE_MODEL)
     ? env.XAI_VOICE_MODEL!.trim()
-    : 'grok-voice-latest';
+    : isLegacyXaiOnlyTest
+      ? 'grok-voice-latest'
+      : geminiLiveModel;
 
   const availableVoiceModels = Array.from(
-    new Set([xaiVoiceModel, ...DEFAULT_VOICE_MODELS]),
+    new Set([geminiLiveModel, 'free-browser-voice', xaiVoiceModel, ...DEFAULT_VOICE_MODELS]),
   );
 
   const rawDatabaseUrl = (env.DATABASE_URL ?? './data/mj-assistant.db').trim();
-  const databaseUrl =
-    rawDatabaseUrl === ':memory:' || rawDatabaseUrl.startsWith('file::memory:')
-      ? ':memory:'
-      : rawDatabaseUrl.startsWith('file:')
-        ? resolve(rootDir, rawDatabaseUrl.slice(5))
-        : resolve(rootDir, rawDatabaseUrl);
+  const databaseUrl = resolveSqlitePath(rawDatabaseUrl, rootDir);
 
   const rawAuthSecret = (env.AUTH_SECRET ?? '').trim();
   const hasValidAuthSecret = !isPlaceholderValue(rawAuthSecret) && rawAuthSecret.length >= 32;
@@ -170,10 +189,15 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
   }
   const passcodeRequired = accessPasscode.length > 0;
 
-  const parsedCorsOrigins = (env.CORS_ORIGIN ?? 'http://localhost:5173')
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean);
+  const rawCorsOrigin = (env.CORS_ORIGIN ?? '').trim();
+  const parsedCorsOrigins = rawCorsOrigin
+    ? rawCorsOrigin
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean)
+    : appEnv === 'production'
+      ? ['tauri://localhost', 'http://tauri.localhost']
+      : ['http://localhost:5173', 'http://127.0.0.1:5173'];
 
   // In local dev/test, browsers accessing Vite via http://127.0.0.1:5173 vs http://localhost:5173
   // send distinct Origin headers for the same local Vite instance; keep production strictly exact.
@@ -181,23 +205,23 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
     appEnv === 'production'
       ? parsedCorsOrigins
       : Array.from(
-          new Set(
-            parsedCorsOrigins.flatMap((origin) => {
-              try {
-                const u = new URL(origin);
-                if (u.hostname === 'localhost') {
-                  return [origin, `${u.protocol}//127.0.0.1${u.port ? `:${u.port}` : ''}`];
-                }
-                if (u.hostname === '127.0.0.1') {
-                  return [origin, `${u.protocol}//localhost${u.port ? `:${u.port}` : ''}`];
-                }
-              } catch {
-                // ignore malformed origin; preserve verbatim
+        new Set(
+          parsedCorsOrigins.flatMap((origin) => {
+            try {
+              const u = new URL(origin);
+              if (u.hostname === 'localhost') {
+                return [origin, `${u.protocol}//127.0.0.1${u.port ? `:${u.port}` : ''}`];
               }
-              return [origin];
-            }),
-          ),
-        );
+              if (u.hostname === '127.0.0.1') {
+                return [origin, `${u.protocol}//localhost${u.port ? `:${u.port}` : ''}`];
+              }
+            } catch {
+              // ignore malformed origin; preserve verbatim
+            }
+            return [origin];
+          }),
+        ),
+      );
 
   const rawEffort = (env.XAI_REASONING_EFFORT ?? 'medium').trim().toLowerCase();
   const xaiReasoningEffort: ReasoningEffort =
@@ -217,10 +241,6 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
   const rawCookieDomain = (env.COOKIE_DOMAIN ?? '').trim();
   const cookieDomain = rawCookieDomain && !isPlaceholderValue(rawCookieDomain) ? rawCookieDomain : undefined;
 
-  const cleanEnvSecret = (val: string | undefined): string | undefined => {
-    const trimmed = (val ?? '').trim();
-    return trimmed && !isPlaceholderValue(trimmed) ? trimmed : undefined;
-  };
   const clampNumber = (val: string | undefined, fallback: number, min: number, max: number): number => {
     const parsed = Number(val);
     return Number.isFinite(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
@@ -268,7 +288,14 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
     retentionCount: clampNumber(env.BACKUP_RETENTION_COUNT, 14, 1, 365),
   };
 
-  const rawDefaultProvider = (env.AI_PROVIDER ?? 'auto').trim().toLowerCase();
+  const geminiPaidTier = (env.GEMINI_PAID_TIER ?? '').trim().toLowerCase() === 'true';
+
+  const rawDefaultProvider = (
+    env.AI_PROVIDER ??
+    (appEnv === 'test' && apiKeyConfigured && !geminiApiKey ? 'xai' : 'gemini')
+  )
+    .trim()
+    .toLowerCase();
   const validProviders = new Set<AiProviderId>([
     'auto',
     'xai',
@@ -282,7 +309,7 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
   ]);
   const defaultProvider: AiProviderId = validProviders.has(rawDefaultProvider as AiProviderId)
     ? (rawDefaultProvider as AiProviderId)
-    : 'auto';
+    : 'gemini';
 
   const rawOllamaEnabled = (env.OLLAMA_ENABLED ?? '').trim().toLowerCase();
   const ollamaEnabled =
@@ -307,11 +334,12 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
         : 'llama-3.3-70b-versatile',
     },
     gemini: {
-      apiKey: cleanEnvSecret(env.GEMINI_API_KEY) ?? '',
+      apiKey: geminiApiKey,
       baseUrl: (
         env.GEMINI_BASE_URL ?? 'https://generativelanguage.googleapis.com/v1beta/openai'
       ).trim(),
-      model: !isPlaceholderValue(env.GEMINI_MODEL) ? env.GEMINI_MODEL!.trim() : 'gemini-2.5-flash',
+      model: geminiDefaultModel,
+      paidTier: geminiPaidTier,
     },
     openrouter: {
       apiKey: cleanEnvSecret(env.OPENROUTER_API_KEY) ?? '',
@@ -356,6 +384,8 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
     availableModels,
     xaiVoiceModel,
     availableVoiceModels,
+    geminiRealtimeUrl,
+    geminiLiveModel,
     xaiTimeoutMs: Number.isFinite(timeoutNum) && timeoutNum >= 5000 ? timeoutNum : 60000,
     xaiMaxOutputTokens: Number.isFinite(maxTokensNum) && maxTokensNum >= 128 ? maxTokensNum : 4096,
     xaiReasoningEffort,

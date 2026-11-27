@@ -1,41 +1,6 @@
-import { existsSync, readFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
+import { loadRootEnvIntoProcess, resolveSqlitePath } from './client.js';
 import { restoreEncryptedDatabaseBackup } from './backup.js';
-
-function loadRootEnvIfPresent(): string {
-  let dir = process.cwd();
-  for (let i = 0; i < 6; i++) {
-    const envPath = resolve(dir, '.env');
-    if (existsSync(envPath)) {
-      const lines = readFileSync(envPath, 'utf8').split(/\r?\n/);
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#')) continue;
-        const eqIdx = trimmed.indexOf('=');
-        if (eqIdx <= 0) continue;
-        const key = trimmed.slice(0, eqIdx).trim();
-        let val = trimmed.slice(eqIdx + 1).trim();
-        if (
-          (val.startsWith('"') && val.endsWith('"')) ||
-          (val.startsWith("'") && val.endsWith("'"))
-        ) {
-          val = val.slice(1, -1);
-        }
-        if (process.env[key] === undefined) {
-          process.env[key] = val;
-        }
-      }
-      return dir;
-    }
-    if (existsSync(resolve(dir, 'tsconfig.base.json'))) {
-      return dir;
-    }
-    const parent = resolve(dir, '..');
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return process.cwd();
-}
 
 function getArgValue(flag: string): string | undefined {
   const idx = process.argv.indexOf(flag);
@@ -57,7 +22,7 @@ function resolveKeyFromEnv(): string {
   );
 }
 
-const rootDir = loadRootEnvIfPresent();
+const rootDir = loadRootEnvIntoProcess();
 const positionalArgs = process.argv.slice(2).filter((arg, i, arr) => {
   if (arg.startsWith('--')) return false;
   const prev = i > 0 ? arr[i - 1] : undefined;
@@ -75,7 +40,7 @@ if (!fileArg) {
 const targetArg = getArgValue('--target') ?? positionalArgs[1];
 const targetDbUrl = targetArg
   ? resolve(process.cwd(), targetArg)
-  : process.env.DATABASE_URL || resolve(rootDir, 'data', 'mj-assistant.db');
+  : resolveSqlitePath(process.env.DATABASE_URL || './data/mj-assistant.db', rootDir);
 const createSafetyCopy = !process.argv.includes('--no-safety-copy');
 const encryptionKey = resolveKeyFromEnv();
 

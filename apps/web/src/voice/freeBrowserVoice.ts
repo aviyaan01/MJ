@@ -39,6 +39,70 @@ export function isFreeBrowserVoiceSupported(): boolean {
   return getSpeechRecognitionCtor() !== null;
 }
 
+export function resolveFreeVoiceLanguages(languageMode: LanguageMode): string[] {
+  if (languageMode === 'bn') return ['bn-BD', 'en-US'];
+  if (languageMode === 'en') return ['en-US'];
+  const browserLang =
+    typeof navigator !== 'undefined' ? navigator.language.toLowerCase() : '';
+  return browserLang.startsWith('bn') ? ['bn-BD', 'en-US'] : ['en-US', 'bn-BD'];
+}
+
+export function speakWithBrowserSpeechSynthesis(
+  text: string,
+  options: {
+    volume: number;
+    speakingRate: number;
+    languageMode: LanguageMode;
+    voiceOutputEnabled?: boolean;
+    onStart?: () => void;
+    onEnd?: () => void;
+    onError?: (msg: string) => void;
+  },
+): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    options.onEnd?.();
+    return false;
+  }
+  if (options.voiceOutputEnabled === false) {
+    options.onEnd?.();
+    return false;
+  }
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+    options.onError?.('Browser speech synthesis is unavailable.');
+    options.onEnd?.();
+    return false;
+  }
+
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(trimmed.slice(0, 1200));
+  const hasBengaliScript = /[\u0980-\u09FF]/.test(trimmed);
+  utterance.lang = hasBengaliScript || options.languageMode === 'bn' ? 'bn-BD' : 'en-US';
+  utterance.volume = Math.max(0, Math.min(1, options.volume));
+  utterance.rate = Math.max(0.7, Math.min(1.6, options.speakingRate));
+
+  const voices =
+    typeof window.speechSynthesis.getVoices === 'function'
+      ? window.speechSynthesis.getVoices()
+      : [];
+  const prefix = utterance.lang.split('-')[0]!.toLowerCase();
+  const matchedVoice = voices.find((v) => v.lang.toLowerCase().startsWith(prefix));
+  if (matchedVoice) {
+    utterance.voice = matchedVoice;
+  }
+
+  utterance.onend = () => {
+    options.onEnd?.();
+  };
+  utterance.onerror = () => {
+    options.onEnd?.();
+  };
+
+  options.onStart?.();
+  window.speechSynthesis.speak(utterance);
+  return true;
+}
+
 export interface FreeBrowserVoiceController {
   stop: () => void;
   interrupt: () => void;
@@ -57,130 +121,140 @@ export function startFreeBrowserVoiceSession(params: {
 }): FreeBrowserVoiceController {
   const Ctor = getSpeechRecognitionCtor();
   if (!Ctor) {
-    params.onErrorMessage('Browser speech recognition is unavailable in this browser.');
+    params.onErrorMessage(
+      'Ei browser-e Free Speech Recognition (Web Speech API) support kore na. Chrome ba Edge use koro, othoba Settings -> Voice-e Gemini API key set koro.',
+    );
     params.onFinish();
     return { stop: () => {}, interrupt: () => {} };
   }
 
   let stopped = false;
   let handledFinal = false;
-  const recognition = new Ctor();
-  recognition.lang = params.languageMode === 'bn' ? 'bn-BD' : 'en-US';
-  recognition.interimResults = true;
-  recognition.continuous = false;
-  recognition.maxAlternatives = 1;
+  const candidateLangs = resolveFreeVoiceLanguages(params.languageMode);
+  let langIdx = 0;
+  let recognition: BrowserSpeechRecognition;
 
-  params.onStateChange(
-    VoiceStates.LISTENING,
-    'Listening (Free Browser Voice · $0.00)… Speak now',
-  );
+  const startRecognitionPass = () => {
+    const activeLang = candidateLangs[langIdx] ?? 'en-US';
+    recognition = new Ctor();
+    recognition.lang = activeLang;
+    recognition.interimResults = true;
+    recognition.continuous = false;
+    recognition.maxAlternatives = 1;
 
-  recognition.onresult = (event) => {
-    if (stopped) return;
-    let transcript = '';
-    let isFinal = false;
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      const item = event.results[i];
-      if (item?.[0]?.transcript) {
-        transcript += item[0].transcript;
-      }
-      if (item?.isFinal) isFinal = true;
-    }
-    const trimmed = transcript.trim();
-    if (!trimmed) return;
-    params.onTranscriptPreview(trimmed);
+    params.onStateChange(
+      VoiceStates.LISTENING,
+      `Listening (Free Browser Voice · ${activeLang} · $0.00)… Speak now`,
+    );
 
-    if (isFinal && !handledFinal) {
-      handledFinal = true;
-      try {
-        recognition.stop();
-      } catch {
-        // ignore stop race
-      }
-      params.onStateChange(
-        VoiceStates.PROCESSING,
-        'Thinking via free AI provider…',
-      );
-      void (async () => {
-        try {
-          const replyText = await params.onSubmitTranscript(trimmed);
-          if (stopped) return;
-          if (
-            params.voiceOutputEnabled &&
-            replyText.trim() &&
-            typeof window !== 'undefined' &&
-            'speechSynthesis' in window
-          ) {
-            window.speechSynthesis.cancel();
-            const utterance = new SpeechSynthesisUtterance(replyText.slice(0, 1200));
-            utterance.volume = Math.max(0, Math.min(1, params.volume));
-            utterance.rate = Math.max(0.7, Math.min(1.6, params.speakingRate));
-            params.onStateChange(
-              VoiceStates.SPEAKING,
-              'Speaking via Free Browser TTS ($0.00)…',
-            );
-            utterance.onend = () => {
-              if (!stopped) {
-                params.onStateChange(VoiceStates.IDLE, 'Ready');
-                params.onFinish();
-              }
-            };
-            utterance.onerror = () => {
-              if (!stopped) {
-                params.onStateChange(VoiceStates.IDLE, 'Ready');
-                params.onFinish();
-              }
-            };
-            window.speechSynthesis.speak(utterance);
-          } else {
-            params.onStateChange(VoiceStates.IDLE, 'Ready');
-            params.onFinish();
-          }
-        } catch (err) {
-          if (!stopped) {
-            params.onErrorMessage(
-              err instanceof Error ? err.message : 'Free voice turn failed.',
-            );
-            params.onFinish();
-          }
+    recognition.onresult = (event) => {
+      if (stopped) return;
+      let transcript = '';
+      let isFinal = false;
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const item = event.results[i];
+        if (item?.[0]?.transcript) {
+          transcript += item[0].transcript;
         }
-      })();
-    }
-  };
+        if (item?.isFinal) isFinal = true;
+      }
+      const trimmed = transcript.trim();
+      if (!trimmed) return;
+      params.onTranscriptPreview(trimmed);
 
-  recognition.onerror = (ev) => {
-    if (stopped || handledFinal) return;
-    const errType = ev.error ?? 'unknown';
-    if (errType === 'aborted') return;
-    if (errType === 'not-allowed' || errType === 'service-not-allowed') {
-      params.onErrorMessage('Microphone permission denied in browser.');
-    } else if (errType === 'no-speech') {
-      params.onStateChange(VoiceStates.IDLE, 'No speech detected.');
-    } else {
-      params.onErrorMessage(`Browser speech error: ${errType}`);
-    }
-    params.onFinish();
-  };
+      if (isFinal && !handledFinal) {
+        handledFinal = true;
+        try {
+          recognition.stop();
+        } catch {
+          // ignore stop race
+        }
+        params.onStateChange(
+          VoiceStates.PROCESSING,
+          'Thinking via free AI provider…',
+        );
+        void (async () => {
+          try {
+            const replyText = await params.onSubmitTranscript(trimmed);
+            if (stopped) return;
+            const spoke = speakWithBrowserSpeechSynthesis(replyText, {
+              volume: params.volume,
+              speakingRate: params.speakingRate,
+              languageMode: params.languageMode,
+              voiceOutputEnabled: params.voiceOutputEnabled,
+              onStart: () => {
+                params.onStateChange(
+                  VoiceStates.SPEAKING,
+                  'Speaking via Free Browser TTS ($0.00)…',
+                );
+              },
+              onEnd: () => {
+                if (!stopped) {
+                  params.onStateChange(VoiceStates.IDLE, 'Ready');
+                  params.onFinish();
+                }
+              },
+            });
+            if (!spoke && !stopped) {
+              params.onStateChange(VoiceStates.IDLE, 'Ready');
+              params.onFinish();
+            }
+          } catch (err) {
+            if (!stopped) {
+              params.onErrorMessage(
+                err instanceof Error ? err.message : 'Free voice turn failed.',
+              );
+              params.onFinish();
+            }
+          }
+        })();
+      }
+    };
 
-  recognition.onend = () => {
-    if (!stopped && !handledFinal) {
-      params.onStateChange(VoiceStates.IDLE, 'Ready');
+    recognition.onerror = (ev) => {
+      if (stopped || handledFinal) return;
+      const errType = ev.error ?? 'unknown';
+      if (errType === 'aborted') return;
+      if (
+        (errType === 'language-not-supported' || errType === 'no-speech') &&
+        langIdx + 1 < candidateLangs.length
+      ) {
+        langIdx += 1;
+        startRecognitionPass();
+        return;
+      }
+      if (errType === 'not-allowed' || errType === 'service-not-allowed') {
+        params.onErrorMessage('Microphone permission denied in browser.');
+      } else if (errType === 'no-speech') {
+        params.onStateChange(VoiceStates.IDLE, 'No speech detected.');
+      } else {
+        params.onErrorMessage(`Browser speech error: ${errType}`);
+      }
+      params.onFinish();
+    };
+
+    recognition.onend = () => {
+      if (!stopped && !handledFinal) {
+        params.onStateChange(VoiceStates.IDLE, 'Ready');
+        params.onFinish();
+      }
+    };
+
+    try {
+      recognition.start();
+    } catch (err) {
+      params.onErrorMessage(err instanceof Error ? err.message : 'Could not start speech input.');
       params.onFinish();
     }
   };
 
-  try {
-    recognition.start();
-  } catch (err) {
-    params.onErrorMessage(err instanceof Error ? err.message : 'Could not start speech input.');
-    params.onFinish();
-  }
+  startRecognitionPass();
 
   return {
     stop: () => {
       stopped = true;
       try {
-        recognition.abort();
+        recognition?.abort();
       } catch {
         // ignore abort error
       }

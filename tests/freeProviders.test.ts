@@ -154,16 +154,17 @@ describe('Free / $0 AI Providers & Failover Routing', () => {
     expect(ollamaInfo?.configured).toBe(true);
     expect(ollamaInfo?.models).toEqual(['qwen2.5:7b', 'llama3.2:latest']);
 
-    // Auto routing with a grok model fails over seamlessly to Groq ($0) when xAI returns 403 credits error
+    // Auto routing prioritizes Gemini first even when model='grok-4.7' and xAI key is present
     const autoRes = await router.createResponse({
       provider: 'auto',
       model: 'grok-4.7',
       stream: true,
       input: [{ role: 'user', content: 'Hello free world' }],
     });
-    expect(autoRes.providerId).toBe('groq');
+    expect(autoRes.providerId).toBe('gemini');
     expect(autoRes.isFree).toBe(true);
-    expect(autoRes.text).toContain('Reply from llama-3.3-70b-versatile');
+    expect(autoRes.text).toContain('Reply from gemini-2.5-flash');
+    expect(seenRequests.some((r) => r.url.startsWith('https://api.x.ai/'))).toBe(false);
 
     // Explicit Ollama call works with empty Authorization (keyless)
     const ollamaRes = await router.createResponse({
@@ -365,5 +366,413 @@ describe('Free / $0 AI Providers & Failover Routing', () => {
     expect(envExample).not.toMatch(/gsk_[A-Za-z0-9]{15,}/);
     expect(envExample).not.toMatch(/AIza[A-Za-z0-9_-]{20,}/);
     expect(envExample).not.toMatch(/sk-or-v1-[A-Za-z0-9]{20,}/);
+  });
+
+  it('defaults active provider to gemini (gemini-2.5-flash) and prioritizes gemini -> free/local -> xai with 401/403 cooldown', async () => {
+    const devCfg = loadServerConfig({
+      APP_ENV: 'development',
+      XAI_API_KEY: 'xai-some-key-123456',
+      GEMINI_API_KEY: 'gem-primary-test',
+      DATABASE_URL: ':memory:',
+      AUTH_SECRET: 'test-signing-secret-must-be-at-least-32-bytes-long',
+    });
+    expect(devCfg.aiProviders.defaultProvider).toBe('gemini');
+    expect(devCfg.aiProviders.gemini.model).toBe('gemini-2.5-flash');
+
+    const callLog: string[] = [];
+    let currentTimeMs = 1_000_000;
+    let geminiShouldFail = true;
+
+    const router = new ProviderRouterClient({
+      xai: { apiKey: 'xai-paid-key', baseUrl: 'https://api.x.ai/v1', model: 'grok-4.7', models: ['grok-4.7'] },
+      ollama: { enabled: true, baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen2.5:7b' },
+      groq: { apiKey: 'gsk_free_key', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile' },
+      gemini: { apiKey: 'gem_bad_or_quota', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash' },
+      openrouter: { apiKey: '', baseUrl: 'https://openrouter.ai/api/v1', model: 'openrouter/free' },
+      cerebras: { apiKey: '', baseUrl: 'https://api.cerebras.ai/v1', model: 'llama-3.3-70b' },
+      mistral: { apiKey: '', baseUrl: 'https://api.mistral.ai/v1', model: 'mistral-small-latest' },
+      github: { apiKey: '', baseUrl: 'https://models.inference.ai.azure.com', model: 'gpt-4o-mini' },
+      timeoutMs: 5000,
+      maxRetries: 0,
+      cooldownMs: 60_000,
+      nowMs: () => currentTimeMs,
+      fetchImpl: async (input) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.endsWith('/api/tags')) {
+          return new Response(JSON.stringify({ models: [{ name: 'qwen2.5:7b' }] }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        callLog.push(url);
+
+        if (url.includes('generativelanguage.googleapis.com') && geminiShouldFail) {
+          return new Response(
+            JSON.stringify({ error: { message: 'API key invalid / quota exceeded' } }),
+            { status: 401, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        return createOpenAiChatSseResponse(`OK:${url}`);
+      },
+    });
+
+    // (a)/(b) Gemini fails 401 -> fails over to local Ollama (before Groq & xAI)
+    const firstRes = await router.createResponse({
+      provider: 'auto',
+      model: 'grok-4.7',
+      stream: true,
+      input: [{ role: 'user', content: 'Test failover' }],
+    });
+    expect(firstRes.providerId).toBe('ollama');
+    expect(callLog.filter((u) => u.includes('generativelanguage.googleapis.com'))).toHaveLength(1);
+    expect(router.isInCooldown('gemini')).toBe(true);
+
+    // 2nd call during cooldown skips Gemini completely (zero wasted call to Gemini)
+    callLog.length = 0;
+    const secondRes = await router.createResponse({
+      provider: 'auto',
+      model: 'grok-4.7',
+      stream: true,
+      input: [{ role: 'user', content: 'Second turn during cooldown' }],
+    });
+    expect(secondRes.providerId).toBe('ollama');
+    expect(callLog.some((u) => u.includes('generativelanguage.googleapis.com'))).toBe(false);
+
+    // After cooldown expires and Gemini works again, Gemini is selected primary again
+    geminiShouldFail = false;
+    currentTimeMs += 61_000;
+    expect(router.isInCooldown('gemini')).toBe(false);
+
+    callLog.length = 0;
+    const recoveredRes = await router.createResponse({
+      provider: 'auto',
+      model: 'grok-4.7',
+      stream: true,
+      input: [{ role: 'user', content: 'After cooldown' }],
+    });
+    expect(recoveredRes.providerId).toBe('gemini');
+    expect(callLog).toHaveLength(1);
+    expect(callLog[0]).toContain('generativelanguage.googleapis.com');
+  });
+
+  it('allows free providers even when hard_cap_reached, while blocking paid xAI, and permits localhost Ollama with externalWebServices OFF', async () => {
+    const config = loadServerConfig({
+      APP_ENV: 'test',
+      AI_PROVIDER: 'gemini',
+      GEMINI_API_KEY: 'gem-free-key-123',
+      XAI_API_KEY: 'xai-paid-key-123',
+      OLLAMA_ENABLED: 'true',
+      OLLAMA_BASE_URL: 'http://127.0.0.1:11434/v1',
+      OLLAMA_MODEL: 'qwen2.5:7b',
+      DATABASE_URL: ':memory:',
+      AUTH_SECRET: 'test-signing-secret-must-be-at-least-32-bytes-long',
+      APP_ACCESS_PASSCODE: 'mj-pass-cap',
+      CORS_ORIGIN: 'http://localhost:5173',
+    });
+
+    const mockFetch: typeof fetch = async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith('/api/tags')) {
+        return new Response(JSON.stringify({ models: [{ name: 'qwen2.5:7b' }] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('127.0.0.1:11434')) {
+        return createOpenAiChatSseResponse('Local Ollama offline OK');
+      }
+      return createOpenAiChatSseResponse('Gemini free OK');
+    };
+
+    const router = new ProviderRouterClient({
+      xai: { apiKey: config.xaiApiKey, baseUrl: config.xaiBaseUrl, model: config.xaiTextModel, models: config.availableModels },
+      ollama: config.aiProviders.ollama,
+      groq: config.aiProviders.groq,
+      gemini: config.aiProviders.gemini,
+      openrouter: config.aiProviders.openrouter,
+      cerebras: config.aiProviders.cerebras,
+      mistral: config.aiProviders.mistral,
+      github: config.aiProviders.github,
+      timeoutMs: 5000,
+      maxRetries: 0,
+      fetchImpl: mockFetch,
+    });
+
+    const ctx = await buildServer({ config, providerRouter: router });
+    contexts.push(ctx);
+
+    const loginRes = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { passcode: 'mj-pass-cap' },
+    });
+    const cookie = String(loginRes.headers['set-cookie']).split(';')[0]!;
+
+    const settingsRes = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/settings',
+      headers: { cookie },
+    });
+    expect(settingsRes.json().activeProvider).toBe('gemini');
+    expect(settingsRes.json().activeModel).toBe('gemini-2.5-flash');
+
+    // Simulate spend exceeding hard cap via recorded paid usage + low hard cap
+    await ctx.repo.recordUsageLog({
+      kind: 'text',
+      model: 'grok-4.7',
+      status: 'success',
+      estimatedCostUsd: 0.05,
+      latencyMs: 100,
+    });
+    await ctx.app.inject({
+      method: 'PATCH',
+      url: '/api/settings',
+      headers: { cookie },
+      payload: { budget: { hardCapUsd: 0.01 } },
+    });
+
+    const convRes = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/conversations',
+      headers: { cookie },
+      payload: { title: 'Cap & Localhost Tests' },
+    });
+    const convId = convRes.json().conversation.id as string;
+
+    // Paid explicit xAI request MUST be blocked with 429 BUDGET_EXCEEDED
+    const blockedPaid = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/conversations/${convId}/messages`,
+      headers: { cookie },
+      payload: { content: 'Paid turn', provider: 'xai', model: 'grok-4.7' },
+    });
+    expect(blockedPaid.statusCode).toBe(429);
+    expect(blockedPaid.json().error.code).toBe('BUDGET_EXCEEDED');
+
+    // (c) Free Gemini request MUST succeed despite hard_cap_reached and add $0 cost
+    const freeGemini = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/conversations/${convId}/messages`,
+      headers: { cookie },
+      payload: { content: 'Free Gemini turn' },
+    });
+    expect(freeGemini.statusCode).toBe(200);
+    expect(freeGemini.body).toContain('Gemini free OK');
+
+    const usageAfterFree = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/usage',
+      headers: { cookie },
+    });
+    expect(usageAfterFree.json().month.estimatedCostUsd).toBeCloseTo(0.05, 5);
+
+    // Turn OFF externalWebServices -> external Gemini is blocked with real Gemini URL in audit log
+    await ctx.app.inject({
+      method: 'PATCH',
+      url: '/api/privacy/permissions',
+      headers: { cookie },
+      payload: { key: 'externalWebServices', enabled: false },
+    });
+
+    const blockedExternalGemini = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/conversations/${convId}/messages`,
+      headers: { cookie },
+      payload: { content: 'External Gemini while offline', provider: 'gemini' },
+    });
+    expect(blockedExternalGemini.statusCode).toBe(403);
+    expect(blockedExternalGemini.json().error.code).toBe('PERMISSION_DENIED');
+
+    const auditRes = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/privacy/audit-log',
+      headers: { cookie },
+    });
+    const auditEntries = auditRes.json().entries as Array<{ target: string; outcome: string }>;
+    expect(
+      auditEntries.some(
+        (e) =>
+          e.outcome === 'denied' &&
+          e.target.includes('generativelanguage.googleapis.com/v1beta/openai/chat/completions'),
+      ),
+    ).toBe(true);
+
+    // Localhost 127.0.0.1 Ollama MUST STILL SUCCEED even with externalWebServices OFF & hard_cap_reached
+    const localOllamaOk = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/conversations/${convId}/messages`,
+      headers: { cookie },
+      payload: { content: 'Local Ollama while offline', provider: 'ollama', model: 'qwen2.5:7b' },
+    });
+    expect(localOllamaOk.statusCode).toBe(200);
+    expect(localOllamaOk.body).toContain('Local Ollama offline OK');
+  });
+
+  it('connects voice to Gemini Live, falls back to free-browser + Groq STT, and records $0 voice/STT cost', async () => {
+    const geminiKey = 'gem-live-secret-do-not-leak';
+    const groqKey = 'gsk_free_stt_secret';
+    let geminiLiveFails = false;
+
+    const mockVoiceFetch: typeof fetch = async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes('/v1alpha/auth_tokens')) {
+        if (geminiLiveFails) {
+          return new Response(JSON.stringify({ error: { message: 'Live quota exceeded' } }), {
+            status: 429,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({ name: 'auth_tokens/live_tok_abc' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('generativelanguage.googleapis.com') && url.includes(':generateContent')) {
+        if (url.includes('tts')) {
+          return new Response(
+            JSON.stringify({
+              candidates: [
+                {
+                  content: {
+                    parts: [
+                      {
+                        inlineData: {
+                          mimeType: 'audio/L16;rate=24000',
+                          data: Buffer.from([10, 20, 30, 40]).toString('base64'),
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        // Fail Gemini STT so it exercises Groq Whisper fallback cleanly
+        return new Response(JSON.stringify({ error: { message: 'STT overload' } }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('api.groq.com/openai/v1/audio/transcriptions')) {
+        return new Response(JSON.stringify({ text: 'Hello from Groq STT', language: 'en' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('{}', { status: 404 });
+    };
+
+    const config = loadServerConfig({
+      APP_ENV: 'test',
+      GEMINI_API_KEY: geminiKey,
+      GROQ_API_KEY: groqKey,
+      XAI_API_KEY: 'your_xai_api_key_here',
+      DATABASE_URL: ':memory:',
+      AUTH_SECRET: 'test-signing-secret-must-be-at-least-32-bytes-long',
+      APP_ACCESS_PASSCODE: 'mj-voice-pass',
+      CORS_ORIGIN: 'http://localhost:5173',
+    });
+
+    const ctx = await buildServer({
+      config,
+      voiceGateway: createDefaultVoiceGateway(config, mockVoiceFetch),
+    });
+    contexts.push(ctx);
+
+    const loginRes = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { passcode: 'mj-voice-pass' },
+    });
+    const cookie = String(loginRes.headers['set-cookie']).split(';')[0]!;
+
+    // 1. Primary Gemini Live token issuance never leaks GEMINI_API_KEY
+    const liveSecretRes = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/voice/client-secret',
+      headers: { cookie },
+      payload: { languageMode: 'auto' },
+    });
+    expect(liveSecretRes.statusCode).toBe(200);
+    expect(liveSecretRes.body).not.toContain(geminiKey);
+    expect(liveSecretRes.json()).toMatchObject({
+      token: 'auth_tokens/live_tok_abc',
+      protocol: 'gemini-live',
+      model: 'gemini-2.5-flash-native-audio-preview-12-2025',
+    });
+    expect(liveSecretRes.json().realtimeUrl).toContain('BidiGenerateContentConstrained');
+
+    // 2. When Gemini Live fails/unavailable, seamlessly falls back to free-browser-voice
+    geminiLiveFails = true;
+    const fallbackRes = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/voice/client-secret',
+      headers: { cookie },
+      payload: { languageMode: 'banglish' },
+    });
+    expect(fallbackRes.statusCode).toBe(200);
+    expect(fallbackRes.json()).toMatchObject({
+      protocol: 'free-browser',
+      model: 'free-browser-voice',
+    });
+
+    // 3. Gemini TTS works and logs $0
+    const ttsRes = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/voice/tts',
+      headers: { cookie },
+      payload: { text: 'হ্যালো! আমি Gemini ভয়েস।', languageMode: 'bn' },
+    });
+    expect(ttsRes.statusCode).toBe(200);
+    expect(ttsRes.headers['content-type']).toBe('audio/wav');
+
+    // 4. STT falls back to Groq Whisper and records actual model + $0 cost
+    const sttRes = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/voice/stt',
+      headers: { cookie },
+      payload: {
+        audioBase64: Buffer.from('sample-audio').toString('base64'),
+        durationSeconds: 3600,
+      },
+    });
+    expect(sttRes.statusCode).toBe(200);
+    expect(sttRes.json().text).toBe('Hello from Groq STT');
+
+    // 5. /api/voice/usage records $0 for free-browser-voice and Gemini free tier
+    const freeBrowserUsage = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/voice/usage',
+      headers: { cookie },
+      payload: { model: 'free-browser-voice', durationSeconds: 180, status: 'success' },
+    });
+    expect(freeBrowserUsage.statusCode).toBe(200);
+    expect(freeBrowserUsage.json().estimatedCostUsd).toBe(0);
+
+    const gemFreeUsage = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/voice/usage',
+      headers: { cookie },
+      payload: {
+        model: 'gemini-2.5-flash-native-audio-preview-12-2025',
+        durationSeconds: 120,
+        status: 'success',
+      },
+    });
+    expect(gemFreeUsage.statusCode).toBe(200);
+    expect(gemFreeUsage.json().estimatedCostUsd).toBe(0);
+
+    const usageSummaryRes = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/usage',
+      headers: { cookie },
+    });
+    const summary = usageSummaryRes.json();
+    expect(summary.month.estimatedCostUsd).toBe(0);
+    expect(summary.recentEvents.some((e: { kind: string; model: string }) => e.kind === 'stt' && e.model === 'whisper-large-v3-turbo')).toBe(true);
+    expect(summary.recentEvents.some((e: { kind: string; model: string }) => e.kind === 'tts' && e.model === 'gemini-2.5-flash-preview-tts')).toBe(true);
+    expect(summary.recentEvents.some((e: { kind: string; model: string }) => e.kind === 'voice_realtime' && e.model === 'free-browser-voice')).toBe(true);
   });
 });

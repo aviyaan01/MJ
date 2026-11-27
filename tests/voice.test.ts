@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ErrorCodes, VoiceStates } from '@mj/shared';
 import {
   ALL_VOICE_STATES,
+  GEMINI_LIVE_INPUT_SAMPLE_RATE,
   VOICE_STATE_META,
   VoiceStateMachine,
   computeRmsLevel,
@@ -12,9 +13,12 @@ import {
 } from '@mj/voice';
 import {
   buildMjVoiceInstructions,
+  createGeminiLiveEphemeralToken,
   createRealtimeClientSecret,
+  synthesizeSpeechWithGemini,
   transcribeSpeech,
 } from '@mj/ai';
+import { resolveFreeVoiceLanguages } from '../apps/web/src/voice/freeBrowserVoice.js';
 
 describe('VoiceStateMachine (Section 05)', () => {
   it('supports all 9 required voice states with metadata and guarded transitions', () => {
@@ -195,5 +199,65 @@ describe('Voice Instructions & Ephemeral Secret Client (Section 03 & 05)', () =>
     const preserved = toVoiceAppError(apiClientLikeErr);
     expect(preserved.code).toBe(ErrorCodes.INSUFFICIENT_CREDITS);
     expect(preserved.message).toBe('xAI account e credit nai. console.x.ai te billing check koro.');
+  });
+
+  it('mints Gemini Live ephemeral tokens, synthesizes WAV TTS, resamples 16kHz audio, and supports bn-BD/en-US free voice', async () => {
+    let seenUrl = '';
+    let seenHeaderKey: string | null = null;
+    const gemToken = await createGeminiLiveEphemeralToken({
+      apiKey: 'gem-secret-server-only',
+      model: 'gemini-2.5-flash-native-audio-preview-12-2025',
+      fetchImpl: async (input, init) => {
+        seenUrl = String(input);
+        seenHeaderKey = new Headers(init?.headers).get('x-goog-api-key');
+        return new Response(
+          JSON.stringify({ name: 'auth_tokens/eph_gem_999' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      },
+    });
+    expect(seenUrl).toBe('https://generativelanguage.googleapis.com/v1alpha/auth_tokens');
+    expect(seenHeaderKey).toBe('gem-secret-server-only');
+    expect(gemToken.token).toBe('auth_tokens/eph_gem_999');
+    expect(gemToken.protocol).toBe('gemini-live');
+    expect(gemToken.realtimeUrl).toContain('BidiGenerateContentConstrained');
+
+    const tts = await synthesizeSpeechWithGemini(
+      {
+        apiKey: 'gem-secret-server-only',
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({
+              candidates: [
+                {
+                  content: {
+                    parts: [
+                      {
+                        inlineData: {
+                          mimeType: 'audio/L16;rate=24000',
+                          data: Buffer.from([1, 2, 3, 4]).toString('base64'),
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          ),
+      },
+      { text: 'Hello MJ', voiceId: 'ara', languageMode: 'auto' },
+    );
+    expect(tts.contentType).toBe('audio/wav');
+    expect(tts.isFree).toBe(true);
+    expect(Buffer.from(tts.audioBuffer).subarray(0, 4).toString('ascii')).toBe('RIFF');
+
+    const resampled16k = resampleFloat32(new Float32Array(480), 48000, GEMINI_LIVE_INPUT_SAMPLE_RATE);
+    expect(resampled16k.length).toBe(160);
+
+    expect(resolveFreeVoiceLanguages('auto')).toEqual(expect.arrayContaining(['en-US', 'bn-BD']));
+    expect(resolveFreeVoiceLanguages('banglish')).toEqual(expect.arrayContaining(['en-US', 'bn-BD']));
+    expect(resolveFreeVoiceLanguages('bn')[0]).toBe('bn-BD');
+    expect(resolveFreeVoiceLanguages('en')).toEqual(['en-US']);
   });
 });

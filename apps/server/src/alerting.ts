@@ -32,17 +32,32 @@ export interface EmailDispatchPayload {
   text: string;
 }
 
-export interface AlertMonitorOptions {
-  fetchImpl?: typeof fetch;
-  sendSmtpEmailImpl?: (config: AlertingConfig, payload: EmailDispatchPayload) => Promise<void>;
-  nowMs?: () => number;
-  onLog?: (message: string) => void;
-}
-
-interface OutcomeSample {
+export interface OutcomeSample {
   ts: number;
   ok: boolean;
   code?: string;
+}
+
+export interface PersistedAlertMonitorState {
+  samples: OutcomeSample[];
+  lastReasonAlertAtMs: Partial<Record<AlertEventReason, number>>;
+  lastAlertAt: string | null;
+  lastAlertReason: AlertEventReason | null;
+  lastDeliveryStatus: AlertingStatusDTO['lastDeliveryStatus'];
+  alertsSentCount: number;
+}
+
+export interface AlertMonitorStateStore {
+  load: () => Promise<PersistedAlertMonitorState | null>;
+  save: (state: PersistedAlertMonitorState) => Promise<void>;
+}
+
+export interface AlertMonitorOptions {
+  fetchImpl?: typeof fetch;
+  sendSmtpEmailImpl?: (config: AlertingConfig, payload: EmailDispatchPayload) => Promise<void>;
+  stateStore?: AlertMonitorStateStore;
+  nowMs?: () => number;
+  onLog?: (message: string) => void;
 }
 
 const REASON_TITLES: Record<AlertEventReason, string> = {
@@ -182,8 +197,10 @@ export class AlertMonitor {
     config: AlertingConfig,
     payload: EmailDispatchPayload,
   ) => Promise<void>;
+  private readonly stateStore?: AlertMonitorStateStore;
   private readonly nowMs: () => number;
   private readonly onLog: (message: string) => void;
+  private persistChain: Promise<void> = Promise.resolve();
 
   private lastAlertAt: string | null = null;
   private lastAlertReason: AlertEventReason | null = null;
@@ -196,8 +213,80 @@ export class AlertMonitor {
   ) {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.sendSmtpEmailImpl = options.sendSmtpEmailImpl ?? sendEmailViaSmtp;
+    this.stateStore = options.stateStore;
     this.nowMs = options.nowMs ?? (() => Date.now());
     this.onLog = options.onLog ?? ((msg) => console.warn(msg));
+  }
+
+  public async hydrate(): Promise<void> {
+    if (!this.stateStore) return;
+    try {
+      const saved = await this.stateStore.load();
+      if (!saved) return;
+
+      const now = this.nowMs();
+      this.samples.length = 0;
+      if (Array.isArray(saved.samples)) {
+        for (const s of saved.samples) {
+          if (s && typeof s.ts === 'number' && typeof s.ok === 'boolean') {
+            this.samples.push({ ts: s.ts, ok: s.ok, ...(s.code ? { code: s.code } : {}) });
+          }
+        }
+      }
+      this.pruneWindow(now);
+
+      this.lastReasonAlertAtMs.clear();
+      if (saved.lastReasonAlertAtMs && typeof saved.lastReasonAlertAtMs === 'object') {
+        for (const [reason, ts] of Object.entries(saved.lastReasonAlertAtMs)) {
+          if (typeof ts === 'number' && Number.isFinite(ts)) {
+            this.lastReasonAlertAtMs.set(reason as AlertEventReason, ts);
+          }
+        }
+      }
+
+      if (typeof saved.lastAlertAt === 'string' || saved.lastAlertAt === null) {
+        this.lastAlertAt = saved.lastAlertAt;
+      }
+      if (saved.lastAlertReason !== undefined) {
+        this.lastAlertReason = saved.lastAlertReason;
+      }
+      if (saved.lastDeliveryStatus) {
+        this.lastDeliveryStatus = saved.lastDeliveryStatus;
+      }
+      if (typeof saved.alertsSentCount === 'number' && Number.isFinite(saved.alertsSentCount)) {
+        this.alertsSentCount = saved.alertsSentCount;
+      }
+    } catch {
+      // ignore hydration failures and start cleanly
+    }
+  }
+
+  private snapshotState(): PersistedAlertMonitorState {
+    const cooldowns: Partial<Record<AlertEventReason, number>> = {};
+    for (const [reason, ts] of this.lastReasonAlertAtMs.entries()) {
+      cooldowns[reason] = ts;
+    }
+    return {
+      samples: this.samples.map((s) => ({ ...s })),
+      lastReasonAlertAtMs: cooldowns,
+      lastAlertAt: this.lastAlertAt,
+      lastAlertReason: this.lastAlertReason,
+      lastDeliveryStatus: this.lastDeliveryStatus,
+      alertsSentCount: this.alertsSentCount,
+    };
+  }
+
+  private schedulePersist(): void {
+    if (!this.stateStore) return;
+    const store = this.stateStore;
+    const snapshot = this.snapshotState();
+    this.persistChain = this.persistChain
+      .then(() => store.save(snapshot))
+      .catch(() => undefined);
+  }
+
+  public async flushPersistence(): Promise<void> {
+    await this.persistChain;
   }
 
   public isTelegramConfigured(): boolean {
@@ -258,10 +347,20 @@ export class AlertMonitor {
     };
   }
 
-  public async recordApiOutcome(entry: { ok: boolean; code?: string }): Promise<void> {
+  public async recordApiOutcome(entry: {
+    ok: boolean;
+    code?: string;
+    expectedFailover?: boolean;
+  }): Promise<void> {
+    // Expected auto-failover (e.g. Gemini quota exhausted -> Ollama/Groq) must not pollute error-rate alerts.
+    if (!entry.ok && entry.expectedFailover) {
+      return;
+    }
+
     const now = this.nowMs();
     this.samples.push({ ts: now, ok: entry.ok, code: entry.code });
     this.pruneWindow(now);
+    this.schedulePersist();
 
     if (entry.ok) return;
 
@@ -372,6 +471,7 @@ export class AlertMonitor {
     } else {
       this.lastDeliveryStatus = 'failed';
     }
+    this.schedulePersist();
   }
 
   private async sendTelegram(messageText: string): Promise<boolean> {

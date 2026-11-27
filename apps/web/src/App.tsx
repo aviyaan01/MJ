@@ -40,6 +40,7 @@ import {
 import { WakeWordListener } from './voice/wakeWordListener.js';
 import {
   isFreeBrowserVoiceSupported,
+  speakWithBrowserSpeechSynthesis,
   startFreeBrowserVoiceSession,
   type FreeBrowserVoiceController,
 } from './voice/freeBrowserVoice.js';
@@ -120,6 +121,7 @@ export function App() {
   const wakeListenerRef = useRef<WakeWordListener | null>(null);
   const startVoiceRef = useRef<() => Promise<void>>(async () => { });
   const freeVoiceFallbackRef = useRef<() => Promise<void>>(async () => { });
+  const browserTtsFallbackRef = useRef<(text: string) => boolean>(() => false);
   const permissionsRef = useRef<PermissionsStateDTO>(DEFAULT_PERMISSIONS_STATE);
   const activeConversationRef = useRef<ConversationDTO | null>(null);
   const settingsRef = useRef<PublicSettingsDTO | null>(null);
@@ -256,12 +258,22 @@ export function App() {
             }
           })();
         },
+        onFreeFallbackRequested: () => {
+          if (
+            permissionsRef.current.microphoneAccess &&
+            permissionsRef.current.voiceSessionAccess
+          ) {
+            void freeVoiceFallbackRef.current();
+          }
+        },
+        onTtsFallbackRequested: (text) => browserTtsFallbackRef.current(text),
         onError: (errPayload) => {
           if (
             (errPayload.code === ErrorCodes.INSUFFICIENT_CREDITS ||
               errPayload.code === ErrorCodes.INVALID_API_KEY ||
-              errPayload.code === ErrorCodes.UNAUTHORIZED) &&
-            isFreeBrowserVoiceSupported() &&
+              errPayload.code === ErrorCodes.UNAUTHORIZED ||
+              errPayload.code === ErrorCodes.VOICE_SERVICE_UNAVAILABLE ||
+              errPayload.code === ErrorCodes.WEBSOCKET_CONNECTION_FAILED) &&
             permissionsRef.current.microphoneAccess &&
             permissionsRef.current.voiceSessionAccess
           ) {
@@ -278,7 +290,10 @@ export function App() {
                   ...(activeConversationRef.current?.id
                     ? { conversationId: activeConversationRef.current.id }
                     : {}),
-                  model: settingsRef.current?.voice.voiceModel ?? 'grok-voice-latest',
+                  model:
+                    summary.modelUsed ??
+                    settingsRef.current?.voice.voiceModel ??
+                    'gemini-2.5-flash-native-audio-preview-12-2025',
                   durationSeconds: summary.durationSeconds,
                   status: summary.status,
                   errorCode: summary.errorCode,
@@ -465,6 +480,8 @@ export function App() {
   const handleLogout = async () => {
     streamAbortRef.current?.abort();
     wakeListenerRef.current?.stop();
+    freeVoiceRef.current?.stop();
+    freeVoiceRef.current = null;
     await voiceServiceRef.current?.stopSession('manual');
     const sess = await mjApi.logout();
     setSession(sess);
@@ -965,12 +982,60 @@ export function App() {
     voiceServiceRef.current?.interrupt();
   };
 
+  const playBrowserSpeech = useCallback((text: string): boolean => {
+    const s = settingsRef.current;
+    return speakWithBrowserSpeechSynthesis(text, {
+      volume: s?.voice.volume ?? 0.9,
+      speakingRate: s?.voice.speakingRate ?? 1.0,
+      languageMode: s?.voice.languageMode ?? 'auto',
+      voiceOutputEnabled: s?.voice.voiceOutputEnabled ?? true,
+      onStart: () => {
+        setVoiceState(VoiceStates.SPEAKING);
+        setVoiceDetail('Speaking via Free Browser TTS ($0.00)…');
+      },
+      onEnd: () => {
+        setVoiceState(VoiceStates.IDLE);
+        setVoiceDetail('Ready');
+      },
+      onError: (msg) => {
+        setActiveError({
+          code: ErrorCodes.AUDIO_PLAYBACK_FAILED,
+          category: 'voice',
+          statusCode: 500,
+          message: msg,
+          retryable: false,
+        });
+      },
+    });
+  }, []);
+
+  useEffect(() => {
+    browserTtsFallbackRef.current = playBrowserSpeech;
+  }, [playBrowserSpeech]);
+
+  const speakTextResilient = useCallback(
+    (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      voiceServiceRef.current?.setLastAssistantText(trimmed);
+      setHasLastResponseToSpeak(true);
+      if (settingsRef.current?.voice.voiceModel === 'free-browser-voice') {
+        playBrowserSpeech(trimmed);
+        return;
+      }
+      void voiceServiceRef.current?.speakTextViaTts(trimmed);
+    },
+    [playBrowserSpeech],
+  );
+
   const handleRepeatLastResponse = () => {
-    void voiceServiceRef.current?.repeatLastResponse();
+    const last = voiceServiceRef.current?.getLastAssistantText() ?? '';
+    if (!last) return;
+    speakTextResilient(last);
   };
 
   const handleSpeakText = (text: string) => {
-    void voiceServiceRef.current?.speakTextViaTts(text);
+    speakTextResilient(text);
   };
 
   const handleChangeLanguageMode = async (mode: LanguageMode) => {
@@ -1076,7 +1141,7 @@ export function App() {
             voiceState === 'interrupted' ||
             voiceState === 'reconnecting';
           if (isVoiceOpen) {
-            void voiceServiceRef.current?.stopSession('manual');
+            handleStopVoice();
           } else {
             await startVoiceRef.current();
           }

@@ -2,6 +2,7 @@ import {
   AppError,
   ErrorCodes,
   sanitizeDiagnosticText,
+  type ConcreteAiProviderId,
   type ReasoningEffort,
   type TokenUsage,
 } from '@mj/shared';
@@ -25,6 +26,7 @@ export interface XaiClientConfig {
   defaultModel: string;
   timeoutMs: number;
   maxRetries?: number;
+  providerId?: ConcreteAiProviderId;
   apiFormat?: 'xai-responses' | 'openai-chat';
   allowEmptyApiKey?: boolean;
   extraHeaders?: Record<string, string>;
@@ -63,6 +65,7 @@ export class XaiResponsesClient {
   private readonly defaultModel: string;
   private readonly defaultTimeoutMs: number;
   private readonly maxRetries: number;
+  private readonly providerId?: ConcreteAiProviderId;
   private readonly apiFormat: 'xai-responses' | 'openai-chat';
   private readonly allowEmptyApiKey: boolean;
   private readonly extraHeaders: Record<string, string>;
@@ -70,6 +73,9 @@ export class XaiResponsesClient {
 
   constructor(config: XaiClientConfig) {
     this.apiKey = config.apiKey;
+    this.providerId =
+      config.providerId ??
+      (config.baseUrl.includes('generativelanguage.googleapis.com') ? 'gemini' : undefined);
     this.apiFormat = config.apiFormat ?? 'xai-responses';
     this.allowEmptyApiKey = config.allowEmptyApiKey ?? false;
     this.extraHeaders = config.extraHeaders ?? {};
@@ -123,7 +129,7 @@ export class XaiResponsesClient {
       });
 
       if (!response.ok) {
-        throw await mapUpstreamHttpError(response);
+        throw await mapUpstreamHttpError(response, this.providerId);
       }
 
       const json = (await response.json()) as { data?: Array<{ id?: string }> };
@@ -293,7 +299,7 @@ export class XaiResponsesClient {
       });
 
       if (!response.ok) {
-        throw await mapUpstreamHttpError(response);
+        throw await mapUpstreamHttpError(response, this.providerId);
       }
 
       if (!params.stream) {
@@ -430,7 +436,10 @@ export class XaiResponsesClient {
   }
 }
 
-export async function mapUpstreamHttpError(response: Response): Promise<AppError> {
+export async function mapUpstreamHttpError(
+  response: Response,
+  providerHint?: ConcreteAiProviderId,
+): Promise<AppError> {
   let rawBodyText = '';
   try {
     rawBodyText = await response.text();
@@ -442,15 +451,34 @@ export async function mapUpstreamHttpError(response: Response): Promise<AppError
   let upstreamCode = '';
 
   try {
-    const parsed = JSON.parse(rawBodyText) as Record<string, unknown>;
+    const rawParsed = JSON.parse(rawBodyText) as unknown;
+    const parsed = (
+      Array.isArray(rawParsed) && rawParsed[0] && typeof rawParsed[0] === 'object'
+        ? rawParsed[0]
+        : rawParsed && typeof rawParsed === 'object'
+          ? rawParsed
+          : {}
+    ) as Record<string, unknown>;
+
     if (typeof parsed.error === 'string') {
       upstreamMsg = parsed.error;
     } else if (parsed.error && typeof parsed.error === 'object') {
       const errObj = parsed.error as Record<string, unknown>;
       if (typeof errObj.message === 'string') upstreamMsg = errObj.message;
       else if (typeof errObj.error === 'string') upstreamMsg = errObj.error;
-      if (typeof errObj.code === 'string') upstreamCode = errObj.code;
-      else if (typeof errObj.status === 'string') upstreamCode = errObj.status;
+      if (typeof errObj.code === 'string' || typeof errObj.code === 'number') {
+        upstreamCode = String(errObj.code);
+      }
+      if (typeof errObj.status === 'string') {
+        upstreamCode = upstreamCode ? `${upstreamCode}:${errObj.status}` : errObj.status;
+      }
+      if (Array.isArray(errObj.details)) {
+        for (const detail of errObj.details) {
+          if (detail && typeof detail === 'object' && typeof (detail as Record<string, unknown>).reason === 'string') {
+            upstreamCode = `${upstreamCode} ${String((detail as Record<string, unknown>).reason)}`.trim();
+          }
+        }
+      }
     }
     if (!upstreamMsg && typeof parsed.message === 'string') {
       upstreamMsg = parsed.message;
@@ -473,17 +501,48 @@ export async function mapUpstreamHttpError(response: Response): Promise<AppError
   const retryAfterHeader = response.headers.get('retry-after');
   const retryAfterMs = parseRetryAfterMs(retryAfterHeader);
 
-  if (
-    response.status === 401 ||
+  const isGemini =
+    providerHint === 'gemini' ||
+    (typeof response.url === 'string' && response.url.includes('generativelanguage.googleapis.com')) ||
+    lowerMsg.includes('api_key_invalid') ||
+    lowerMsg.includes('api key not valid') ||
+    lowerMsg.includes('generativelanguage') ||
+    lowerMsg.includes('aistudio');
+
+  const hasApiKeySignal =
     lowerMsg.includes('invalid api key') ||
-    lowerMsg.includes('incorrect api key')
-  ) {
+    lowerMsg.includes('incorrect api key') ||
+    lowerMsg.includes('api_key_invalid') ||
+    lowerMsg.includes('api key not valid') ||
+    lowerMsg.includes('api key expired') ||
+    lowerMsg.includes('api key invalid');
+
+  const hasQuotaOrRateSignal =
+    response.status === 429 ||
+    lowerMsg.includes('resource_exhausted') ||
+    lowerMsg.includes('rate limit') ||
+    lowerMsg.includes('rate_limit') ||
+    (isGemini && lowerMsg.includes('quota'));
+
+  if (response.status === 401 || hasApiKeySignal || (isGemini && response.status === 403 && !hasQuotaOrRateSignal)) {
     return new AppError({
       code: ErrorCodes.INVALID_API_KEY,
       category: 'api',
-      statusCode: 502,
+      statusCode: isGemini && response.status === 403 ? 403 : 502,
       retryable: false,
-      message: 'API key invalid',
+      message: isGemini ? 'Gemini API key invalid, Google AI Studio check koro' : 'API key invalid',
+      upstreamDiagnostic,
+    });
+  }
+
+  if (hasQuotaOrRateSignal) {
+    return new AppError({
+      code: ErrorCodes.RATE_LIMITED,
+      category: 'api',
+      statusCode: 429,
+      retryable: true,
+      retryAfterMs,
+      ...(isGemini ? { message: 'Gemini free quota sesh, kichukkhon por abar chesta koro' } : {}),
       upstreamDiagnostic,
     });
   }
@@ -527,17 +586,6 @@ export async function mapUpstreamHttpError(response: Response): Promise<AppError
     });
   }
 
-  if (response.status === 429) {
-    return new AppError({
-      code: ErrorCodes.RATE_LIMITED,
-      category: 'api',
-      statusCode: 429,
-      retryable: true,
-      retryAfterMs,
-      upstreamDiagnostic,
-    });
-  }
-
   if (
     response.status === 404 ||
     (lowerMsg.includes('model') &&
@@ -570,7 +618,9 @@ export async function mapUpstreamHttpError(response: Response): Promise<AppError
       category: 'api',
       statusCode: 502,
       retryable: true,
-      message: 'service unavailable',
+      message: isGemini
+        ? 'Gemini service unavailable, ektu por abar chesta koro'
+        : 'service unavailable',
       upstreamDiagnostic,
     });
   }
@@ -580,7 +630,9 @@ export async function mapUpstreamHttpError(response: Response): Promise<AppError
     category: 'api',
     statusCode: 502,
     retryable: false,
-    message: 'service unavailable',
+    message: isGemini
+      ? 'Gemini service unavailable, ektu por abar chesta koro'
+      : 'service unavailable',
     upstreamDiagnostic,
   });
 }

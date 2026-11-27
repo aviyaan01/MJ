@@ -12,7 +12,7 @@ import {
   createDatabase,
   type MjDatabaseHandle,
 } from '@mj/database';
-import { AlertMonitor } from './alerting.js';
+import { AlertMonitor, type PersistedAlertMonitorState } from './alerting.js';
 import { createSessionGuard } from './auth.js';
 import { DailyBackupScheduler } from './backupScheduler.js';
 import { loadServerConfig, type ServerConfig } from './config.js';
@@ -22,7 +22,7 @@ import { ShortcutsStore } from './shortcutsStore.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerConversationRoutes } from './routes/conversations.js';
 import { registerDesktopRoutes } from './routes/desktop.js';
-import { registerHealthRoutes } from './routes/health.js';
+import { HealthWatchdog, registerHealthRoutes } from './routes/health.js';
 import { registerPrivacyRoutes } from './routes/privacy.js';
 import { registerSettingsRoutes } from './routes/settings.js';
 import { registerUsageRoutes } from './routes/usage.js';
@@ -38,6 +38,7 @@ export interface BuildServerOptions {
   providerRouter?: ProviderRouterClient;
   voiceGateway?: VoiceGateway;
   alertMonitor?: AlertMonitor;
+  watchdogIntervalMs?: number;
   dbHandle?: MjDatabaseHandle;
   logger?: boolean;
   webDistDir?: string;
@@ -51,9 +52,12 @@ export interface MjServerContext {
   settingsStore: RuntimeSettingsStore;
   permissionsStore: PermissionsStore;
   alertMonitor: AlertMonitor;
+  healthWatchdog: HealthWatchdog;
   backupScheduler: DailyBackupScheduler;
   providerRouter: ProviderRouterClient;
 }
+
+const ALERT_STATE_STORAGE_KEY = 'mj.alert_monitor.state.v1';
 
 export async function buildServer(options: BuildServerOptions = {}): Promise<MjServerContext> {
   const config = options.config ?? loadServerConfig();
@@ -91,7 +95,25 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
   const settingsStore = new RuntimeSettingsStore(repo, config, providerRouter);
   const permissionsStore = new PermissionsStore(repo);
   const shortcutsStore = new ShortcutsStore(repo);
-  const alertMonitor = options.alertMonitor ?? new AlertMonitor(config.alerting);
+  let dbClosing = false;
+  const alertMonitor =
+    options.alertMonitor ??
+    new AlertMonitor(config.alerting, {
+      stateStore: {
+        load: () => repo.getStoredSettings<PersistedAlertMonitorState>(ALERT_STATE_STORAGE_KEY),
+        save: async (state) => {
+          if (dbClosing) return;
+          await repo.saveStoredSettings(ALERT_STATE_STORAGE_KEY, state);
+        },
+      },
+    });
+  await alertMonitor.hydrate();
+  const healthWatchdog = new HealthWatchdog({
+    dbHandle,
+    alertMonitor,
+    intervalMs: options.watchdogIntervalMs,
+  });
+  healthWatchdog.start();
   const backupScheduler = new DailyBackupScheduler(dbHandle, config.backup, alertMonitor);
   const voiceGateway = options.voiceGateway ?? createDefaultVoiceGateway(config);
 
@@ -141,7 +163,13 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
         scriptSrc: ["'self'"],
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'", 'data:'],
-        connectSrc: ["'self'", 'wss://api.x.ai', 'https://api.x.ai'],
+        connectSrc: [
+          "'self'",
+          'wss://generativelanguage.googleapis.com',
+          'https://generativelanguage.googleapis.com',
+          'wss://api.x.ai',
+          'https://api.x.ai',
+        ],
         mediaSrc: ["'self'", 'blob:'],
         objectSrc: ["'none'"],
         frameAncestors: ["'none'"],
@@ -348,6 +376,9 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
   });
 
   app.addHook('onClose', async () => {
+    dbClosing = true;
+    healthWatchdog.stop();
+    await alertMonitor.flushPersistence();
     backupScheduler.stop();
     if (!options.dbHandle) {
       dbHandle.close();
@@ -362,6 +393,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
     settingsStore,
     permissionsStore,
     alertMonitor,
+    healthWatchdog,
     backupScheduler,
     providerRouter,
   };
