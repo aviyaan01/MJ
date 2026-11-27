@@ -96,7 +96,7 @@ export class XaiResponsesClient {
         : `${normalizedBase}/responses`;
     }
     this.defaultModel = config.defaultModel;
-    this.defaultTimeoutMs = config.timeoutMs;
+    this.defaultTimeoutMs = config.timeoutMs ?? 60_000;
     this.maxRetries = Math.max(0, Math.min(config.maxRetries ?? 2, 4));
     this.fetchImpl = config.fetchImpl ?? fetch;
   }

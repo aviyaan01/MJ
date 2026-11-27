@@ -807,15 +807,17 @@ describe('Free / $0 AI Providers & Failover Routing', () => {
       apiKey: 'AIza-test-gemini',
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
       defaultModel: 'gemini-2.5-flash',
+      timeoutMs: 5000,
       providerId: 'gemini',
       apiFormat: 'openai-chat',
-      fetchFn: (async (_url, init) => {
+      fetchImpl: (async (_url, init) => {
         seenBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
         return createOpenAiChatSseResponse('Hello from Gemini');
       }) as typeof fetch,
     });
     const gemRes = await geminiClient.createResponse({
       model: 'gemini-2.5-flash',
+      instructions: 'Be concise.',
       input: [{ role: 'user', content: 'hi' }],
       stream: true,
     });
@@ -828,15 +830,17 @@ describe('Free / $0 AI Providers & Failover Routing', () => {
       apiKey: 'mistral-test-key',
       baseUrl: 'https://api.mistral.ai/v1',
       defaultModel: 'mistral-small-latest',
+      timeoutMs: 5000,
       providerId: 'mistral',
       apiFormat: 'openai-chat',
-      fetchFn: (async (_url, init) => {
+      fetchImpl: (async (_url, init) => {
         mistralBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
         return createOpenAiChatSseResponse('Hello from Mistral');
       }) as typeof fetch,
     });
     const misRes = await mistralClient.createResponse({
       model: 'mistral-small-latest',
+      instructions: 'Be concise.',
       input: [{ role: 'user', content: 'hi' }],
       stream: true,
     });
@@ -850,9 +854,10 @@ describe('Free / $0 AI Providers & Failover Routing', () => {
       apiKey: 'gsk-test-retry',
       baseUrl: 'https://api.groq.com/openai/v1',
       defaultModel: 'llama-3.3-70b-versatile',
+      timeoutMs: 5000,
       providerId: 'groq',
       apiFormat: 'openai-chat',
-      fetchFn: (async (_url, init) => {
+      fetchImpl: (async (_url, init) => {
         attempt += 1;
         retryBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
         if (attempt === 1) {
@@ -868,6 +873,7 @@ describe('Free / $0 AI Providers & Failover Routing', () => {
     });
     const retryRes = await retryClient.createResponse({
       model: 'llama-3.3-70b-versatile',
+      instructions: 'Be concise.',
       input: [{ role: 'user', content: 'hi' }],
       stream: true,
     });
