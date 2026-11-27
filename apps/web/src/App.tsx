@@ -38,6 +38,11 @@ import {
   tauriValidateShortcutTrigger,
 } from './desktop/desktopBridge.js';
 import { WakeWordListener } from './voice/wakeWordListener.js';
+import {
+  isFreeBrowserVoiceSupported,
+  startFreeBrowserVoiceSession,
+  type FreeBrowserVoiceController,
+} from './voice/freeBrowserVoice.js';
 
 const ChatWorkspace = lazy(() =>
   import('./components/ChatWorkspace.js').then((m) => ({ default: m.ChatWorkspace })),
@@ -111,8 +116,10 @@ export function App() {
 
   const streamAbortRef = useRef<AbortController | null>(null);
   const voiceServiceRef = useRef<MjVoiceService | null>(null);
+  const freeVoiceRef = useRef<FreeBrowserVoiceController | null>(null);
   const wakeListenerRef = useRef<WakeWordListener | null>(null);
   const startVoiceRef = useRef<() => Promise<void>>(async () => {});
+  const freeVoiceFallbackRef = useRef<() => Promise<void>>(async () => {});
   const permissionsRef = useRef<PermissionsStateDTO>(DEFAULT_PERMISSIONS_STATE);
   const activeConversationRef = useRef<ConversationDTO | null>(null);
   const settingsRef = useRef<PublicSettingsDTO | null>(null);
@@ -250,6 +257,17 @@ export function App() {
           })();
         },
         onError: (errPayload) => {
+          if (
+            (errPayload.code === ErrorCodes.INSUFFICIENT_CREDITS ||
+              errPayload.code === ErrorCodes.INVALID_API_KEY ||
+              errPayload.code === ErrorCodes.UNAUTHORIZED) &&
+            isFreeBrowserVoiceSupported() &&
+            permissionsRef.current.microphoneAccess &&
+            permissionsRef.current.voiceSessionAccess
+          ) {
+            void freeVoiceFallbackRef.current();
+            return;
+          }
           setActiveError(errPayload);
         },
         onSessionEnded: (summary) => {
@@ -286,6 +304,8 @@ export function App() {
     voiceServiceRef.current = service;
 
     return () => {
+      freeVoiceRef.current?.stop();
+      freeVoiceRef.current = null;
       void service.stopSession('manual');
       voiceServiceRef.current = null;
     };
@@ -506,20 +526,22 @@ export function App() {
     conversationId: string;
     promptText?: string;
     fromHome?: boolean;
-  }) => {
+    skipAutoTts?: boolean;
+  }): Promise<string> => {
     streamAbortRef.current?.abort();
     const abortController = new AbortController();
     streamAbortRef.current = abortController;
 
     setActiveError(null);
     setStreamingState('connecting');
-    setStreamStatusDetail('Connecting to Grok…');
+    setStreamStatusDetail('Connecting to AI provider…');
 
     const modelToUse = selectedModelOverride || settings?.activeModel;
 
     const tempUserId = `temp-user-${Date.now()}`;
     const tempAssistantId = `temp-assistant-${Date.now()}`;
     let realAssistantId = tempAssistantId;
+    let finalAssistantText = '';
 
     if (options.mode === 'send' && options.promptText) {
       const nowIso = new Date().toISOString();
@@ -601,6 +623,7 @@ export function App() {
         setStreamingState(event.phase === 'streaming' ? 'streaming' : 'connecting');
         setStreamStatusDetail(event.detail);
       } else if (event.type === 'delta') {
+        finalAssistantText += event.text;
         setStreamingState('streaming');
         setStreamStatusDetail('Streaming response…');
         setMessages((prev) =>
@@ -655,9 +678,14 @@ export function App() {
           );
         }
         if (event.message.content) {
+          finalAssistantText = event.message.content;
           voiceServiceRef.current?.setLastAssistantText(event.message.content);
           setHasLastResponseToSpeak(true);
-          if (settingsRef.current?.voice.autoPlayback && settingsRef.current?.voice.voiceOutputEnabled) {
+          if (
+            !options.skipAutoTts &&
+            settingsRef.current?.voice.autoPlayback &&
+            settingsRef.current?.voice.voiceOutputEnabled
+          ) {
             void voiceServiceRef.current?.speakTextViaTts(event.message.content);
           }
         }
@@ -705,11 +733,12 @@ export function App() {
           ),
         );
       }
+      return finalAssistantText;
     } catch (err) {
       if (abortController.signal.aborted) {
         setStreamingState('idle');
         setStreamStatusDetail('Generation stopped');
-        return;
+        return finalAssistantText;
       }
 
       const payload: StructuredErrorPayload =
@@ -730,6 +759,7 @@ export function App() {
       setMessages((prev) =>
         prev.filter((m) => m.id !== tempUserId && m.id !== tempAssistantId),
       );
+      return '';
     } finally {
       try {
         const refreshedUsage = await mjApi.getUsage();
@@ -857,14 +887,72 @@ export function App() {
     setLastRetryAction(() => () => {
       void startVoiceRef.current();
     });
+    if (settingsRef.current?.voice.voiceModel === 'free-browser-voice') {
+      await freeVoiceFallbackRef.current();
+      return;
+    }
     await voiceServiceRef.current?.startSession();
   }, [ensureActiveConversationId, refreshAuditLogs]);
+
+  const startFreeVoiceFallback = useCallback(async () => {
+    freeVoiceRef.current?.stop();
+    const convId = await ensureActiveConversationId();
+    setInteractionMode('voice');
+    setActiveError(null);
+    setLiveUserTranscript('');
+    setLiveAssistantTranscript('');
+
+    freeVoiceRef.current = startFreeBrowserVoiceSession({
+      languageMode: settingsRef.current?.voice.languageMode ?? 'auto',
+      volume: settingsRef.current?.voice.volume ?? 0.9,
+      speakingRate: settingsRef.current?.voice.speakingRate ?? 1.0,
+      voiceOutputEnabled: settingsRef.current?.voice.voiceOutputEnabled ?? true,
+      onStateChange: (state, detail) => {
+        setVoiceState(state);
+        setVoiceDetail(detail);
+      },
+      onTranscriptPreview: (text) => {
+        setLiveUserTranscript(text);
+      },
+      onSubmitTranscript: async (transcript) => {
+        setLiveUserTranscript(transcript);
+        const reply = await runStream({
+          mode: 'send',
+          conversationId: convId,
+          promptText: transcript,
+          skipAutoTts: true,
+        });
+        setLiveAssistantTranscript(reply);
+        return reply;
+      },
+      onFinish: () => {
+        freeVoiceRef.current = null;
+      },
+      onErrorMessage: (msg) => {
+        setVoiceState(VoiceStates.ERROR);
+        setVoiceDetail(msg);
+        setActiveError({
+          code: ErrorCodes.VOICE_SERVICE_UNAVAILABLE,
+          category: 'voice',
+          statusCode: 503,
+          message: msg,
+          retryable: true,
+        });
+      },
+    });
+  }, [ensureActiveConversationId, runStream]);
+
+  useEffect(() => {
+    freeVoiceFallbackRef.current = startFreeVoiceFallback;
+  }, [startFreeVoiceFallback]);
 
   useEffect(() => {
     startVoiceRef.current = handleStartVoice;
   }, [handleStartVoice]);
 
   const handleStopVoice = () => {
+    freeVoiceRef.current?.stop();
+    freeVoiceRef.current = null;
     void voiceServiceRef.current?.stopSession('manual');
   };
 
@@ -873,6 +961,7 @@ export function App() {
   };
 
   const handleInterruptVoice = () => {
+    freeVoiceRef.current?.interrupt();
     voiceServiceRef.current?.interrupt();
   };
 
@@ -895,9 +984,13 @@ export function App() {
       await tauriSetSinglePermission(key, enabled);
       if (key === 'microphoneAccess' && !enabled) {
         wakeListenerRef.current?.stop();
+        freeVoiceRef.current?.stop();
+        freeVoiceRef.current = null;
         await voiceServiceRef.current?.stopSession('manual');
       }
       if (key === 'voiceSessionAccess' && !enabled) {
+        freeVoiceRef.current?.stop();
+        freeVoiceRef.current = null;
         await voiceServiceRef.current?.stopSession('manual');
       }
       await refreshAuditLogs();
@@ -956,6 +1049,8 @@ export function App() {
 
   const handleStopAllMic = useCallback(async () => {
     wakeListenerRef.current?.stop();
+    freeVoiceRef.current?.stop();
+    freeVoiceRef.current = null;
     await voiceServiceRef.current?.stopSession('manual');
     if (permissionsRef.current.wakeWordStandby) {
       await handleTogglePermission('wakeWordStandby', false);

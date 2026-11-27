@@ -10,10 +10,15 @@ import {
   estimateResponseCostUsd,
   evaluateBudgetStatus,
   validateInput,
+  type AiProviderId,
   type ChatStreamEvent,
   type MessageDTO,
 } from '@mj/shared';
-import { XaiResponsesClient, buildMjSystemPrompt } from '@mj/ai';
+import {
+  ProviderRouterClient,
+  XaiResponsesClient,
+  buildMjSystemPrompt,
+} from '@mj/ai';
 import type { MjDatabaseRepository } from '@mj/database';
 import type { AlertMonitor } from '../alerting.js';
 import type { ServerConfig } from '../config.js';
@@ -26,6 +31,7 @@ export interface ConversationRouteDeps {
   settingsStore: RuntimeSettingsStore;
   permissionsStore: PermissionsStore;
   xaiClient: XaiResponsesClient;
+  providerRouter?: ProviderRouterClient;
   alertMonitor?: AlertMonitor;
   requireSession: (request: FastifyRequest) => Promise<void>;
 }
@@ -66,11 +72,13 @@ async function streamAssistantTurn(params: {
   conversationId: string;
   userMessageId: string;
   modelOverride?: string;
+  providerOverride?: AiProviderId;
   streamOverride?: boolean;
   updatedTitle?: string;
 }): Promise<void> {
   const { request, reply, deps, conversationId, userMessageId } = params;
   const settings = await deps.settingsStore.getPublicSettings();
+  const activeProvider = params.providerOverride ?? settings.activeProvider ?? 'auto';
   const activeModel = params.modelOverride?.trim() || settings.activeModel;
   const useStreaming = params.streamOverride ?? settings.streamResponses;
 
@@ -113,26 +121,48 @@ async function streamAssistantTurn(params: {
   const startedAt = Date.now();
 
   try {
-    const result = await deps.xaiClient.createResponse({
-      model: activeModel,
-      instructions,
-      input: contextTurns,
-      reasoningEffort: settings.reasoningEffort,
-      maxOutputTokens: settings.maxOutputTokens,
-      stream: useStreaming,
-      timeoutMs: settings.timeoutMs,
-      signal: abortController.signal,
-      onStatus: (phase, detail) => {
-        writeSseEvent(reply, { type: 'status', phase, detail });
-      },
-      onDelta: (delta) => {
-        accumulated += delta;
-        writeSseEvent(reply, { type: 'delta', text: delta });
-      },
-    });
+    const result = deps.providerRouter
+      ? await deps.providerRouter.createResponse({
+          provider: activeProvider,
+          model: activeModel,
+          instructions,
+          input: contextTurns,
+          reasoningEffort: settings.reasoningEffort,
+          maxOutputTokens: settings.maxOutputTokens,
+          stream: useStreaming,
+          timeoutMs: settings.timeoutMs,
+          signal: abortController.signal,
+          onStatus: (phase, detail) => {
+            writeSseEvent(reply, { type: 'status', phase, detail });
+          },
+          onDelta: (delta) => {
+            accumulated += delta;
+            writeSseEvent(reply, { type: 'delta', text: delta });
+          },
+        })
+      : {
+          ...(await deps.xaiClient.createResponse({
+            model: activeModel,
+            instructions,
+            input: contextTurns,
+            reasoningEffort: settings.reasoningEffort,
+            maxOutputTokens: settings.maxOutputTokens,
+            stream: useStreaming,
+            timeoutMs: settings.timeoutMs,
+            signal: abortController.signal,
+            onStatus: (phase, detail) => {
+              writeSseEvent(reply, { type: 'status', phase, detail });
+            },
+            onDelta: (delta) => {
+              accumulated += delta;
+              writeSseEvent(reply, { type: 'delta', text: delta });
+            },
+          })),
+          isFree: false,
+        };
 
     const finalText = result.text || accumulated;
-    const costUsd = estimateResponseCostUsd(result.usage, settings.budget);
+    const costUsd = result.isFree ? 0 : estimateResponseCostUsd(result.usage, settings.budget);
 
     const savedAssistant = await deps.repo.updateMessage(assistantPlaceholder.id, {
       content: finalText,
@@ -339,7 +369,13 @@ export function registerConversationRoutes(
         });
       }
 
-      if (!deps.config.apiKeyConfigured) {
+      if (deps.providerRouter) {
+        await deps.providerRouter.refreshLocalOllamaModels(false);
+      }
+      const anyReady = deps.providerRouter
+        ? deps.providerRouter.hasAnyConfiguredProvider()
+        : deps.config.apiKeyConfigured;
+      if (!anyReady) {
         throw new AppError({
           code: ErrorCodes.INVALID_API_KEY,
           category: 'api',
@@ -402,6 +438,7 @@ export function registerConversationRoutes(
         conversationId: id,
         userMessageId: userMessage.id,
         modelOverride: body.model,
+        providerOverride: body.provider,
         streamOverride: body.stream,
         updatedTitle,
       });
@@ -425,7 +462,13 @@ export function registerConversationRoutes(
         });
       }
 
-      if (!deps.config.apiKeyConfigured) {
+      if (deps.providerRouter) {
+        await deps.providerRouter.refreshLocalOllamaModels(false);
+      }
+      const anyReady = deps.providerRouter
+        ? deps.providerRouter.hasAnyConfiguredProvider()
+        : deps.config.apiKeyConfigured;
+      if (!anyReady) {
         throw new AppError({
           code: ErrorCodes.INVALID_API_KEY,
           category: 'api',
@@ -499,6 +542,7 @@ export function registerConversationRoutes(
         conversationId: id,
         userMessageId: targetUserMessage.id,
         modelOverride: body.model,
+        providerOverride: body.provider,
         streamOverride: body.stream,
       });
     },

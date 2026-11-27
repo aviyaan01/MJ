@@ -6,7 +6,7 @@ import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import { AppError, ErrorCodes, sanitizeDiagnosticText, sanitizeUrlForLog } from '@mj/shared';
-import { XaiResponsesClient } from '@mj/ai';
+import { ProviderRouterClient, XaiResponsesClient } from '@mj/ai';
 import {
   MjDatabaseRepository,
   createDatabase,
@@ -35,6 +35,7 @@ import {
 export interface BuildServerOptions {
   config?: ServerConfig;
   xaiClient?: XaiResponsesClient;
+  providerRouter?: ProviderRouterClient;
   voiceGateway?: VoiceGateway;
   alertMonitor?: AlertMonitor;
   dbHandle?: MjDatabaseHandle;
@@ -51,17 +52,13 @@ export interface MjServerContext {
   permissionsStore: PermissionsStore;
   alertMonitor: AlertMonitor;
   backupScheduler: DailyBackupScheduler;
+  providerRouter: ProviderRouterClient;
 }
 
 export async function buildServer(options: BuildServerOptions = {}): Promise<MjServerContext> {
   const config = options.config ?? loadServerConfig();
   const dbHandle = options.dbHandle ?? createDatabase(config.databaseUrl);
   const repo = new MjDatabaseRepository(dbHandle);
-  const settingsStore = new RuntimeSettingsStore(repo, config);
-  const permissionsStore = new PermissionsStore(repo);
-  const shortcutsStore = new ShortcutsStore(repo);
-  const alertMonitor = options.alertMonitor ?? new AlertMonitor(config.alerting);
-  const backupScheduler = new DailyBackupScheduler(dbHandle, config.backup, alertMonitor);
   const xaiClient =
     options.xaiClient ??
     new XaiResponsesClient({
@@ -71,6 +68,31 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
       timeoutMs: config.xaiTimeoutMs,
       maxRetries: 2,
     });
+  const providerRouter =
+    options.providerRouter ??
+    new ProviderRouterClient({
+    xai: {
+      apiKey: config.xaiApiKey,
+      baseUrl: config.xaiBaseUrl,
+      model: config.xaiTextModel,
+      models: config.availableModels,
+    },
+    ollama: config.aiProviders.ollama,
+    groq: config.aiProviders.groq,
+    gemini: config.aiProviders.gemini,
+    openrouter: config.aiProviders.openrouter,
+    cerebras: config.aiProviders.cerebras,
+    mistral: config.aiProviders.mistral,
+    github: config.aiProviders.github,
+    timeoutMs: config.xaiTimeoutMs,
+    maxRetries: 2,
+    xaiClientOverride: options.xaiClient,
+  });
+  const settingsStore = new RuntimeSettingsStore(repo, config, providerRouter);
+  const permissionsStore = new PermissionsStore(repo);
+  const shortcutsStore = new ShortcutsStore(repo);
+  const alertMonitor = options.alertMonitor ?? new AlertMonitor(config.alerting);
+  const backupScheduler = new DailyBackupScheduler(dbHandle, config.backup, alertMonitor);
   const voiceGateway = options.voiceGateway ?? createDefaultVoiceGateway(config);
 
   const startedAtMs = Date.now();
@@ -173,6 +195,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
     settingsStore,
     startedAtMs,
     alertMonitor,
+    providerRouter,
   });
   registerAuthRoutes(app, config);
   registerSettingsRoutes(app, { settingsStore, requireSession });
@@ -181,6 +204,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
     repo,
     settingsStore,
     xaiClient,
+    providerRouter,
     voiceGateway,
     alertMonitor,
     requireSession,
@@ -212,6 +236,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
     settingsStore,
     permissionsStore,
     xaiClient,
+    providerRouter,
     alertMonitor,
     requireSession,
   });
@@ -338,5 +363,6 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
     permissionsStore,
     alertMonitor,
     backupScheduler,
+    providerRouter,
   };
 }

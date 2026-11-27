@@ -305,14 +305,7 @@ export class MjVoiceService {
       source.start();
     } catch (err) {
       if (controller.signal.aborted) return;
-      const appErr =
-        err instanceof AppError
-          ? err
-          : new AppError({
-              code: ErrorCodes.AUDIO_PLAYBACK_FAILED,
-              category: 'voice',
-              cause: err,
-            });
+      const appErr = toVoiceAppError(err, ErrorCodes.AUDIO_PLAYBACK_FAILED, 'voice');
       this.emitVoiceError(appErr);
     }
   }
@@ -331,14 +324,7 @@ export class MjVoiceService {
     try {
       secret = await this.callbacks.fetchClientSecret();
     } catch (err) {
-      const appErr =
-        err instanceof AppError
-          ? err
-          : new AppError({
-              code: ErrorCodes.VOICE_SERVICE_UNAVAILABLE,
-              category: 'voice',
-              cause: err,
-            });
+      const appErr = toVoiceAppError(err, ErrorCodes.VOICE_SERVICE_UNAVAILABLE, 'voice');
       this.emitVoiceError(appErr);
       await this.stopSession('error');
       return;
@@ -843,6 +829,36 @@ export class MjVoiceService {
     this.stateMachine.transition(VoiceStates.ERROR, appError.message);
     this.callbacks.onError?.(appError.toPayload());
   }
+}
+
+export function toVoiceAppError(
+  err: unknown,
+  fallbackCode: typeof ErrorCodes.VOICE_SERVICE_UNAVAILABLE | typeof ErrorCodes.AUDIO_PLAYBACK_FAILED = ErrorCodes.VOICE_SERVICE_UNAVAILABLE,
+  fallbackCategory: 'voice' = 'voice',
+): AppError {
+  if (err instanceof AppError) return err;
+
+  if (err && typeof err === 'object' && 'payload' in err) {
+    const payload = (err as { payload?: Partial<StructuredErrorPayload> }).payload;
+    if (payload && typeof payload.code === 'string' && typeof payload.message === 'string') {
+      return new AppError({
+        code: payload.code as AppError['code'],
+        category: payload.category ?? fallbackCategory,
+        statusCode: payload.statusCode,
+        message: payload.message,
+        retryable: payload.retryable,
+        retryAfterMs: payload.retryAfterMs,
+        requestId: payload.requestId,
+        cause: err,
+      });
+    }
+  }
+
+  return new AppError({
+    code: fallbackCode,
+    category: fallbackCategory,
+    cause: err,
+  });
 }
 
 export function mapBrowserVoiceError(err: unknown): AppError {

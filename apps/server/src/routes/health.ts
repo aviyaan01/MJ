@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { SystemHealthDTO } from '@mj/shared';
+import type { ProviderRouterClient } from '@mj/ai';
 import type { MjDatabaseHandle } from '@mj/database';
 import type { AlertMonitor } from '../alerting.js';
 import type { ServerConfig } from '../config.js';
@@ -11,6 +12,7 @@ export interface HealthRouteDeps {
   settingsStore: RuntimeSettingsStore;
   startedAtMs: number;
   alertMonitor?: AlertMonitor;
+  providerRouter?: ProviderRouterClient;
 }
 
 export function registerHealthRoutes(app: FastifyInstance, deps: HealthRouteDeps): void {
@@ -20,20 +22,31 @@ export function registerHealthRoutes(app: FastifyInstance, deps: HealthRouteDeps
       void deps.alertMonitor?.notifyUptimeDegraded('SQLite database ping failed on health check');
     }
     const settings = await deps.settingsStore.getPublicSettings();
+    const anyAiReady = deps.providerRouter
+      ? deps.providerRouter.hasAnyConfiguredProvider()
+      : deps.config.apiKeyConfigured;
 
-    const engineState: SystemHealthDTO['aiEngine'] = !deps.config.apiKeyConfigured
+    const aiEngineState: SystemHealthDTO['aiEngine'] = !anyAiReady
       ? 'unconfigured'
       : dbOk
         ? 'ready'
         : 'degraded';
+
+    const voiceEngineState: SystemHealthDTO['voiceEngine'] =
+      !deps.config.apiKeyConfigured && settings.voice.voiceModel !== 'free-browser-voice'
+        ? 'unconfigured'
+        : dbOk
+          ? 'ready'
+          : 'degraded';
 
     const payload: SystemHealthDTO = {
       status: dbOk ? 'online' : 'degraded',
       stage: 'Stage 5 · Monitoring, Usage & Final Delivery',
       backend: 'online',
       database: dbOk ? 'healthy' : 'unavailable',
-      aiEngine: engineState,
-      voiceEngine: engineState,
+      aiEngine: aiEngineState,
+      voiceEngine: voiceEngineState,
+      activeProvider: settings.activeProvider,
       activeModel: settings.activeModel,
       activeVoiceModel: settings.voice.voiceModel,
       apiBaseHost: deps.config.xaiBaseHost,

@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
-import type { ReasoningEffort } from '@mj/shared';
+import type { AiProviderId, ReasoningEffort } from '@mj/shared';
 import type { AlertingConfig } from './alerting.js';
 import type { BackupSchedulerConfig } from './backupScheduler.js';
 
@@ -34,6 +34,16 @@ export interface ServerConfig {
   cookieDomain?: string;
   alerting: AlertingConfig;
   backup: BackupSchedulerConfig;
+  aiProviders: {
+    defaultProvider: AiProviderId;
+    ollama: { enabled: boolean; baseUrl: string; model: string };
+    groq: { apiKey: string; baseUrl: string; model: string };
+    gemini: { apiKey: string; baseUrl: string; model: string };
+    openrouter: { apiKey: string; baseUrl: string; model: string };
+    cerebras: { apiKey: string; baseUrl: string; model: string };
+    mistral: { apiKey: string; baseUrl: string; model: string };
+    github: { apiKey: string; baseUrl: string; model: string };
+  };
   rootDir: string;
 }
 
@@ -258,6 +268,79 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
     retentionCount: clampNumber(env.BACKUP_RETENTION_COUNT, 14, 1, 365),
   };
 
+  const rawDefaultProvider = (env.AI_PROVIDER ?? 'auto').trim().toLowerCase();
+  const validProviders = new Set<AiProviderId>([
+    'auto',
+    'xai',
+    'ollama',
+    'groq',
+    'gemini',
+    'openrouter',
+    'cerebras',
+    'mistral',
+    'github',
+  ]);
+  const defaultProvider: AiProviderId = validProviders.has(rawDefaultProvider as AiProviderId)
+    ? (rawDefaultProvider as AiProviderId)
+    : 'auto';
+
+  const rawOllamaEnabled = (env.OLLAMA_ENABLED ?? '').trim().toLowerCase();
+  const ollamaEnabled =
+    rawOllamaEnabled === 'true'
+      ? true
+      : rawOllamaEnabled === 'false'
+        ? false
+        : appEnv === 'development';
+
+  const aiProviders: ServerConfig['aiProviders'] = {
+    defaultProvider,
+    ollama: {
+      enabled: ollamaEnabled,
+      baseUrl: (env.OLLAMA_BASE_URL ?? 'http://127.0.0.1:11434/v1').trim(),
+      model: !isPlaceholderValue(env.OLLAMA_MODEL) ? env.OLLAMA_MODEL!.trim() : 'qwen2.5:7b',
+    },
+    groq: {
+      apiKey: cleanEnvSecret(env.GROQ_API_KEY) ?? '',
+      baseUrl: (env.GROQ_BASE_URL ?? 'https://api.groq.com/openai/v1').trim(),
+      model: !isPlaceholderValue(env.GROQ_MODEL)
+        ? env.GROQ_MODEL!.trim()
+        : 'llama-3.3-70b-versatile',
+    },
+    gemini: {
+      apiKey: cleanEnvSecret(env.GEMINI_API_KEY) ?? '',
+      baseUrl: (
+        env.GEMINI_BASE_URL ?? 'https://generativelanguage.googleapis.com/v1beta/openai'
+      ).trim(),
+      model: !isPlaceholderValue(env.GEMINI_MODEL) ? env.GEMINI_MODEL!.trim() : 'gemini-2.5-flash',
+    },
+    openrouter: {
+      apiKey: cleanEnvSecret(env.OPENROUTER_API_KEY) ?? '',
+      baseUrl: (env.OPENROUTER_BASE_URL ?? 'https://openrouter.ai/api/v1').trim(),
+      model: !isPlaceholderValue(env.OPENROUTER_MODEL)
+        ? env.OPENROUTER_MODEL!.trim()
+        : 'openrouter/free',
+    },
+    cerebras: {
+      apiKey: cleanEnvSecret(env.CEREBRAS_API_KEY) ?? '',
+      baseUrl: (env.CEREBRAS_BASE_URL ?? 'https://api.cerebras.ai/v1').trim(),
+      model: !isPlaceholderValue(env.CEREBRAS_MODEL) ? env.CEREBRAS_MODEL!.trim() : 'llama-3.3-70b',
+    },
+    mistral: {
+      apiKey: cleanEnvSecret(env.MISTRAL_API_KEY) ?? '',
+      baseUrl: (env.MISTRAL_BASE_URL ?? 'https://api.mistral.ai/v1').trim(),
+      model: !isPlaceholderValue(env.MISTRAL_MODEL)
+        ? env.MISTRAL_MODEL!.trim()
+        : 'mistral-small-latest',
+    },
+    github: {
+      apiKey: cleanEnvSecret(env.GITHUB_MODELS_TOKEN) ?? '',
+      baseUrl: (env.GITHUB_MODELS_BASE_URL ?? 'https://models.inference.ai.azure.com').trim(),
+      model: !isPlaceholderValue(env.GITHUB_MODELS_MODEL)
+        ? env.GITHUB_MODELS_MODEL!.trim()
+        : 'gpt-4o-mini',
+    },
+  };
+
   return {
     appEnv,
     host: (env.HOST ?? '127.0.0.1').trim(),
@@ -285,6 +368,7 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
     ...(cookieDomain ? { cookieDomain } : {}),
     alerting,
     backup,
+    aiProviders,
     rootDir,
   };
 }

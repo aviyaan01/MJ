@@ -4,6 +4,17 @@ import { AppError, ErrorCodes } from './errors.js';
 export const ReasoningEffortSchema = z.enum(['low', 'medium', 'high', 'xhigh']);
 export const ResponseStyleSchema = z.enum(['balanced', 'concise', 'detailed']);
 export const LanguageModeSchema = z.enum(['auto', 'en', 'bn', 'banglish']);
+export const AiProviderIdSchema = z.enum([
+  'auto',
+  'xai',
+  'ollama',
+  'groq',
+  'gemini',
+  'openrouter',
+  'cerebras',
+  'mistral',
+  'github',
+]);
 
 export const CreateConversationSchema = z.object({
   title: z.string().trim().min(1).max(120).optional(),
@@ -21,11 +32,13 @@ export const SendMessageSchema = z.object({
     .min(1, 'Message cannot be empty')
     .max(32000, 'Message exceeds maximum length of 32,000 characters'),
   model: z.string().trim().min(1).max(100).optional(),
+  provider: AiProviderIdSchema.optional(),
   stream: z.boolean().optional(),
 });
 
 export const RegenerateMessageSchema = z.object({
   model: z.string().trim().min(1).max(100).optional(),
+  provider: AiProviderIdSchema.optional(),
   stream: z.boolean().optional(),
 });
 
@@ -57,6 +70,7 @@ export const TtsRequestSchema = z.object({
 });
 
 export const UpdateSettingsSchema = z.object({
+  activeProvider: AiProviderIdSchema.optional(),
   activeModel: z.string().trim().min(1).max(100).optional(),
   reasoningEffort: ReasoningEffortSchema.optional(),
   responseStyle: ResponseStyleSchema.optional(),

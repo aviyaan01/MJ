@@ -1,11 +1,13 @@
 import {
   DEFAULT_BUDGET_SETTINGS,
+  type AiProviderId,
   type BudgetSettings,
   type LanguageMode,
   type PublicSettingsDTO,
   type ReasoningEffort,
   type ResponseStyle,
 } from '@mj/shared';
+import type { ProviderRouterClient } from '@mj/ai';
 import type { MjDatabaseRepository } from '@mj/database';
 import type { ServerConfig } from './config.js';
 
@@ -20,6 +22,7 @@ const DEFAULT_AVAILABLE_VOICES = [
 ];
 
 export interface PersistedSettingsPatch {
+  activeProvider?: AiProviderId;
   activeModel?: string;
   reasoningEffort?: ReasoningEffort;
   responseStyle?: ResponseStyle;
@@ -46,6 +49,7 @@ export class RuntimeSettingsStore {
   constructor(
     private readonly repo: MjDatabaseRepository,
     private readonly config: ServerConfig,
+    private readonly providerRouter?: ProviderRouterClient,
   ) {}
 
   private async loadSavedPatch(): Promise<PersistedSettingsPatch> {
@@ -59,18 +63,39 @@ export class RuntimeSettingsStore {
   }
 
   public async getPublicSettings(): Promise<PublicSettingsDTO> {
+    await this.providerRouter?.refreshLocalOllamaModels(false);
     const saved = await this.loadSavedPatch();
+    const providers = this.providerRouter?.listProviderCatalog() ?? [];
+    const activeProvider = saved.activeProvider ?? this.config.aiProviders.defaultProvider;
 
-    const activeModel = saved.activeModel?.trim() || this.config.xaiTextModel;
-    const availableModels = Array.from(new Set([activeModel, ...this.config.availableModels]));
+    const configuredProviderModels = providers
+      .filter((p) => p.configured)
+      .flatMap((p) => p.models);
+
+    const activeModel =
+      saved.activeModel?.trim() ||
+      (activeProvider !== 'auto'
+        ? providers.find((p) => p.id === activeProvider)?.defaultModel
+        : undefined) ||
+      this.config.xaiTextModel;
+
+    const availableModels = Array.from(
+      new Set([activeModel, ...configuredProviderModels, ...this.config.availableModels]),
+    );
 
     const voiceModel = saved.voice?.voiceModel?.trim() || this.config.xaiVoiceModel;
     const availableVoiceModels = Array.from(
-      new Set([voiceModel, ...this.config.availableVoiceModels]),
+      new Set([voiceModel, 'free-browser-voice', ...this.config.availableVoiceModels]),
     );
+
+    const anyProviderConfigured = this.providerRouter
+      ? this.providerRouter.hasAnyConfiguredProvider()
+      : this.config.apiKeyConfigured;
 
     return {
       assistantName: 'MJ Assistant',
+      activeProvider,
+      ...(providers.length > 0 ? { providers } : {}),
       activeModel,
       availableModels,
       reasoningEffort: saved.reasoningEffort ?? this.config.xaiReasoningEffort,
@@ -81,7 +106,7 @@ export class RuntimeSettingsStore {
       reducedMotionOverride: saved.reducedMotionOverride ?? 'system',
       compactDensity: saved.compactDensity ?? false,
       apiBaseHost: this.config.xaiBaseHost,
-      apiKeyConfigured: this.config.apiKeyConfigured,
+      apiKeyConfigured: anyProviderConfigured,
       appEnv: this.config.appEnv,
       budget: {
         ...DEFAULT_BUDGET_SETTINGS,

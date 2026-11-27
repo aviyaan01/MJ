@@ -8,6 +8,7 @@ import {
   float32ToPcm16Base64,
   pcm16Base64ToFloat32,
   resampleFloat32,
+  toVoiceAppError,
 } from '@mj/voice';
 import {
   buildMjVoiceInstructions,
@@ -179,5 +180,20 @@ describe('Voice Instructions & Ephemeral Secret Client (Section 03 & 05)', () =>
       code: ErrorCodes.VOICE_SERVICE_UNAVAILABLE,
       message: 'service unavailable',
     });
+
+    // Preserves ApiClientError structured payload (INSUFFICIENT_CREDITS / INVALID_API_KEY)
+    // instead of masking it as generic "service unavailable" in VoiceStateBar
+    const apiClientLikeErr = Object.assign(new Error('xAI account e credit nai.'), {
+      payload: {
+        code: ErrorCodes.INSUFFICIENT_CREDITS,
+        category: 'api' as const,
+        statusCode: 402,
+        message: 'xAI account e credit nai. console.x.ai te billing check koro.',
+        retryable: false,
+      },
+    });
+    const preserved = toVoiceAppError(apiClientLikeErr);
+    expect(preserved.code).toBe(ErrorCodes.INSUFFICIENT_CREDITS);
+    expect(preserved.message).toBe('xAI account e credit nai. console.x.ai te billing check koro.');
   });
 });

@@ -20,6 +20,7 @@ import {
   fetchAvailableVoices,
   synthesizeSpeech,
   transcribeSpeech,
+  transcribeSpeechWithGroqFree,
   type EphemeralSecretResult,
   type SttTranscriptionResult,
   type TtsSynthesisResult,
@@ -75,10 +76,14 @@ const SttBodySchema = z.object({
   durationSeconds: z.number().min(0).max(86400).optional(),
 });
 
-export function createDefaultVoiceGateway(config: ServerConfig): VoiceGateway {
+export function createDefaultVoiceGateway(
+  config: ServerConfig,
+  fetchImpl?: typeof fetch,
+): VoiceGateway {
   const apiConfig = {
     apiKey: config.xaiApiKey,
     baseUrl: config.xaiBaseUrl,
+    ...(fetchImpl ? { fetchImpl } : {}),
   };
 
   return {
@@ -86,7 +91,40 @@ export function createDefaultVoiceGateway(config: ServerConfig): VoiceGateway {
       createRealtimeClientSecret(apiConfig, expiresAfterSeconds),
     synthesizeSpeech: (params) => synthesizeSpeech(apiConfig, params),
     listVoices: () => fetchAvailableVoices(apiConfig),
-    transcribeSpeech: (params) => transcribeSpeech(apiConfig, params),
+    transcribeSpeech: async (params) => {
+      const groqKey = config.aiProviders.groq.apiKey;
+      if (!config.apiKeyConfigured && groqKey) {
+        return transcribeSpeechWithGroqFree(
+          {
+            apiKey: groqKey,
+            baseUrl: config.aiProviders.groq.baseUrl,
+            ...(fetchImpl ? { fetchImpl } : {}),
+          },
+          params,
+        );
+      }
+      try {
+        return await transcribeSpeech(apiConfig, params);
+      } catch (err) {
+        if (
+          groqKey &&
+          err instanceof AppError &&
+          (err.code === ErrorCodes.INSUFFICIENT_CREDITS ||
+            err.code === ErrorCodes.INVALID_API_KEY ||
+            err.code === ErrorCodes.UNAUTHORIZED)
+        ) {
+          return transcribeSpeechWithGroqFree(
+            {
+              apiKey: groqKey,
+              baseUrl: config.aiProviders.groq.baseUrl,
+              ...(fetchImpl ? { fetchImpl } : {}),
+            },
+            params,
+          );
+        }
+        throw err;
+      }
+    },
   };
 }
 
@@ -361,7 +399,7 @@ export function registerVoiceRoutes(
         });
       }
 
-      if (!deps.config.apiKeyConfigured) {
+      if (!deps.config.apiKeyConfigured && !deps.config.aiProviders.groq.apiKey) {
         throw new AppError({
           code: ErrorCodes.INVALID_API_KEY,
           category: 'api',

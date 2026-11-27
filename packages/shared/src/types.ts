@@ -1,4 +1,5 @@
 import type { StructuredErrorPayload } from './errors.js';
+import type { AiProviderId, ProviderInfoDTO } from './providers.js';
 
 export type MessageRole = 'user' | 'assistant';
 export type MessageStatus = 'streaming' | 'completed' | 'aborted' | 'error';
@@ -92,6 +93,8 @@ export interface VoiceSettings {
 
 export interface PublicSettingsDTO {
   assistantName: string;
+  activeProvider?: AiProviderId;
+  providers?: ProviderInfoDTO[];
   activeModel: string;
   availableModels: string[];
   reasoningEffort: ReasoningEffort;
@@ -209,6 +212,7 @@ export interface SystemHealthDTO {
   database: 'healthy' | 'unavailable';
   aiEngine: EngineStatus;
   voiceEngine: EngineStatus;
+  activeProvider?: AiProviderId;
   activeModel: string;
   activeVoiceModel: string;
   apiBaseHost: string;

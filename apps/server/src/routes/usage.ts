@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { AppError, ErrorCodes, type ConnectivityCheckDTO } from '@mj/shared';
-import type { XaiResponsesClient } from '@mj/ai';
+import type { ProviderRouterClient, XaiResponsesClient } from '@mj/ai';
 import type { MjDatabaseRepository } from '@mj/database';
 import type { AlertMonitor } from '../alerting.js';
 import type { ServerConfig } from '../config.js';
@@ -14,6 +14,7 @@ export function registerUsageRoutes(
     repo: MjDatabaseRepository;
     settingsStore: RuntimeSettingsStore;
     xaiClient: XaiResponsesClient;
+    providerRouter?: ProviderRouterClient;
     voiceGateway: VoiceGateway;
     alertMonitor: AlertMonitor;
     requireSession: (request: FastifyRequest) => Promise<void>;
@@ -42,8 +43,11 @@ export function registerUsageRoutes(
     async (request): Promise<ConnectivityCheckDTO> => {
       const settings = await deps.settingsStore.getPublicSettings();
       const checkedAt = new Date().toISOString();
+      const anyConfigured = deps.providerRouter
+        ? deps.providerRouter.hasAnyConfiguredProvider()
+        : deps.config.apiKeyConfigured;
 
-      if (!deps.config.apiKeyConfigured) {
+      if (!anyConfigured) {
         return {
           checkedAt,
           apiKeyConfigured: false,
@@ -61,18 +65,28 @@ export function registerUsageRoutes(
             message: 'API key invalid',
             retryable: false,
           },
-          note: 'Configure XAI_API_KEY in .env to enable live xAI connectivity.',
+          note: 'Configure XAI_API_KEY, a free-tier provider key (Groq/Gemini/OpenRouter/Cerebras), or run Ollama locally.',
         };
       }
 
       try {
-        const [{ modelIds, latencyMs }, voices] = await Promise.all([
-          deps.xaiClient.listAvailableModelIds(10000),
-          deps.voiceGateway.listVoices().catch(() => null),
-        ]);
+        const probeResult = deps.providerRouter
+          ? await deps.providerRouter.probeProvider(settings.activeProvider ?? 'auto', 10000)
+          : {
+              providerId: 'xai' as const,
+              providerName: 'xAI Grok',
+              modelChecked: settings.activeModel,
+              ...(await deps.xaiClient.listAvailableModelIds(10000)),
+            };
+        const voices =
+          deps.config.apiKeyConfigured
+            ? await deps.voiceGateway.listVoices().catch(() => null)
+            : null;
 
+        const targetModel =
+          probeResult.providerId === 'xai' ? settings.activeModel : probeResult.modelChecked;
         const modelAvailable =
-          modelIds.length > 0 ? modelIds.includes(settings.activeModel) : null;
+          probeResult.modelIds.length > 0 ? probeResult.modelIds.includes(targetModel) : null;
 
         void deps.alertMonitor.recordApiOutcome({ ok: true });
 
@@ -80,17 +94,17 @@ export function registerUsageRoutes(
           checkedAt,
           apiKeyConfigured: true,
           xaiReachable: true,
-          modelChecked: settings.activeModel,
+          modelChecked: targetModel,
           modelAvailable,
-          availableModelCount: modelIds.length,
+          availableModelCount: probeResult.modelIds.length,
           voiceModelChecked: settings.voice.voiceModel,
           availableVoiceCount: Array.isArray(voices) ? voices.length : null,
-          latencyMs,
+          latencyMs: probeResult.latencyMs,
           error: null,
           note:
             modelAvailable === false
-              ? `xAI API responded in ${latencyMs}ms, but "${settings.activeModel}" was not listed in /v1/models.`
-              : `xAI API responded in ${latencyMs}ms.`,
+              ? `${probeResult.providerName} responded in ${probeResult.latencyMs}ms, but "${targetModel}" was not listed in /models.`
+              : `${probeResult.providerName} responded cleanly in ${probeResult.latencyMs}ms.`,
         };
       } catch (err) {
         const appErr =

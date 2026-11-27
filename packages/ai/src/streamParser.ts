@@ -128,6 +128,94 @@ export function extractOutputTextFromResponse(responseObj: unknown): string {
   return chunks.join('');
 }
 
+export function extractOutputTextFromOpenAiChat(responseObj: unknown): string {
+  if (!isRecord(responseObj)) return '';
+  if (!Array.isArray(responseObj.choices) || responseObj.choices.length === 0) return '';
+  const firstChoice = responseObj.choices[0];
+  if (!isRecord(firstChoice)) return '';
+  const msg = isRecord(firstChoice.message) ? firstChoice.message : null;
+  if (!msg) return '';
+  if (typeof msg.content === 'string') return msg.content;
+  if (Array.isArray(msg.content)) {
+    return msg.content
+      .map((part) => (isRecord(part) && typeof part.text === 'string' ? part.text : ''))
+      .join('');
+  }
+  return '';
+}
+
+/**
+ * Translates an OpenAI-compatible `/v1/chat/completions` SSE frame
+ * (Groq, Gemini, OpenRouter, Cerebras, Mistral, GitHub Models, Ollama) into normalized events.
+ */
+export function parseOpenAiChatStreamFrame(frame: RawSseFrame): ParsedSseEvent[] {
+  if (frame.data === '[DONE]') {
+    return [{ type: 'completed' }];
+  }
+
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(frame.data) as Record<string, unknown>;
+  } catch {
+    return [];
+  }
+
+  if (isRecord(payload.error)) {
+    const errMsg =
+      typeof payload.error.message === 'string' ? payload.error.message : 'Upstream stream error.';
+    const rawCode = typeof payload.error.code === 'string' ? payload.error.code.toLowerCase() : '';
+    if (rawCode.includes('rate_limit')) {
+      throw new AppError({
+        code: ErrorCodes.RATE_LIMITED,
+        category: 'api',
+        statusCode: 429,
+        upstreamDiagnostic: errMsg,
+      });
+    }
+    throw new AppError({
+      code: ErrorCodes.UPSTREAM_ERROR,
+      category: 'api',
+      statusCode: 502,
+      message: 'service unavailable',
+      upstreamDiagnostic: errMsg,
+    });
+  }
+
+  const events: ParsedSseEvent[] = [];
+  const responseId = typeof payload.id === 'string' ? payload.id : undefined;
+  const usage = extractUsageFromResponse(payload.usage);
+
+  if (Array.isArray(payload.choices) && payload.choices.length > 0) {
+    const choice = payload.choices[0];
+    if (isRecord(choice)) {
+      const delta = isRecord(choice.delta) ? choice.delta : null;
+      if (delta) {
+        if (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0) {
+          events.push({ type: 'status', phase: 'reasoning', detail: 'Analyzing request…' });
+        }
+        if (typeof delta.content === 'string' && delta.content.length > 0) {
+          events.push({ type: 'delta', text: delta.content });
+        }
+      }
+      if (typeof choice.finish_reason === 'string' && choice.finish_reason.length > 0) {
+        events.push({
+          type: 'completed',
+          ...(responseId ? { responseId } : {}),
+          ...(usage ? { usage } : {}),
+        });
+      }
+    }
+  } else if (usage) {
+    events.push({
+      type: 'completed',
+      ...(responseId ? { responseId } : {}),
+      usage,
+    });
+  }
+
+  return events;
+}
+
 /**
  * Translates an xAI `/v1/responses` SSE JSON event into normalized stream events.
  */

@@ -272,3 +272,65 @@ export async function transcribeSpeech(
   const detectedLang = typeof json.language === 'string' ? json.language : undefined;
   return { text, ...(detectedLang ? { language: detectedLang } : {}) };
 }
+
+/**
+ * Free-tier Speech-to-Text via Groq's OpenAI-compatible `whisper-large-v3-turbo` endpoint.
+ */
+export async function transcribeSpeechWithGroqFree(
+  config: { apiKey: string; baseUrl?: string; fetchImpl?: typeof fetch },
+  params: {
+    audioBytes: Uint8Array;
+    filename: string;
+    mimeType: string;
+    languageMode?: LanguageMode;
+  },
+): Promise<SttTranscriptionResult> {
+  if (!config.apiKey.trim()) {
+    throw new AppError({
+      code: ErrorCodes.INVALID_API_KEY,
+      category: 'api',
+      statusCode: 502,
+    });
+  }
+
+  const fetchImpl = config.fetchImpl ?? fetch;
+  const base = normalizeBaseUrl(config.baseUrl ?? 'https://api.groq.com/openai/v1');
+  const form = new FormData();
+  form.append('model', 'whisper-large-v3-turbo');
+  const language = mapLanguageHint(params.languageMode);
+  if (language) {
+    form.append('language', language);
+  }
+  const blobCopy = new Uint8Array(params.audioBytes.byteLength);
+  blobCopy.set(params.audioBytes);
+  form.append(
+    'file',
+    new Blob([blobCopy], { type: params.mimeType || 'audio/webm' }),
+    params.filename || 'recording.webm',
+  );
+
+  let response: Response;
+  try {
+    response = await fetchImpl(`${base}/audio/transcriptions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${config.apiKey}` },
+      body: form,
+      signal: AbortSignal.timeout(30000),
+    });
+  } catch (err) {
+    throw normalizeToAppError(err, {
+      networkCode: ErrorCodes.VOICE_SERVICE_UNAVAILABLE,
+      networkCategory: 'voice',
+    });
+  }
+
+  if (!response.ok) {
+    throw await mapUpstreamHttpError(response);
+  }
+
+  const json = (await response.json()) as Record<string, unknown>;
+  return {
+    text: typeof json.text === 'string' ? json.text : '',
+    ...(typeof json.language === 'string' ? { language: json.language } : {}),
+  };
+}

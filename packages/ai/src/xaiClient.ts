@@ -7,8 +7,10 @@ import {
 } from '@mj/shared';
 import {
   SseFrameParser,
+  extractOutputTextFromOpenAiChat,
   extractOutputTextFromResponse,
   extractUsageFromResponse,
+  parseOpenAiChatStreamFrame,
   parseXaiResponsesStreamFrame,
 } from './streamParser.js';
 
@@ -23,6 +25,9 @@ export interface XaiClientConfig {
   defaultModel: string;
   timeoutMs: number;
   maxRetries?: number;
+  apiFormat?: 'xai-responses' | 'openai-chat';
+  allowEmptyApiKey?: boolean;
+  extraHeaders?: Record<string, string>;
   fetchImpl?: typeof fetch;
 }
 
@@ -58,17 +63,32 @@ export class XaiResponsesClient {
   private readonly defaultModel: string;
   private readonly defaultTimeoutMs: number;
   private readonly maxRetries: number;
+  private readonly apiFormat: 'xai-responses' | 'openai-chat';
+  private readonly allowEmptyApiKey: boolean;
+  private readonly extraHeaders: Record<string, string>;
   private readonly fetchImpl: typeof fetch;
 
   constructor(config: XaiClientConfig) {
     this.apiKey = config.apiKey;
+    this.apiFormat = config.apiFormat ?? 'xai-responses';
+    this.allowEmptyApiKey = config.allowEmptyApiKey ?? false;
+    this.extraHeaders = config.extraHeaders ?? {};
     const normalizedBase = config.baseUrl.replace(/\/+$/, '');
-    this.baseUrl = normalizedBase.endsWith('/responses')
-      ? normalizedBase.slice(0, -'/responses'.length)
-      : normalizedBase;
-    this.responsesUrl = normalizedBase.endsWith('/responses')
-      ? normalizedBase
-      : `${normalizedBase}/responses`;
+    if (this.apiFormat === 'openai-chat') {
+      this.baseUrl = normalizedBase.endsWith('/chat/completions')
+        ? normalizedBase.slice(0, -'/chat/completions'.length)
+        : normalizedBase;
+      this.responsesUrl = normalizedBase.endsWith('/chat/completions')
+        ? normalizedBase
+        : `${normalizedBase}/chat/completions`;
+    } else {
+      this.baseUrl = normalizedBase.endsWith('/responses')
+        ? normalizedBase.slice(0, -'/responses'.length)
+        : normalizedBase;
+      this.responsesUrl = normalizedBase.endsWith('/responses')
+        ? normalizedBase
+        : `${normalizedBase}/responses`;
+    }
     this.defaultModel = config.defaultModel;
     this.defaultTimeoutMs = config.timeoutMs;
     this.maxRetries = Math.max(0, Math.min(config.maxRetries ?? 2, 4));
@@ -76,13 +96,13 @@ export class XaiResponsesClient {
   }
 
   /**
-   * Queries `GET /v1/models` on demand to verify live xAI reachability and model availability
+   * Queries `GET /models` on demand to verify live reachability and model availability
    * without sending a paid completion request.
    */
   public async listAvailableModelIds(
     timeoutMs = 10000,
   ): Promise<{ modelIds: string[]; latencyMs: number }> {
-    if (!this.apiKey || this.apiKey.trim().length === 0) {
+    if (!this.allowEmptyApiKey && (!this.apiKey || this.apiKey.trim().length === 0)) {
       throw new AppError({
         code: ErrorCodes.INVALID_API_KEY,
         category: 'api',
@@ -92,11 +112,13 @@ export class XaiResponsesClient {
 
     const startedAt = Date.now();
     try {
+      const headers: Record<string, string> = { ...this.extraHeaders };
+      if (this.apiKey.trim().length > 0) {
+        headers.Authorization = `Bearer ${this.apiKey}`;
+      }
       const response = await this.fetchImpl(`${this.baseUrl}/models`, {
         method: 'GET',
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-        },
+        headers,
         signal: AbortSignal.timeout(timeoutMs),
       });
 
@@ -121,7 +143,7 @@ export class XaiResponsesClient {
   }
 
   public async createResponse(params: CreateResponseParams): Promise<CreateResponseResult> {
-    if (!this.apiKey || this.apiKey.trim().length === 0) {
+    if (!this.allowEmptyApiKey && (!this.apiKey || this.apiKey.trim().length === 0)) {
       throw new AppError({
         code: ErrorCodes.INVALID_API_KEY,
         category: 'api',
@@ -133,24 +155,32 @@ export class XaiResponsesClient {
     const timeoutMs = params.timeoutMs ?? this.defaultTimeoutMs;
     const startedAt = Date.now();
 
-    const bodyPayload: Record<string, unknown> = {
-      model,
-      instructions: params.instructions,
-      input: params.input.map((turn) => ({
-        role: turn.role,
-        content: turn.content,
-      })),
-      stream: params.stream,
-      store: false,
-    };
-
-    if (params.maxOutputTokens) {
-      bodyPayload.max_output_tokens = params.maxOutputTokens;
-    }
-
-    if (params.reasoningEffort) {
-      bodyPayload.reasoning = { effort: params.reasoningEffort };
-    }
+    const bodyPayload: Record<string, unknown> =
+      this.apiFormat === 'openai-chat'
+        ? {
+            model,
+            messages: [
+              ...(params.instructions ? [{ role: 'system', content: params.instructions }] : []),
+              ...params.input.map((turn) => ({
+                role: turn.role,
+                content: turn.content,
+              })),
+            ],
+            stream: params.stream,
+            ...(params.maxOutputTokens ? { max_tokens: params.maxOutputTokens } : {}),
+          }
+        : {
+            model,
+            instructions: params.instructions,
+            input: params.input.map((turn) => ({
+              role: turn.role,
+              content: turn.content,
+            })),
+            stream: params.stream,
+            store: false,
+            ...(params.maxOutputTokens ? { max_output_tokens: params.maxOutputTokens } : {}),
+            ...(params.reasoningEffort ? { reasoning: { effort: params.reasoningEffort } } : {}),
+          };
 
     let lastError: AppError | undefined;
 
@@ -246,13 +276,18 @@ export class XaiResponsesClient {
     try {
       params.onStatus?.('connecting', 'Connecting to Grok…');
 
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Accept: params.stream ? 'text/event-stream' : 'application/json',
+        ...this.extraHeaders,
+      };
+      if (this.apiKey.trim().length > 0) {
+        headers.Authorization = `Bearer ${this.apiKey}`;
+      }
+
       const response = await this.fetchImpl(this.responsesUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: params.stream ? 'text/event-stream' : 'application/json',
-          Authorization: `Bearer ${this.apiKey}`,
-        },
+        headers,
         body: JSON.stringify(bodyPayload),
         signal: attemptController.signal,
       });
@@ -263,7 +298,10 @@ export class XaiResponsesClient {
 
       if (!params.stream) {
         const json = (await response.json()) as Record<string, unknown>;
-        const text = extractOutputTextFromResponse(json);
+        const text =
+          this.apiFormat === 'openai-chat'
+            ? extractOutputTextFromOpenAiChat(json)
+            : extractOutputTextFromResponse(json);
         const usage = extractUsageFromResponse(json.usage) ?? emptyUsage();
         const responseId = typeof json.id === 'string' ? json.id : undefined;
 
@@ -284,10 +322,15 @@ export class XaiResponsesClient {
         throw new AppError({
           code: ErrorCodes.UPSTREAM_ERROR,
           category: 'api',
-          message: 'Grok returned an empty response stream.',
+          message: 'service unavailable',
           retryable: true,
         });
       }
+
+      const parseFrame =
+        this.apiFormat === 'openai-chat'
+          ? parseOpenAiChatStreamFrame
+          : parseXaiResponsesStreamFrame;
 
       const reader = response.body.getReader();
       const parser = new SseFrameParser();
@@ -304,7 +347,7 @@ export class XaiResponsesClient {
 
           const frames = parser.push(value);
           for (const frame of frames) {
-            const events = parseXaiResponsesStreamFrame(frame);
+            const events = parseFrame(frame);
             for (const ev of events) {
               if (ev.type === 'meta' && ev.responseId) {
                 responseId = ev.responseId;
@@ -331,7 +374,7 @@ export class XaiResponsesClient {
 
         const trailingFrames = parser.finish();
         for (const frame of trailingFrames) {
-          const events = parseXaiResponsesStreamFrame(frame);
+          const events = parseFrame(frame);
           for (const ev of events) {
             if (ev.type === 'delta') {
               streamedAnyDelta = true;

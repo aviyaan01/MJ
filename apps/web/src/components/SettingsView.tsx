@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { Panel, StatusPill } from '@mj/ui';
 import type {
+  AiProviderId,
   AuthSessionDTO,
   LanguageMode,
   PublicSettingsDTO,
@@ -53,6 +54,7 @@ export function SettingsView({
   const [errorText, setErrorText] = useState<string | null>(null);
 
   const [responseStyle, setResponseStyle] = useState<ResponseStyle>('balanced');
+  const [activeProvider, setActiveProvider] = useState<AiProviderId>('auto');
   const [activeModel, setActiveModel] = useState('grok-4.7');
   const [customModel, setCustomModel] = useState('');
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('medium');
@@ -83,6 +85,7 @@ export function SettingsView({
   useEffect(() => {
     if (!settings) return;
     setResponseStyle(settings.responseStyle);
+    setActiveProvider(settings.activeProvider ?? 'auto');
     setActiveModel(settings.activeModel);
     setReasoningEffort(settings.reasoningEffort);
     setMaxOutputTokens(settings.maxOutputTokens);
@@ -119,6 +122,7 @@ export function SettingsView({
       const voiceModelToSave = customVoiceModel.trim() || voiceModel;
       await onSaveSettings({
         responseStyle,
+        activeProvider,
         activeModel: modelToSave,
         reasoningEffort,
         maxOutputTokens: Number(maxOutputTokens),
@@ -268,12 +272,68 @@ export function SettingsView({
           {activeTab === 'model' && (
             <Panel className="space-y-5 p-6">
               <div>
-                <h2 className="text-base font-medium text-[#EDF3F8]">AI Model &amp; Responses API</h2>
+                <h2 className="text-base font-medium text-[#EDF3F8]">AI Providers, Models &amp; Free APIs</h2>
                 <p className="mt-1 text-xs" style={{ color: 'var(--mj-text-muted)' }}>
-                  Uses xAI <code className="font-mono">POST /v1/responses</code>. Re-verify model names at{' '}
-                  <code className="font-mono">docs.x.ai</code>.
+                  Supports zero-cost providers (Local Ollama, Groq, Google Gemini, OpenRouter :free, Cerebras, Mistral, GitHub Models) plus xAI Grok with automatic failover in <code className="font-mono">auto</code> mode.
                 </p>
               </div>
+
+              <div>
+                <label htmlFor="active-provider" className="mb-2 block text-xs font-medium text-[#DCE6EE]">
+                  Active AI Provider
+                </label>
+                <select
+                  id="active-provider"
+                  value={activeProvider}
+                  onChange={(e) => {
+                    const nextId = e.target.value as AiProviderId;
+                    setActiveProvider(nextId);
+                    if (nextId !== 'auto') {
+                      const matched = settings?.providers?.find((p) => p.id === nextId);
+                      if (matched?.defaultModel) {
+                        setActiveModel(matched.defaultModel);
+                      }
+                    }
+                  }}
+                  className="w-full rounded-xl px-3.5 py-2.5 text-sm text-[#EDF3F8] outline-none"
+                  style={{
+                    backgroundColor: '#07090E',
+                    border: '1px solid var(--mj-border-strong)',
+                  }}
+                >
+                  <option value="auto">Auto (Free Providers First + Automatic Failover)</option>
+                  {(settings?.providers ?? []).map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} — {p.configured ? (p.freeTier ? 'Ready ($0 Free)' : 'Configured') : 'Needs Key in .env'}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {settings?.providers && settings.providers.length > 0 && (
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {settings.providers.map((p) => (
+                    <div
+                      key={p.id}
+                      className="rounded-xl px-3.5 py-2.5 text-xs"
+                      style={{
+                        backgroundColor: '#07090E',
+                        border: '1px solid var(--mj-border-subtle)',
+                      }}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium text-[#EDF3F8]">{p.name}</span>
+                        <StatusPill tone={p.configured ? 'good' : 'neutral'}>
+                          {p.configured ? (p.freeTier ? 'Ready · Free' : 'Key Active') : 'Unconfigured'}
+                        </StatusPill>
+                      </div>
+                      <div className="mt-1 text-[11px]" style={{ color: 'var(--mj-text-subtle)' }}>
+                        {p.costNote}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
@@ -467,13 +527,19 @@ export function SettingsView({
                       border: '1px solid var(--mj-border-strong)',
                     }}
                   >
-                    {(settings?.voice.availableVoiceModels ?? ['grok-voice-latest', 'grok-voice-3.0']).map(
-                      (vm) => (
-                        <option key={vm} value={vm}>
-                          {vm}
-                        </option>
-                      ),
-                    )}
+                    {(
+                      settings?.voice.availableVoiceModels ?? [
+                        'free-browser-voice',
+                        'grok-voice-latest',
+                        'grok-voice-3.0',
+                      ]
+                    ).map((vm) => (
+                      <option key={vm} value={vm}>
+                        {vm === 'free-browser-voice'
+                          ? 'free-browser-voice (Browser Speech · $0.00 Free)'
+                          : vm}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
