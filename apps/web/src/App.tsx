@@ -118,8 +118,8 @@ export function App() {
   const voiceServiceRef = useRef<MjVoiceService | null>(null);
   const freeVoiceRef = useRef<FreeBrowserVoiceController | null>(null);
   const wakeListenerRef = useRef<WakeWordListener | null>(null);
-  const startVoiceRef = useRef<() => Promise<void>>(async () => {});
-  const freeVoiceFallbackRef = useRef<() => Promise<void>>(async () => {});
+  const startVoiceRef = useRef<() => Promise<void>>(async () => { });
+  const freeVoiceFallbackRef = useRef<() => Promise<void>>(async () => { });
   const permissionsRef = useRef<PermissionsStateDTO>(DEFAULT_PERMISSIONS_STATE);
   const activeConversationRef = useRef<ConversationDTO | null>(null);
   const settingsRef = useRef<PublicSettingsDTO | null>(null);
@@ -333,12 +333,12 @@ export function App() {
         err instanceof ApiClientError
           ? err.payload
           : {
-              code: ErrorCodes.NETWORK_DISCONNECTED,
-              category: 'network',
-              statusCode: 503,
-              message: err instanceof Error ? err.message : 'Connectivity check failed.',
-              retryable: true,
-            };
+            code: ErrorCodes.NETWORK_DISCONNECTED,
+            category: 'network',
+            statusCode: 503,
+            message: err instanceof Error ? err.message : 'Connectivity check failed.',
+            retryable: true,
+          };
       setActiveError(payload);
     } finally {
       setCheckingConnectivity(false);
@@ -637,22 +637,22 @@ export function App() {
           setLatestHomeExchange((prev) =>
             prev
               ? {
-                  ...prev,
-                  assistantMessage: prev.assistantMessage
-                    ? {
-                        ...prev.assistantMessage,
-                        content: prev.assistantMessage.content + event.text,
-                      }
-                    : {
-                        id: realAssistantId,
-                        conversationId: options.conversationId,
-                        role: 'assistant',
-                        content: event.text,
-                        channel: 'text',
-                        status: 'streaming',
-                        createdAt: new Date().toISOString(),
-                      },
-                }
+                ...prev,
+                assistantMessage: prev.assistantMessage
+                  ? {
+                    ...prev.assistantMessage,
+                    content: prev.assistantMessage.content + event.text,
+                  }
+                  : {
+                    id: realAssistantId,
+                    conversationId: options.conversationId,
+                    role: 'assistant',
+                    content: event.text,
+                    channel: 'text',
+                    status: 'streaming',
+                    createdAt: new Date().toISOString(),
+                  },
+              }
               : prev,
           );
         }
@@ -745,12 +745,12 @@ export function App() {
         err instanceof ApiClientError
           ? err.payload
           : {
-              code: ErrorCodes.INTERNAL_ERROR,
-              category: 'internal',
-              statusCode: 500,
-              message: err instanceof Error ? err.message : 'Unexpected failure.',
-              retryable: true,
-            };
+            code: ErrorCodes.INTERNAL_ERROR,
+            category: 'internal',
+            statusCode: 500,
+            message: err instanceof Error ? err.message : 'Unexpected failure.',
+            retryable: true,
+          };
 
       setStreamingState('error');
       setStreamStatusDetail('Error encountered');
@@ -811,12 +811,12 @@ export function App() {
         err instanceof ApiClientError
           ? err.payload
           : {
-              code: ErrorCodes.NETWORK_DISCONNECTED,
-              category: 'network' as const,
-              statusCode: 503,
-              message: 'Could not start conversation. Check server connection.',
-              retryable: true,
-            };
+            code: ErrorCodes.NETWORK_DISCONNECTED,
+            category: 'network' as const,
+            statusCode: 503,
+            message: 'Could not start conversation. Check server connection.',
+            retryable: true,
+          };
       setActiveError(payload);
       setStreamingState('error');
     }
@@ -877,7 +877,7 @@ export function App() {
           detail: 'Permission toggled OFF in Privacy Center.',
         })
         .then(() => refreshAuditLogs())
-        .catch(() => {});
+        .catch(() => { });
       return;
     }
 
@@ -1146,12 +1146,12 @@ export function App() {
           err instanceof ApiClientError
             ? err.payload
             : {
-                code: ErrorCodes.PERMISSION_DENIED,
-                category: 'desktop',
-                statusCode: 403,
-                message: err instanceof Error ? err.message : 'Shortcut trigger blocked.',
-                retryable: false,
-              };
+              code: ErrorCodes.PERMISSION_DENIED,
+              category: 'desktop',
+              statusCode: 403,
+              message: err instanceof Error ? err.message : 'Shortcut trigger blocked.',
+              retryable: false,
+            };
         setActiveError(payload);
         void refreshAuditLogs();
       });
@@ -1183,7 +1183,7 @@ export function App() {
               detail: 'microphoneAccess or voiceSessionAccess is OFF.',
             })
             .then(() => refreshAuditLogs())
-            .catch(() => {});
+            .catch(() => { });
           return;
         }
         void mjApi
@@ -1195,7 +1195,7 @@ export function App() {
             source: 'web',
           })
           .then(() => refreshAuditLogs())
-          .catch(() => {});
+          .catch(() => { });
         void startVoiceRef.current();
       },
       (status) => {
