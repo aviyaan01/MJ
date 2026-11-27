@@ -160,10 +160,34 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
   }
   const passcodeRequired = accessPasscode.length > 0;
 
-  const corsOrigins = (env.CORS_ORIGIN ?? 'http://localhost:5173')
+  const parsedCorsOrigins = (env.CORS_ORIGIN ?? 'http://localhost:5173')
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);
+
+  // In local dev/test, browsers accessing Vite via http://127.0.0.1:5173 vs http://localhost:5173
+  // send distinct Origin headers for the same local Vite instance; keep production strictly exact.
+  const corsOrigins =
+    appEnv === 'production'
+      ? parsedCorsOrigins
+      : Array.from(
+          new Set(
+            parsedCorsOrigins.flatMap((origin) => {
+              try {
+                const u = new URL(origin);
+                if (u.hostname === 'localhost') {
+                  return [origin, `${u.protocol}//127.0.0.1${u.port ? `:${u.port}` : ''}`];
+                }
+                if (u.hostname === '127.0.0.1') {
+                  return [origin, `${u.protocol}//localhost${u.port ? `:${u.port}` : ''}`];
+                }
+              } catch {
+                // ignore malformed origin; preserve verbatim
+              }
+              return [origin];
+            }),
+          ),
+        );
 
   const rawEffort = (env.XAI_REASONING_EFFORT ?? 'medium').trim().toLowerCase();
   const xaiReasoningEffort: ReasoningEffort =
