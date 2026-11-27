@@ -24,10 +24,8 @@ import {
 } from '@mj/shared';
 import { MjVoiceService, VOICE_STATE_META } from '@mj/voice';
 import { ApiClientError, mjApi } from './api/client.js';
-import { HomeDashboard } from './components/HomeDashboard.js';
 import { MicActiveBanner } from './components/MicActiveBanner.js';
 import { Sidebar, type ActiveNavTab } from './components/Sidebar.js';
-import { UnlockGate } from './components/UnlockGate.js';
 import {
   isTauriDesktop,
   syncTauriMicTray,
@@ -45,6 +43,12 @@ import {
   type FreeBrowserVoiceController,
 } from './voice/freeBrowserVoice.js';
 
+const HomeDashboard = lazy(() =>
+  import('./components/HomeDashboard.js').then((m) => ({ default: m.HomeDashboard })),
+);
+const UnlockGate = lazy(() =>
+  import('./components/UnlockGate.js').then((m) => ({ default: m.UnlockGate })),
+);
 const ChatWorkspace = lazy(() =>
   import('./components/ChatWorkspace.js').then((m) => ({ default: m.ChatWorkspace })),
 );
@@ -1347,7 +1351,20 @@ export function App() {
   }
 
   if (session && !session.authenticated && session.passcodeRequired) {
-    return <UnlockGate onLogin={handleLogin} errorMessage={authError} />;
+    return (
+      <Suspense
+        fallback={
+          <div
+            className="grid min-h-screen place-items-center text-sm"
+            style={{ color: 'var(--mj-text-muted)' }}
+          >
+            Loading MJ Assistant…
+          </div>
+        }
+      >
+        <UnlockGate onLogin={handleLogin} errorMessage={authError} />
+      </Suspense>
+    );
   }
 
   return (
@@ -1370,45 +1387,6 @@ export function App() {
           onStopAllMic={() => void handleStopAllMic()}
         />
 
-        {activeTab === 'home' && (
-          <HomeDashboard
-            health={health}
-            settings={settings}
-            usage={usage}
-            conversations={conversations}
-            online={online}
-            interactionMode={interactionMode}
-            onChangeInteractionMode={setInteractionMode}
-            streamingState={streamingState}
-            streamStatusDetail={streamStatusDetail}
-            voiceState={voiceState}
-            voiceDetail={voiceDetail}
-            voiceMuted={voiceMuted}
-            voiceAudioLevel={voiceAudioLevel}
-            liveUserTranscript={liveUserTranscript}
-            liveAssistantTranscript={liveAssistantTranscript}
-            hasLastResponseToSpeak={hasLastResponseToSpeak}
-            latestHomeExchange={latestHomeExchange}
-            activeError={activeError}
-            onStartVoice={() => void handleStartVoice()}
-            onStopVoice={handleStopVoice}
-            onToggleMute={handleToggleMute}
-            onInterruptVoice={handleInterruptVoice}
-            onRepeatLastResponse={handleRepeatLastResponse}
-            onChangeLanguageMode={(mode) => void handleChangeLanguageMode(mode)}
-            onQuickSend={(prompt) => void sendMessageFromHome(prompt)}
-            onStopStream={handleStopStream}
-            onRetryLast={handleRetryLast}
-            onOpenConversation={(id) => {
-              void handleSelectConversation(id);
-              setActiveTab('chat');
-            }}
-            onNavigateChat={() => setActiveTab('chat')}
-            onNavigateUsage={() => setActiveTab('usage')}
-            onNavigateSettings={() => setActiveTab('settings')}
-          />
-        )}
-
         <Suspense
           fallback={
             <div
@@ -1419,6 +1397,44 @@ export function App() {
             </div>
           }
         >
+          {activeTab === 'home' && (
+            <HomeDashboard
+              health={health}
+              settings={settings}
+              usage={usage}
+              conversations={conversations}
+              online={online}
+              interactionMode={interactionMode}
+              onChangeInteractionMode={setInteractionMode}
+              streamingState={streamingState}
+              streamStatusDetail={streamStatusDetail}
+              voiceState={voiceState}
+              voiceDetail={voiceDetail}
+              voiceMuted={voiceMuted}
+              voiceAudioLevel={voiceAudioLevel}
+              liveUserTranscript={liveUserTranscript}
+              liveAssistantTranscript={liveAssistantTranscript}
+              hasLastResponseToSpeak={hasLastResponseToSpeak}
+              latestHomeExchange={latestHomeExchange}
+              activeError={activeError}
+              onStartVoice={() => void handleStartVoice()}
+              onStopVoice={handleStopVoice}
+              onToggleMute={handleToggleMute}
+              onInterruptVoice={handleInterruptVoice}
+              onRepeatLastResponse={handleRepeatLastResponse}
+              onChangeLanguageMode={(mode) => void handleChangeLanguageMode(mode)}
+              onQuickSend={(prompt) => void sendMessageFromHome(prompt)}
+              onStopStream={handleStopStream}
+              onRetryLast={handleRetryLast}
+              onOpenConversation={(id) => {
+                void handleSelectConversation(id);
+                setActiveTab('chat');
+              }}
+              onNavigateChat={() => setActiveTab('chat')}
+              onNavigateUsage={() => setActiveTab('usage')}
+              onNavigateSettings={() => setActiveTab('settings')}
+            />
+          )}
           {activeTab === 'chat' && (
             <ChatWorkspace
               conversations={conversations}
