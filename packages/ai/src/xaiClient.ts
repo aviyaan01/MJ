@@ -297,7 +297,7 @@ export class XaiResponsesClient {
     }
 
     try {
-      params.onStatus?.('connecting', 'Connecting to Grok…');
+      params.onStatus?.('connecting', 'Connecting to AI provider…');
 
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',

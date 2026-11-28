@@ -50,6 +50,7 @@ interface ChatWorkspaceProps {
   liveUserTranscript: string;
   liveAssistantTranscript: string;
   activeError: StructuredErrorPayload | null;
+  repeatErrorHint?: string | null;
   selectedProviderOverride?: string;
   onSelectProviderOverride?: (provider: string) => void;
   selectedModelOverride: string;
@@ -92,6 +93,7 @@ export function ChatWorkspace({
   liveUserTranscript,
   liveAssistantTranscript,
   activeError,
+  repeatErrorHint,
   selectedProviderOverride = settings?.activeProvider ?? 'auto',
   onSelectProviderOverride,
   selectedModelOverride,
@@ -958,19 +960,32 @@ export function ChatWorkspace({
                   </div>
                   <div className="text-xs text-[#FBE4E4]">{activeError.message}</div>
                 </div>
-                {activeError.retryable && (
-                  <button
-                    type="button"
-                    onClick={onRetryLast}
-                    className="inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition hover:bg-white/10"
+                {repeatErrorHint ? (
+                  <span
+                    className="rounded-xl px-3 py-1.5 text-[11px] font-medium"
                     style={{
-                      border: '1px solid rgba(240, 138, 138, 0.38)',
-                      color: '#FBE4E4',
+                      backgroundColor: 'rgba(227, 190, 126, 0.12)',
+                      border: '1px solid rgba(227, 190, 126, 0.32)',
+                      color: 'var(--mj-status-warn)',
                     }}
                   >
-                    <RefreshCw className="h-3.5 w-3.5" />
-                    Retry
-                  </button>
+                    {repeatErrorHint}
+                  </span>
+                ) : (
+                  activeError.retryable && (
+                    <button
+                      type="button"
+                      onClick={onRetryLast}
+                      className="inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition hover:bg-white/10"
+                      style={{
+                        border: '1px solid rgba(240, 138, 138, 0.38)',
+                        color: '#FBE4E4',
+                      }}
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      Retry
+                    </button>
+                  )
                 )}
               </div>
             )}

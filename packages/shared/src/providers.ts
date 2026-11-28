@@ -213,7 +213,12 @@ export function resolveProviderDisplay(input: {
     catalog?.defaultBaseUrl.replace(/^https?:\/\//, '').split('/')[0] ??
     'generativelanguage.googleapis.com';
   const hostLabel = input.apiBaseHost || hostFromCatalog;
-  const isFreeBrowserVoice = input.activeVoiceModel === 'free-browser-voice';
+  const voiceLower = (input.activeVoiceModel ?? '').trim().toLowerCase();
+  const isFreeBrowserVoice = voiceLower === 'free-browser-voice';
+  const isServerSttVoice =
+    voiceLower === 'server-stt' || voiceLower.includes('whisper');
+  const isExplicitGeminiVoice = voiceLower.startsWith('gemini-');
+  const isExplicitXaiVoice = voiceLower.startsWith('grok-');
 
   const shortLabels: Record<ConcreteAiProviderId, string> = {
     gemini: 'Google Gemini',
@@ -248,15 +253,23 @@ export function resolveProviderDisplay(input: {
 
   const voiceLiveLabel = isFreeBrowserVoice
     ? 'Free Browser Voice'
-    : resolved === 'xai'
-      ? 'Grok Realtime Voice'
-      : 'Google Gemini Live';
+    : isServerSttVoice
+      ? 'Server STT Transcription'
+      : isExplicitXaiVoice || (!isExplicitGeminiVoice && resolved === 'xai')
+        ? 'Grok Realtime Voice'
+        : isExplicitGeminiVoice || resolved === 'gemini'
+          ? 'Google Gemini Live'
+          : 'Free Browser Voice';
 
   const voiceEndpoint = isFreeBrowserVoice
-    ? 'Web Speech API / Groq Whisper'
-    : resolved === 'xai'
-      ? 'wss://api.x.ai/v1/realtime'
-      : 'wss://generativelanguage.googleapis.com (Gemini Live)';
+    ? 'Web Speech API / Server STT'
+    : isServerSttVoice
+      ? 'POST /api/voice/stt (Gemini / Groq Whisper)'
+      : isExplicitXaiVoice || (!isExplicitGeminiVoice && resolved === 'xai')
+        ? 'wss://api.x.ai/v1/realtime'
+        : isExplicitGeminiVoice || resolved === 'gemini'
+          ? 'wss://generativelanguage.googleapis.com (Gemini Live)'
+          : 'Web Speech API / Server STT';
 
   const missingKeyHints: Record<ConcreteAiProviderId, string> = {
     gemini: 'Set GEMINI_API_KEY (free from aistudio.google.com) in .env, or start local Ollama.',

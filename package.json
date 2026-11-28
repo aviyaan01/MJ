@@ -26,6 +26,7 @@
     "db:migrate": "npm run migrate --workspace=@mj/database",
     "db:backup": "tsx ./database/src/backupCli.ts",
     "db:restore": "tsx ./database/src/restoreCli.ts",
+    "setup:skills": "node scripts/setup-skills.mjs",
     "audit:deps": "npm audit --audit-level=moderate"
   },
   "devDependencies": {

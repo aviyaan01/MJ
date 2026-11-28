@@ -59,14 +59,19 @@ describe('XaiResponsesClient (Section 02 & Section 07)', () => {
     });
 
     const deltas: string[] = [];
+    const statuses: Array<{ phase: string; detail: string }> = [];
     const result = await client.createResponse({
       instructions: 'You are MJ Assistant.',
       input: [{ role: 'user', content: 'Hi MJ' }],
       reasoningEffort: 'medium',
       maxOutputTokens: 1024,
       stream: true,
+      onStatus: (phase, detail) => statuses.push({ phase, detail }),
       onDelta: (d) => deltas.push(d),
     });
+
+    expect(statuses.some((s) => s.phase === 'connecting' && s.detail === 'Connecting to AI provider…')).toBe(true);
+    expect(statuses.some((s) => s.detail.includes('Connecting to Grok'))).toBe(false);
 
     expect(capturedUrl).toBe('https://api.x.ai/v1/responses');
     expect(capturedHeaders.Authorization).toBe('Bearer xai-test-secret-key-123456');

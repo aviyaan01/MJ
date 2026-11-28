@@ -245,6 +245,7 @@ export interface VoiceClientSecretDTO {
   expiresAt: number;
   realtimeUrl: string;
   protocol?: 'gemini-live' | 'xai-realtime' | 'free-browser';
+  fallbackReason?: string;
   model: string;
   voice: string;
   languageMode: LanguageMode;

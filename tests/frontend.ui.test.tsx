@@ -489,4 +489,101 @@ describe('Frontend React Views & Responsive UI Coverage (Sections 16 & 17)', () 
     expect(settingsSource).toContain('dailyCapUsd: Number(dailyCapUsd)');
     expect(settingsSource).toContain('sttRatePerHourUsd: Number(sttRatePerHour)');
   });
+
+  it('reflects free-browser-voice and server STT in HomeDashboard subtitle and swaps Retry for troubleshooting hint on repeated error', () => {
+    const freeBrowserSettings: PublicSettingsDTO = {
+      ...mockSettings,
+      activeProvider: 'ollama',
+      activeModel: 'qwen2.5:7b',
+      apiBaseHost: '127.0.0.1:11434',
+      voice: {
+        ...mockSettings.voice,
+        voiceModel: 'free-browser-voice',
+      },
+    };
+
+    const freeBrowserHome = renderToStaticMarkup(
+      <HomeDashboard
+        health={mockHealth}
+        settings={freeBrowserSettings}
+        usage={mockUsage}
+        conversations={[]}
+        online={true}
+        interactionMode="voice"
+        onChangeInteractionMode={() => {}}
+        streamingState="idle"
+        streamStatusDetail="Standing by"
+        voiceState={VoiceStates.LISTENING}
+        voiceDetail="Listening (Free Browser Voice · en-US)…"
+        voiceMuted={false}
+        voiceAudioLevel={0.2}
+        liveUserTranscript=""
+        liveAssistantTranscript=""
+        hasLastResponseToSpeak={false}
+        latestHomeExchange={null}
+        activeError={null}
+        onStartVoice={() => {}}
+        onStopVoice={() => {}}
+        onToggleMute={() => {}}
+        onInterruptVoice={() => {}}
+        onRepeatLastResponse={() => {}}
+        onChangeLanguageMode={() => {}}
+        onQuickSend={() => {}}
+        onStopStream={() => {}}
+        onRetryLast={() => {}}
+        onOpenConversation={() => {}}
+        onNavigateChat={() => {}}
+        onNavigateUsage={() => {}}
+        onNavigateSettings={() => {}}
+      />,
+    );
+    expect(freeBrowserHome).toContain('Free Browser Voice.');
+    expect(freeBrowserHome).not.toContain('Speak naturally in English, বাংলা, or Banglish with Google Gemini Live.');
+
+    const serverSttErrorHome = renderToStaticMarkup(
+      <HomeDashboard
+        health={{ ...mockHealth, voiceEngine: 'degraded' }}
+        settings={freeBrowserSettings}
+        usage={mockUsage}
+        conversations={[]}
+        online={true}
+        interactionMode="voice"
+        onChangeInteractionMode={() => {}}
+        streamingState="idle"
+        streamStatusDetail="Standing by"
+        voiceState={VoiceStates.ERROR}
+        voiceDetail="Browser speech unavailable, using server transcription · Recording failed"
+        voiceMuted={false}
+        voiceAudioLevel={0}
+        liveUserTranscript=""
+        liveAssistantTranscript=""
+        hasLastResponseToSpeak={false}
+        latestHomeExchange={null}
+        activeError={{
+          code: 'VOICE_SERVICE_UNAVAILABLE',
+          category: 'voice',
+          statusCode: 503,
+          message: 'Upstream transcription failed.',
+          retryable: true,
+        }}
+        repeatErrorHint="Try Settings -> Voice, or check VPN/browser"
+        onStartVoice={() => {}}
+        onStopVoice={() => {}}
+        onToggleMute={() => {}}
+        onInterruptVoice={() => {}}
+        onRepeatLastResponse={() => {}}
+        onChangeLanguageMode={() => {}}
+        onQuickSend={() => {}}
+        onStopStream={() => {}}
+        onRetryLast={() => {}}
+        onOpenConversation={() => {}}
+        onNavigateChat={() => {}}
+        onNavigateUsage={() => {}}
+        onNavigateSettings={() => {}}
+      />,
+    );
+    expect(serverSttErrorHome).toContain('Server STT Transcription.');
+    expect(serverSttErrorHome).toContain('Try Settings -&gt; Voice, or check VPN/browser');
+    expect(serverSttErrorHome).not.toContain('>Retry</button>');
+  });
 });

@@ -68,14 +68,24 @@ export function speakWithBrowserSpeechSynthesis(
     options.onEnd?.();
     return false;
   }
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+  const UtteranceCtor =
+    typeof window !== 'undefined'
+      ? ((
+          window as unknown as {
+            SpeechSynthesisUtterance?: typeof SpeechSynthesisUtterance;
+          }
+        ).SpeechSynthesisUtterance ??
+        (typeof SpeechSynthesisUtterance !== 'undefined' ? SpeechSynthesisUtterance : null))
+      : null;
+
+  if (typeof window === 'undefined' || !('speechSynthesis' in window) || !UtteranceCtor) {
     options.onError?.('Browser speech synthesis is unavailable.');
     options.onEnd?.();
     return false;
   }
 
   window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(trimmed.slice(0, 1200));
+  const utterance = new UtteranceCtor(trimmed.slice(0, 1200));
   const hasBengaliScript = /[\u0980-\u09FF]/.test(trimmed);
   utterance.lang = hasBengaliScript || options.languageMode === 'bn' ? 'bn-BD' : 'en-US';
   utterance.volume = Math.max(0, Math.min(1, options.volume));
@@ -108,23 +118,74 @@ export interface FreeBrowserVoiceController {
   interrupt: () => void;
 }
 
+export type WebSpeechUnavailableReason = 'unsupported' | 'network' | 'service-not-allowed';
+
+/**
+ * Shared Browser SpeechSynthesis reply speaker used by both Web Speech and Server STT fallbacks.
+ */
+export function speakVoiceReply(
+  replyText: string,
+  options: {
+    volume: number;
+    speakingRate: number;
+    languageMode: LanguageMode;
+    voiceOutputEnabled: boolean;
+    onStateChange: (state: VoiceState, detail: string) => void;
+    onFinish: () => void;
+    isStopped?: () => boolean;
+    statusPrefix?: string;
+  },
+): boolean {
+  const prefix = options.statusPrefix ? `${options.statusPrefix} · ` : '';
+  const spoke = speakWithBrowserSpeechSynthesis(replyText, {
+    volume: options.volume,
+    speakingRate: options.speakingRate,
+    languageMode: options.languageMode,
+    voiceOutputEnabled: options.voiceOutputEnabled,
+    onStart: () => {
+      if (options.isStopped?.()) return;
+      options.onStateChange(
+        VoiceStates.SPEAKING,
+        `${prefix}Speaking via Free Browser TTS ($0.00)…`,
+      );
+    },
+    onEnd: () => {
+      if (!options.isStopped?.()) {
+        options.onStateChange(VoiceStates.IDLE, 'Ready');
+        options.onFinish();
+      }
+    },
+  });
+  if (!spoke && !options.isStopped?.()) {
+    options.onStateChange(VoiceStates.IDLE, 'Ready');
+    options.onFinish();
+  }
+  return spoke;
+}
+
 export function startFreeBrowserVoiceSession(params: {
   languageMode: LanguageMode;
   volume: number;
   speakingRate: number;
   voiceOutputEnabled: boolean;
+  statusPrefix?: string;
   onStateChange: (state: VoiceState, detail: string) => void;
   onTranscriptPreview: (text: string) => void;
   onSubmitTranscript: (text: string) => Promise<string>;
   onFinish: () => void;
   onErrorMessage: (msg: string) => void;
+  onUnavailable?: (reason: WebSpeechUnavailableReason, detail: string) => void;
 }): FreeBrowserVoiceController {
   const Ctor = getSpeechRecognitionCtor();
   if (!Ctor) {
-    params.onErrorMessage(
-      'Ei browser-e Free Speech Recognition (Web Speech API) support kore na. Chrome ba Edge use koro, othoba Settings -> Voice-e Gemini API key set koro.',
-    );
-    params.onFinish();
+    if (params.onUnavailable) {
+      params.onUnavailable('unsupported', 'Web Speech unavailable in this browser.');
+    } else {
+      params.onErrorMessage(
+        'Web Speech unavailable in this browser. Chrome or Edge supports Web Speech, or use Server STT.',
+      );
+      params.onFinish();
+    }
     return { stop: () => {}, interrupt: () => {} };
   }
 
@@ -142,9 +203,10 @@ export function startFreeBrowserVoiceSession(params: {
     recognition.continuous = false;
     recognition.maxAlternatives = 1;
 
+    const prefix = params.statusPrefix ? `${params.statusPrefix} · ` : '';
     params.onStateChange(
       VoiceStates.LISTENING,
-      `Listening (Free Browser Voice · ${activeLang} · $0.00)… Speak now`,
+      `${prefix}Listening (Free Browser Voice · ${activeLang} · $0.00)… Speak now`,
     );
 
     recognition.onresult = (event) => {
@@ -176,29 +238,15 @@ export function startFreeBrowserVoiceSession(params: {
         void (async () => {
           try {
             const replyText = await params.onSubmitTranscript(trimmed);
-            if (stopped) return;
-            const spoke = speakWithBrowserSpeechSynthesis(replyText, {
+            speakVoiceReply(replyText, {
               volume: params.volume,
               speakingRate: params.speakingRate,
               languageMode: params.languageMode,
               voiceOutputEnabled: params.voiceOutputEnabled,
-              onStart: () => {
-                params.onStateChange(
-                  VoiceStates.SPEAKING,
-                  'Speaking via Free Browser TTS ($0.00)…',
-                );
-              },
-              onEnd: () => {
-                if (!stopped) {
-                  params.onStateChange(VoiceStates.IDLE, 'Ready');
-                  params.onFinish();
-                }
-              },
+              onStateChange: params.onStateChange,
+              onFinish: params.onFinish,
+              isStopped: () => stopped,
             });
-            if (!spoke && !stopped) {
-              params.onStateChange(VoiceStates.IDLE, 'Ready');
-              params.onFinish();
-            }
           } catch (err) {
             if (!stopped) {
               params.onErrorMessage(
@@ -223,7 +271,22 @@ export function startFreeBrowserVoiceSession(params: {
         startRecognitionPass();
         return;
       }
-      if (errType === 'not-allowed' || errType === 'service-not-allowed') {
+      if (errType === 'network' || errType === 'service-not-allowed') {
+        handledFinal = true;
+        try {
+          recognition.abort();
+        } catch {
+          // ignore abort race
+        }
+        if (params.onUnavailable) {
+          params.onUnavailable(errType, `Web Speech unavailable (${errType}).`);
+        } else {
+          params.onErrorMessage(`Web Speech unavailable (${errType}).`);
+          params.onFinish();
+        }
+        return;
+      }
+      if (errType === 'not-allowed') {
         params.onErrorMessage('Microphone permission denied in browser.');
       } else if (errType === 'no-speech') {
         params.onStateChange(VoiceStates.IDLE, 'No speech detected.');

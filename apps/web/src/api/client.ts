@@ -37,6 +37,24 @@ export function resolveApiUrl(path: string): string {
   return API_BASE_URL ? `${API_BASE_URL}${path}` : path;
 }
 
+export interface SttTranscribeRequest {
+  audioBase64: string;
+  filename?: string;
+  mimeType?: string;
+  languageMode?: LanguageMode;
+  durationSeconds?: number;
+}
+
+export interface SttTranscribeResponse {
+  text: string;
+  language?: string;
+  modelUsed?: string;
+  isFree?: boolean;
+}
+
+const MAX_STT_BASE64_CHARS = 12_000_000;
+const MAX_STT_JSON_BODY_BYTES = 12 * 1024 * 1024;
+
 export class ApiClientError extends Error {
   public readonly payload: StructuredErrorPayload;
 
@@ -58,7 +76,10 @@ async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
         ...(init.headers ?? {}),
       },
     });
-  } catch {
+  } catch (err) {
+    if (init.signal?.aborted || (err instanceof Error && err.name === 'AbortError')) {
+      throw err;
+    }
     throw new ApiClientError({
       code: ErrorCodes.NETWORK_DISCONNECTED,
       category: 'network',
@@ -382,6 +403,45 @@ export const mjApi = {
     }
 
     return response.arrayBuffer();
+  },
+
+  transcribeSpeech: async (
+    input: SttTranscribeRequest,
+    signal?: AbortSignal,
+  ): Promise<SttTranscribeResponse> => {
+    if (!input.audioBase64 || input.audioBase64.length < 4) {
+      throw new ApiClientError({
+        code: ErrorCodes.VALIDATION_ERROR,
+        category: 'validation',
+        statusCode: 400,
+        message: 'Recorded audio is empty.',
+        retryable: true,
+      });
+    }
+    if (input.audioBase64.length > MAX_STT_BASE64_CHARS) {
+      throw new ApiClientError({
+        code: ErrorCodes.VALIDATION_ERROR,
+        category: 'validation',
+        statusCode: 413,
+        message: 'Recorded audio exceeds the 12 MB transcription limit.',
+        retryable: true,
+      });
+    }
+    const serialized = JSON.stringify(input);
+    if (new TextEncoder().encode(serialized).byteLength > MAX_STT_JSON_BODY_BYTES) {
+      throw new ApiClientError({
+        code: ErrorCodes.VALIDATION_ERROR,
+        category: 'validation',
+        statusCode: 413,
+        message: 'Transcription request exceeds the 12 MB server limit.',
+        retryable: true,
+      });
+    }
+    return requestJson<SttTranscribeResponse>('/api/voice/stt', {
+      method: 'POST',
+      body: serialized,
+      ...(signal ? { signal } : {}),
+    });
   },
 
   streamChat: (

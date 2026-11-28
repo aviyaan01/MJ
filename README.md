@@ -48,6 +48,10 @@ mj-assistant/
    ```bash
    npm install
    ```
+   - *(Optional, for Claude Code compatibility)* Create the `.claude/skills` link pointing to the canonical `.agents/skills` directory (`mklink /J` on Windows, symlink on Linux/macOS):
+     ```bash
+     npm run setup:skills
+     ```
 
 2. **Create `.env` from `.env.example`**:
    ```bash

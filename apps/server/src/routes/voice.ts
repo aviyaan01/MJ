@@ -32,6 +32,7 @@ import {
 import type { MjDatabaseRepository } from '@mj/database';
 import type { AlertMonitor } from '../alerting.js';
 import type { ServerConfig } from '../config.js';
+import type { VoiceHealthTracker } from './health.js';
 import type { PermissionsStore } from '../permissionsStore.js';
 import type { RuntimeSettingsStore } from '../settingsStore.js';
 
@@ -121,12 +122,13 @@ export function createDefaultVoiceGateway(
   const geminiIsFree = Boolean(geminiKey) && !config.aiProviders.gemini.paidTier;
   const preferXaiOnly = !freeOnly && config.aiProviders.defaultProvider === 'xai';
 
-  const makeFreeBrowserFallback = (): EphemeralSecretResult => ({
+  const makeFreeBrowserFallback = (fallbackReason?: string): EphemeralSecretResult => ({
     token: 'free-browser-voice',
     expiresAt: Math.floor(Date.now() / 1000) + 3600,
     protocol: 'free-browser',
     realtimeUrl: 'browser://free-speech',
     model: 'free-browser-voice',
+    ...(fallbackReason ? { fallbackReason } : {}),
   });
 
   return {
@@ -158,12 +160,19 @@ export function createDefaultVoiceGateway(
             realtimeUrl: config.geminiRealtimeUrl,
             model: liveModel,
           };
-        } catch {
-          return makeFreeBrowserFallback();
+        } catch (err) {
+          const safeMsg = sanitizeDiagnosticText(
+            err instanceof Error ? err.message : String(err),
+          );
+          return makeFreeBrowserFallback(`Gemini Live token creation failed: ${safeMsg}`);
         }
       }
 
-      return makeFreeBrowserFallback();
+      const unconfiguredReason =
+        geminiKey && freeOnly && config.aiProviders.gemini.paidTier
+          ? 'Gemini Paid Live tier is blocked while FREE_ONLY_MODE=true.'
+          : 'Gemini Live API key is not configured.';
+      return makeFreeBrowserFallback(unconfiguredReason);
     },
 
     synthesizeSpeech: async (params, options) => {
@@ -307,6 +316,7 @@ export function registerVoiceRoutes(
     settingsStore: RuntimeSettingsStore;
     permissionsStore: PermissionsStore;
     voiceGateway: VoiceGateway;
+    voiceTracker?: VoiceHealthTracker;
     alertMonitor?: AlertMonitor;
     requireSession: (request: FastifyRequest) => Promise<void>;
   },
@@ -331,6 +341,9 @@ export function registerVoiceRoutes(
     try {
       const value = await fn();
       void deps.alertMonitor?.recordApiOutcome({ ok: true });
+      if (meta.kind !== 'voice_realtime') {
+        deps.voiceTracker?.recordSuccess();
+      }
       return { value, latencyMs: Date.now() - startedAt };
     } catch (err) {
       const code = err instanceof AppError ? err.code : ErrorCodes.VOICE_SERVICE_UNAVAILABLE;
@@ -347,8 +360,10 @@ export function registerVoiceRoutes(
           statusCode: err instanceof AppError ? err.statusCode : 503,
           upstreamError,
         },
-        'xAI voice API error',
+        'Voice API error',
       );
+
+      deps.voiceTracker?.recordFailure(upstreamError);
 
       await deps.repo.recordUsageLog({
         conversationId: meta.conversationId,
@@ -446,6 +461,26 @@ export function registerVoiceRoutes(
         () => deps.voiceGateway.createClientSecret(300, targetVoiceModel),
       );
 
+      const safeFallbackReason = ephemeralSecret.fallbackReason
+        ? sanitizeDiagnosticText(ephemeralSecret.fallbackReason)
+        : undefined;
+
+      if (safeFallbackReason) {
+        request.log.warn(
+          {
+            reqId: request.id,
+            model: targetVoiceModel,
+            fallbackReason: safeFallbackReason,
+          },
+          'Realtime cloud voice unavailable; falling back to free browser voice',
+        );
+        if (safeFallbackReason.includes('failed')) {
+          deps.voiceTracker?.recordFailure(safeFallbackReason);
+        }
+      } else {
+        deps.voiceTracker?.recordSuccess();
+      }
+
       const instructions = buildMjVoiceInstructions({
         assistantName: settings.assistantName,
         responseStyle: settings.responseStyle,
@@ -466,6 +501,7 @@ export function registerVoiceRoutes(
         expiresAt: ephemeralSecret.expiresAt,
         realtimeUrl: resolvedRealtimeUrl,
         ...(ephemeralSecret.protocol ? { protocol: ephemeralSecret.protocol } : {}),
+        ...(safeFallbackReason ? { fallbackReason: safeFallbackReason } : {}),
         model: resolvedModel,
         voice,
         languageMode,
@@ -712,6 +748,11 @@ export function registerVoiceRoutes(
   app.post('/api/voice/usage', { preHandler: deps.requireSession }, async (request) => {
     const body = validateInput(RecordVoiceUsageSchema, request.body ?? {});
     const settings = await deps.settingsStore.getPublicSettings();
+    if (body.status === 'error') {
+      deps.voiceTracker?.recordFailure(body.errorCode ?? 'voice_session_error');
+    } else if (body.status === 'success') {
+      deps.voiceTracker?.recordSuccess();
+    }
     const isFree = isFreeVoiceModel(body.model, deps.config) || deps.config.freeOnlyMode;
     const estimatedCostUsd = isFree
       ? 0

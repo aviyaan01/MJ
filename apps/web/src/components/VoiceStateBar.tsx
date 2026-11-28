@@ -2,11 +2,28 @@ import { Mic, MicOff } from 'lucide-react';
 import { ALL_VOICE_STATES, VOICE_STATE_META } from '@mj/voice';
 import type { VoiceState } from '@mj/shared';
 
+export const REPEATED_ERROR_HINT = 'Try Settings -> Voice, or check VPN/browser';
+
+export function nextRepeatedErrorState(
+  prevSignature: string | null,
+  prevCount: number,
+  payload: { code: string; message: string },
+): { signature: string; count: number; hint: string | null } {
+  const signature = `${payload.code}:${payload.message.trim()}`;
+  const count = prevSignature === signature ? prevCount + 1 : 1;
+  return {
+    signature,
+    count,
+    hint: count >= 2 ? REPEATED_ERROR_HINT : null,
+  };
+}
+
 interface VoiceStateBarProps {
   currentState: VoiceState;
   detail: string;
   micActive: boolean;
   muted: boolean;
+  repeatErrorHint?: string | null;
 }
 
 /**
@@ -18,6 +35,7 @@ export function VoiceStateBar({
   detail,
   micActive,
   muted,
+  repeatErrorHint,
 }: VoiceStateBarProps) {
   const meta = VOICE_STATE_META[currentState];
 
@@ -38,7 +56,7 @@ export function VoiceStateBar({
             STATE {meta.stepOrder}/9
           </span>
           <span className="font-medium text-[#EDF3F8]">{meta.label}</span>
-          <span className="hidden sm:inline" style={{ color: 'var(--mj-text-muted)' }}>
+          <span className="inline" style={{ color: 'var(--mj-text-muted)' }}>
             — {detail || meta.description}
           </span>
         </div>
@@ -113,6 +131,20 @@ export function VoiceStateBar({
           );
         })}
       </div>
+
+      {repeatErrorHint && (
+        <div
+          role="status"
+          className="mt-2.5 rounded-lg px-2.5 py-1.5 text-[11px]"
+          style={{
+            backgroundColor: 'rgba(227, 190, 126, 0.1)',
+            border: '1px solid rgba(227, 190, 126, 0.28)',
+            color: 'var(--mj-status-warn)',
+          }}
+        >
+          {repeatErrorHint}
+        </div>
+      )}
     </div>
   );
 }

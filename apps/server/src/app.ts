@@ -22,7 +22,7 @@ import { ShortcutsStore } from './shortcutsStore.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerConversationRoutes } from './routes/conversations.js';
 import { registerDesktopRoutes } from './routes/desktop.js';
-import { HealthWatchdog, registerHealthRoutes } from './routes/health.js';
+import { HealthWatchdog, VoiceHealthTracker, registerHealthRoutes } from './routes/health.js';
 import { registerPrivacyRoutes } from './routes/privacy.js';
 import { registerSettingsRoutes } from './routes/settings.js';
 import { registerUsageRoutes } from './routes/usage.js';
@@ -37,6 +37,7 @@ export interface BuildServerOptions {
   xaiClient?: XaiResponsesClient;
   providerRouter?: ProviderRouterClient;
   voiceGateway?: VoiceGateway;
+  voiceTracker?: VoiceHealthTracker;
   alertMonitor?: AlertMonitor;
   watchdogIntervalMs?: number;
   dbHandle?: MjDatabaseHandle;
@@ -53,6 +54,7 @@ export interface MjServerContext {
   permissionsStore: PermissionsStore;
   alertMonitor: AlertMonitor;
   healthWatchdog: HealthWatchdog;
+  voiceTracker: VoiceHealthTracker;
   backupScheduler: DailyBackupScheduler;
   providerRouter: ProviderRouterClient;
 }
@@ -116,6 +118,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
   });
   healthWatchdog.start();
   const backupScheduler = new DailyBackupScheduler(dbHandle, config.backup, alertMonitor);
+  const voiceTracker = options.voiceTracker ?? new VoiceHealthTracker();
   const voiceGateway = options.voiceGateway ?? createDefaultVoiceGateway(config);
 
   const startedAtMs = Date.now();
@@ -225,6 +228,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
     startedAtMs,
     alertMonitor,
     providerRouter,
+    voiceTracker,
   });
   registerAuthRoutes(app, config);
   registerSettingsRoutes(app, { settingsStore, requireSession });
@@ -256,6 +260,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
     settingsStore,
     permissionsStore,
     voiceGateway,
+    voiceTracker,
     alertMonitor,
     requireSession,
   });
@@ -395,6 +400,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
     permissionsStore,
     alertMonitor,
     healthWatchdog,
+    voiceTracker,
     backupScheduler,
     providerRouter,
   };

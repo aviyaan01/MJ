@@ -62,6 +62,7 @@ interface HomeDashboardProps {
     assistantMessage: MessageDTO | null;
   } | null;
   activeError: StructuredErrorPayload | null;
+  repeatErrorHint?: string | null;
   conversations: ConversationDTO[];
   onStartVoice: () => void;
   onStopVoice: () => void;
@@ -131,6 +132,7 @@ export function HomeDashboard({
   hasLastResponseToSpeak,
   latestHomeExchange,
   activeError,
+  repeatErrorHint,
   onStartVoice,
   onStopVoice,
   onToggleMute,
@@ -334,10 +336,19 @@ export function HomeDashboard({
             </h2>
             <p className="mt-1.5 text-center text-xs sm:text-sm" style={{ color: 'var(--mj-text-muted)' }}>
               {(() => {
+                const detailLower = voiceDetail.toLowerCase();
+                const isServerStt =
+                  detailLower.includes('server transcription') ||
+                  detailLower.includes('server stt');
+                const effectiveVoiceModel = isServerStt
+                  ? 'server-stt'
+                  : (settings?.voice.voiceModel ??
+                    health?.activeVoiceModel ??
+                    'free-browser-voice');
                 const display = resolveProviderDisplay({
                   activeProvider: settings?.activeProvider ?? health?.activeProvider,
                   activeModel: settings?.activeModel ?? health?.activeModel,
-                  activeVoiceModel: settings?.voice.voiceModel ?? health?.activeVoiceModel,
+                  activeVoiceModel: effectiveVoiceModel,
                   apiBaseHost: settings?.apiBaseHost ?? health?.apiBaseHost,
                   providers: settings?.providers,
                 });
@@ -362,6 +373,7 @@ export function HomeDashboard({
               detail={voiceDetail}
               micActive={voiceActive}
               muted={voiceMuted}
+              repeatErrorHint={repeatErrorHint}
             />
 
             {/* Voice Interaction Controls (Section 05) */}
@@ -570,19 +582,45 @@ export function HomeDashboard({
                   </span>
                   <span style={{ color: '#FBE4E4' }}>{activeError.message}</span>
                 </div>
-                {activeError.retryable && (
-                  <button
-                    type="button"
-                    onClick={onRetryLast}
-                    className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition hover:bg-white/10"
-                    style={{
-                      border: '1px solid rgba(240, 138, 138, 0.35)',
-                      color: '#FBE4E4',
-                    }}
-                  >
-                    <RefreshCw className="h-3.5 w-3.5" />
-                    Retry
-                  </button>
+                {repeatErrorHint ? (
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="rounded-lg px-2.5 py-1.5 text-[11px] font-medium"
+                      style={{
+                        backgroundColor: 'rgba(227, 190, 126, 0.12)',
+                        border: '1px solid rgba(227, 190, 126, 0.32)',
+                        color: 'var(--mj-status-warn)',
+                      }}
+                    >
+                      {repeatErrorHint}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={onNavigateSettings}
+                      className="inline-flex items-center rounded-lg px-2.5 py-1.5 text-xs font-medium transition hover:bg-white/10"
+                      style={{
+                        border: '1px solid rgba(227, 190, 126, 0.38)',
+                        color: '#F5DFB5',
+                      }}
+                    >
+                      Settings
+                    </button>
+                  </div>
+                ) : (
+                  activeError.retryable && (
+                    <button
+                      type="button"
+                      onClick={onRetryLast}
+                      className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition hover:bg-white/10"
+                      style={{
+                        border: '1px solid rgba(240, 138, 138, 0.35)',
+                        color: '#FBE4E4',
+                      }}
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      Retry
+                    </button>
+                  )
                 )}
               </div>
             )}

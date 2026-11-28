@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -439,7 +440,7 @@ describe('Phase 4 Security, Reliability, Health & Repo Hygiene Verification', ()
     });
   });
 
-  it('maintains single-source skill folder junction and consistent Node >=22 constraint in package.json & README.md', () => {
+  it('keeps .agents/skills as the single tracked source, checks .claude/skills link only when present, and aligns Node >=22', () => {
     const rootDir = resolve(process.cwd());
     const agentsSkills = resolve(rootDir, '.agents', 'skills');
     const claudeSkills = resolve(rootDir, '.claude', 'skills');
@@ -447,14 +448,39 @@ describe('Phase 4 Security, Reliability, Health & Repo Hygiene Verification', ()
 
     expect(existsSync(agentsSkills)).toBe(true);
     expect(existsSync(staleAgentDir)).toBe(false);
-    expect(realpathSync(claudeSkills)).toBe(realpathSync(agentsSkills));
+
+    if (existsSync(claudeSkills)) {
+      expect(realpathSync(claudeSkills)).toBe(realpathSync(agentsSkills));
+    }
+
+    if (existsSync(resolve(rootDir, '.git'))) {
+      const duplicateTracked = execFileSync(
+        'git',
+        ['ls-files', '.claude/skills', 'agent'],
+        { cwd: rootDir, encoding: 'utf8' },
+      ).trim();
+      expect(duplicateTracked).toBe('');
+
+      const canonicalTracked = execFileSync(
+        'git',
+        ['ls-files', '.agents/skills'],
+        { cwd: rootDir, encoding: 'utf8' },
+      ).trim();
+      expect(canonicalTracked.length).toBeGreaterThan(0);
+    }
+
+    const gitignore = readFileSync(resolve(rootDir, '.gitignore'), 'utf8');
+    expect(gitignore).toContain('.claude/skills');
 
     const pkg = JSON.parse(readFileSync(resolve(rootDir, 'package.json'), 'utf8')) as {
       engines?: { node?: string };
+      scripts?: Record<string, string>;
     };
     expect(pkg.engines?.node).toBe('>=22');
+    expect(pkg.scripts?.['setup:skills']).toBe('node scripts/setup-skills.mjs');
 
     const readme = readFileSync(resolve(rootDir, 'README.md'), 'utf8');
     expect(readme).toContain('Node.js >= 22');
+    expect(readme).toContain('npm run setup:skills');
   });
 });

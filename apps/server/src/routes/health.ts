@@ -7,6 +7,45 @@ import type { AlertMonitor } from '../alerting.js';
 import type { ServerConfig } from '../config.js';
 import type { RuntimeSettingsStore } from '../settingsStore.js';
 
+export const VOICE_DEGRADED_WINDOW_MS = 10 * 60 * 1000;
+
+export interface VoiceOutcomeSnapshot {
+  ok: boolean;
+  timestampMs: number;
+  reason?: string;
+}
+
+/**
+ * Tracks the most recent real voice operation outcome in memory so `/api/health`
+ * reports `voiceEngine: 'degraded'` whenever a voice attempt failed within the last 10 minutes.
+ */
+export class VoiceHealthTracker {
+  private lastOutcome: VoiceOutcomeSnapshot | null = null;
+
+  constructor(private readonly nowFn: () => number = () => Date.now()) {}
+
+  public recordSuccess(): void {
+    this.lastOutcome = { ok: true, timestampMs: this.nowFn() };
+  }
+
+  public recordFailure(reason?: string): void {
+    this.lastOutcome = {
+      ok: false,
+      timestampMs: this.nowFn(),
+      ...(reason ? { reason } : {}),
+    };
+  }
+
+  public isDegraded(nowMs = this.nowFn()): boolean {
+    if (!this.lastOutcome || this.lastOutcome.ok) return false;
+    return nowMs - this.lastOutcome.timestampMs <= VOICE_DEGRADED_WINDOW_MS;
+  }
+
+  public getLastOutcome(): VoiceOutcomeSnapshot | null {
+    return this.lastOutcome;
+  }
+}
+
 export interface HealthRouteDeps {
   config: ServerConfig;
   dbHandle: MjDatabaseHandle;
@@ -14,6 +53,7 @@ export interface HealthRouteDeps {
   startedAtMs: number;
   alertMonitor?: AlertMonitor;
   providerRouter?: ProviderRouterClient;
+  voiceTracker?: VoiceHealthTracker;
 }
 
 export const DEFAULT_HEALTH_WATCHDOG_INTERVAL_MS = 60_000;
@@ -100,10 +140,12 @@ export function registerHealthRoutes(app: FastifyInstance, deps: HealthRouteDeps
       settings.voice.voiceModel === 'free-browser-voice' ||
       deps.config.freeOnlyMode;
 
+    const voiceRecentlyFailed = deps.voiceTracker?.isDegraded() ?? false;
+
     const voiceEngineState: SystemHealthDTO['voiceEngine'] =
       !(deps.config.freeOnlyMode ? freeVoiceReady : freeVoiceReady || deps.config.apiKeyConfigured)
         ? 'unconfigured'
-        : dbOk
+        : dbOk && !voiceRecentlyFailed
           ? 'ready'
           : 'degraded';
 

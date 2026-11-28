@@ -26,6 +26,7 @@ import { MjVoiceService, VOICE_STATE_META } from '@mj/voice';
 import { ApiClientError, mjApi } from './api/client.js';
 import { MicActiveBanner } from './components/MicActiveBanner.js';
 import { Sidebar, type ActiveNavTab } from './components/Sidebar.js';
+import { nextRepeatedErrorState } from './components/VoiceStateBar.js';
 import {
   isTauriDesktop,
   syncTauriMicTray,
@@ -37,11 +38,13 @@ import {
 } from './desktop/desktopBridge.js';
 import { WakeWordListener } from './voice/wakeWordListener.js';
 import {
-  isFreeBrowserVoiceSupported,
   speakWithBrowserSpeechSynthesis,
-  startFreeBrowserVoiceSession,
   type FreeBrowserVoiceController,
 } from './voice/freeBrowserVoice.js';
+import {
+  checkVoicePrivacyPermissions,
+  startResilientFreeVoiceSession,
+} from './voice/serverSttVoice.js';
 
 const HomeDashboard = lazy(() =>
   import('./components/HomeDashboard.js').then((m) => ({ default: m.HomeDashboard })),
@@ -113,6 +116,7 @@ export function App() {
   );
 
   const [activeError, setActiveError] = useState<StructuredErrorPayload | null>(null);
+  const [repeatErrorHint, setRepeatErrorHint] = useState<string | null>(null);
   const [lastRetryAction, setLastRetryAction] = useState<(() => void) | null>(null);
   const [latestHomeExchange, setLatestHomeExchange] = useState<{
     conversationId: string;
@@ -124,8 +128,13 @@ export function App() {
   const voiceServiceRef = useRef<MjVoiceService | null>(null);
   const freeVoiceRef = useRef<FreeBrowserVoiceController | null>(null);
   const wakeListenerRef = useRef<WakeWordListener | null>(null);
+  const webSpeechUnavailableRef = useRef(false);
+  const lastErrorSignatureRef = useRef<string | null>(null);
+  const consecutiveErrorCountRef = useRef(0);
   const startVoiceRef = useRef<() => Promise<void>>(async () => { });
-  const freeVoiceFallbackRef = useRef<() => Promise<void>>(async () => { });
+  const freeVoiceFallbackRef = useRef<
+    (options?: { preferServerStt?: boolean; notice?: string }) => Promise<void>
+  >(async () => { });
   const browserTtsFallbackRef = useRef<(text: string) => boolean>(() => false);
   const permissionsRef = useRef<PermissionsStateDTO>(DEFAULT_PERMISSIONS_STATE);
   const activeConversationRef = useRef<ConversationDTO | null>(null);
@@ -149,6 +158,29 @@ export function App() {
       voiceOutputEnabled: settings?.voice.voiceOutputEnabled ?? true,
     });
   }, [settings]);
+
+  const reportAppError = useCallback((payload: StructuredErrorPayload) => {
+    const next = nextRepeatedErrorState(
+      lastErrorSignatureRef.current,
+      consecutiveErrorCountRef.current,
+      payload,
+    );
+    lastErrorSignatureRef.current = next.signature;
+    consecutiveErrorCountRef.current = next.count;
+    setRepeatErrorHint(next.hint);
+    setActiveError(payload);
+  }, []);
+
+  const clearErrorBanner = useCallback(() => {
+    setActiveError(null);
+  }, []);
+
+  const resetErrorTracking = useCallback(() => {
+    lastErrorSignatureRef.current = null;
+    consecutiveErrorCountRef.current = 0;
+    setRepeatErrorHint(null);
+    setActiveError(null);
+  }, []);
 
   // Sync reduced motion preference to <html data-motion="...">
   useEffect(() => {
@@ -263,12 +295,12 @@ export function App() {
             }
           })();
         },
-        onFreeFallbackRequested: () => {
+        onFreeFallbackRequested: (secret) => {
           if (
             permissionsRef.current.microphoneAccess &&
             permissionsRef.current.voiceSessionAccess
           ) {
-            void freeVoiceFallbackRef.current();
+            void freeVoiceFallbackRef.current({ notice: secret.fallbackReason });
           }
         },
         onTtsFallbackRequested: (text) => browserTtsFallbackRef.current(text),
@@ -282,10 +314,10 @@ export function App() {
             permissionsRef.current.microphoneAccess &&
             permissionsRef.current.voiceSessionAccess
           ) {
-            void freeVoiceFallbackRef.current();
+            void freeVoiceFallbackRef.current({ notice: errPayload.message });
             return;
           }
-          setActiveError(errPayload);
+          reportAppError(errPayload);
         },
         onSessionEnded: (summary) => {
           void (async () => {
@@ -501,6 +533,8 @@ export function App() {
     wakeListenerRef.current?.stop();
     freeVoiceRef.current?.stop();
     freeVoiceRef.current = null;
+    webSpeechUnavailableRef.current = false;
+    resetErrorTracking();
     await voiceServiceRef.current?.stopSession('manual');
     const sess = await mjApi.logout();
     setSession(sess);
@@ -515,7 +549,7 @@ export function App() {
   };
 
   const handleSelectConversation = async (id: string) => {
-    setActiveError(null);
+    resetErrorTracking();
     const detail = await mjApi.getConversation(id);
     setActiveConversation(detail.conversation);
     setMessages(detail.messages);
@@ -527,7 +561,7 @@ export function App() {
   };
 
   const handleCreateConversation = async () => {
-    setActiveError(null);
+    resetErrorTracking();
     const { conversation } = await mjApi.createConversation({
       model: selectedModelOverride || settings?.activeModel,
     });
@@ -569,7 +603,7 @@ export function App() {
     const abortController = new AbortController();
     streamAbortRef.current = abortController;
 
-    setActiveError(null);
+    clearErrorBanner();
     setStreamingState('connecting');
     setStreamStatusDetail('Connecting to AI provider…');
 
@@ -748,6 +782,7 @@ export function App() {
           );
         }
         if (event.message.content) {
+          resetErrorTracking();
           finalAssistantText = event.message.content;
           voiceServiceRef.current?.setLastAssistantText(event.message.content);
           setHasLastResponseToSpeak(true);
@@ -762,7 +797,7 @@ export function App() {
       } else if (event.type === 'error') {
         setStreamingState('error');
         setStreamStatusDetail('Connection interrupted');
-        setActiveError(event.error);
+        reportAppError(event.error);
         if (previousMessagesSnapshot) {
           setMessages(previousMessagesSnapshot);
         } else if (event.partialMessage) {
@@ -833,7 +868,7 @@ export function App() {
 
       setStreamingState('error');
       setStreamStatusDetail('Error encountered');
-      setActiveError(payload);
+      reportAppError(payload);
 
       if (previousMessagesSnapshot) {
         setMessages(previousMessagesSnapshot);
@@ -900,7 +935,7 @@ export function App() {
             message: 'Could not start conversation. Check server connection.',
             retryable: true,
           };
-      setActiveError(payload);
+      reportAppError(payload);
       setStreamingState('error');
     }
   };
@@ -930,6 +965,8 @@ export function App() {
 
   const handleSaveSettings = async (patch: Record<string, unknown>) => {
     const updated = await mjApi.updateSettings(patch);
+    webSpeechUnavailableRef.current = false;
+    resetErrorTracking();
     setSettings(updated);
     setSelectedProviderOverride(updated.activeProvider ?? 'auto');
     setSelectedModelOverride(updated.activeModel);
@@ -951,31 +988,44 @@ export function App() {
     }
   };
 
-  const handleStartVoice = useCallback(async () => {
-    setActiveError(null);
-    const currentPerms = permissionsRef.current;
-    if (!currentPerms.microphoneAccess || !currentPerms.voiceSessionAccess) {
-      const blockedByMic = !currentPerms.microphoneAccess;
-      setActiveError({
-        code: ErrorCodes.PERMISSION_DENIED,
-        category: 'privacy',
-        statusCode: 403,
-        message: blockedByMic
-          ? 'Microphone access is disabled in Privacy & Permissions.'
-          : 'Realtime voice sessions are disabled in Privacy & Permissions.',
-        retryable: false,
-      });
+  const recordBlockedVoiceAudit = useCallback(
+    (
+      capability: 'microphoneAccess' | 'voiceSessionAccess' | 'externalWebServices',
+      target: string,
+      detail: string,
+    ) => {
       void mjApi
         .recordAuditLog({
-          capability: blockedByMic ? 'microphoneAccess' : 'voiceSessionAccess',
-          action: 'Blocked realtime voice session start',
-          target: 'realtime_voice',
+          capability,
+          action: 'Blocked voice session start',
+          target,
           outcome: 'denied',
           source: 'web',
-          detail: 'Permission toggled OFF in Privacy Center.',
+          detail,
         })
         .then(() => refreshAuditLogs())
         .catch(() => { });
+    },
+    [refreshAuditLogs],
+  );
+
+  const handleStartVoice = useCallback(async () => {
+    clearErrorBanner();
+    const currentPerms = permissionsRef.current;
+    const isBrowserMode = settingsRef.current?.voice.voiceModel === 'free-browser-voice';
+    const permErr = checkVoicePrivacyPermissions(currentPerms, {
+      requireExternalWebServices: !isBrowserMode || webSpeechUnavailableRef.current,
+    });
+    if (permErr) {
+      reportAppError(permErr);
+      setVoiceState(VoiceStates.ERROR);
+      setVoiceDetail(permErr.message);
+      const capability = !currentPerms.microphoneAccess
+        ? 'microphoneAccess'
+        : !currentPerms.voiceSessionAccess
+          ? 'voiceSessionAccess'
+          : 'externalWebServices';
+      recordBlockedVoiceAudit(capability, isBrowserMode ? 'free_voice' : 'realtime_voice', permErr.message);
       return;
     }
 
@@ -985,60 +1035,114 @@ export function App() {
     setLastRetryAction(() => () => {
       void startVoiceRef.current();
     });
-    if (settingsRef.current?.voice.voiceModel === 'free-browser-voice') {
-      await freeVoiceFallbackRef.current();
+    if (isBrowserMode) {
+      await freeVoiceFallbackRef.current({ preferServerStt: webSpeechUnavailableRef.current });
       return;
     }
     await voiceServiceRef.current?.startSession();
-  }, [ensureActiveConversationId, refreshAuditLogs]);
+  }, [clearErrorBanner, ensureActiveConversationId, recordBlockedVoiceAudit, reportAppError]);
 
-  const startFreeVoiceFallback = useCallback(async () => {
-    freeVoiceRef.current?.stop();
-    const convId = await ensureActiveConversationId();
-    setInteractionMode('voice');
-    setActiveError(null);
-    setLiveUserTranscript('');
-    setLiveAssistantTranscript('');
-
-    freeVoiceRef.current = startFreeBrowserVoiceSession({
-      languageMode: settingsRef.current?.voice.languageMode ?? 'auto',
-      volume: settingsRef.current?.voice.volume ?? 0.9,
-      speakingRate: settingsRef.current?.voice.speakingRate ?? 1.0,
-      voiceOutputEnabled: settingsRef.current?.voice.voiceOutputEnabled ?? true,
-      onStateChange: (state, detail) => {
-        setVoiceState(state);
-        setVoiceDetail(detail);
-      },
-      onTranscriptPreview: (text) => {
-        setLiveUserTranscript(text);
-      },
-      onSubmitTranscript: async (transcript) => {
-        setLiveUserTranscript(transcript);
-        const reply = await runStream({
-          mode: 'send',
-          conversationId: convId,
-          promptText: transcript,
-          skipAutoTts: true,
-        });
-        setLiveAssistantTranscript(reply);
-        return reply;
-      },
-      onFinish: () => {
-        freeVoiceRef.current = null;
-      },
-      onErrorMessage: (msg) => {
+  const startFreeVoiceFallback = useCallback(
+    async (options?: { preferServerStt?: boolean; notice?: string }) => {
+      freeVoiceRef.current?.stop();
+      const useServerStt = Boolean(options?.preferServerStt || webSpeechUnavailableRef.current);
+      const currentPerms = permissionsRef.current;
+      const permErr = checkVoicePrivacyPermissions(currentPerms, {
+        requireExternalWebServices: useServerStt,
+      });
+      if (permErr) {
         setVoiceState(VoiceStates.ERROR);
-        setVoiceDetail(msg);
-        setActiveError({
-          code: ErrorCodes.VOICE_SERVICE_UNAVAILABLE,
-          category: 'voice',
-          statusCode: 503,
-          message: msg,
-          retryable: true,
+        setVoiceDetail(permErr.message);
+        reportAppError(permErr);
+        const capability = !currentPerms.microphoneAccess
+          ? 'microphoneAccess'
+          : !currentPerms.voiceSessionAccess
+            ? 'voiceSessionAccess'
+            : 'externalWebServices';
+        recordBlockedVoiceAudit(capability, useServerStt ? 'server_stt' : 'free_voice', permErr.message);
+        return;
+      }
+
+      const convId = await ensureActiveConversationId();
+      setInteractionMode('voice');
+      clearErrorBanner();
+      setLiveUserTranscript('');
+      setLiveAssistantTranscript('');
+      setLastRetryAction(() => () => {
+        void freeVoiceFallbackRef.current({
+          preferServerStt: webSpeechUnavailableRef.current,
+          ...(options?.notice ? { notice: options.notice } : {}),
         });
-      },
-    });
-  }, [ensureActiveConversationId, runStream]);
+      });
+
+      freeVoiceRef.current = startResilientFreeVoiceSession({
+        languageMode: settingsRef.current?.voice.languageMode ?? 'auto',
+        volume: settingsRef.current?.voice.volume ?? 0.9,
+        speakingRate: settingsRef.current?.voice.speakingRate ?? 1.0,
+        voiceOutputEnabled: settingsRef.current?.voice.voiceOutputEnabled ?? true,
+        preferServerStt: useServerStt,
+        initialNotice: options?.notice,
+        getPermissions: () => permissionsRef.current,
+        onNotice: (notice) => {
+          setVoiceDetail(notice);
+        },
+        onUseServerSttFallback: () => {
+          webSpeechUnavailableRef.current = true;
+          setLastRetryAction(() => () => {
+            void freeVoiceFallbackRef.current({ preferServerStt: true });
+          });
+        },
+        onAudioLevel: (lvl) => {
+          setVoiceAudioLevel(lvl);
+        },
+        onStateChange: (state, detail) => {
+          setVoiceState(state);
+          setVoiceDetail(detail);
+        },
+        onTranscriptPreview: (text) => {
+          setLiveUserTranscript(text);
+        },
+        onSubmitTranscript: async (transcript) => {
+          setLiveUserTranscript(transcript);
+          const reply = await runStream({
+            mode: 'send',
+            conversationId: convId,
+            promptText: transcript,
+            skipAutoTts: true,
+          });
+          resetErrorTracking();
+          setLiveAssistantTranscript(reply);
+          return reply;
+        },
+        onFinish: () => {
+          freeVoiceRef.current = null;
+          setVoiceAudioLevel(0);
+        },
+        onError: (msg, errPayload) => {
+          setVoiceState(VoiceStates.ERROR);
+          setVoiceDetail(msg);
+          const payload: StructuredErrorPayload = errPayload ?? {
+            code: ErrorCodes.VOICE_SERVICE_UNAVAILABLE,
+            category: 'voice',
+            statusCode: 503,
+            message: msg,
+            retryable: true,
+          };
+          reportAppError(payload);
+          if (payload.code === ErrorCodes.PERMISSION_DENIED) {
+            const p = permissionsRef.current;
+            const capability = !p.microphoneAccess
+              ? 'microphoneAccess'
+              : !p.voiceSessionAccess
+                ? 'voiceSessionAccess'
+                : 'externalWebServices';
+            recordBlockedVoiceAudit(capability, 'server_stt', payload.message);
+          }
+        },
+      });
+    },
+    [clearErrorBanner, ensureActiveConversationId, recordBlockedVoiceAudit, reportAppError, resetErrorTracking, runStream],
+  );
 
   useEffect(() => {
     freeVoiceFallbackRef.current = startFreeVoiceFallback;
@@ -1135,6 +1239,11 @@ export function App() {
         await voiceServiceRef.current?.stopSession('manual');
       }
       if (key === 'voiceSessionAccess' && !enabled) {
+        freeVoiceRef.current?.stop();
+        freeVoiceRef.current = null;
+        await voiceServiceRef.current?.stopSession('manual');
+      }
+      if (key === 'externalWebServices' && !enabled) {
         freeVoiceRef.current?.stop();
         freeVoiceRef.current = null;
         await voiceServiceRef.current?.stopSession('manual');
@@ -1468,6 +1577,7 @@ export function App() {
               hasLastResponseToSpeak={hasLastResponseToSpeak}
               latestHomeExchange={latestHomeExchange}
               activeError={activeError}
+              repeatErrorHint={repeatErrorHint}
               onStartVoice={() => void handleStartVoice()}
               onStopVoice={handleStopVoice}
               onToggleMute={handleToggleMute}
@@ -1503,6 +1613,7 @@ export function App() {
               liveUserTranscript={liveUserTranscript}
               liveAssistantTranscript={liveAssistantTranscript}
               activeError={activeError}
+              repeatErrorHint={repeatErrorHint}
               selectedProviderOverride={selectedProviderOverride}
               onSelectProviderOverride={handleSelectProviderOverride}
               selectedModelOverride={selectedModelOverride}

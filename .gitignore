@@ -32,3 +32,6 @@ Thumbs.db
 # Coverage & test artifacts
 coverage/
 .vitest/
+
+# Local compatibility junction/symlink to .agents/skills (created via `npm run setup:skills`)
+.claude/skills

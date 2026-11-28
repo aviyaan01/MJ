@@ -13,6 +13,7 @@ export interface EphemeralSecretResult {
   protocol?: 'gemini-live' | 'xai-realtime' | 'free-browser';
   realtimeUrl?: string;
   model?: string;
+  fallbackReason?: string;
 }
 
 export interface TtsSynthesisResult {
