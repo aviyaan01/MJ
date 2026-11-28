@@ -28,6 +28,7 @@ import {
   transcribeSpeechWithGroqFree,
   type EphemeralSecretResult,
   type SttTranscriptionResult,
+  type ToolRegistry,
   type TtsSynthesisResult,
 } from '@mj/ai';
 import type { MjDatabaseRepository } from '@mj/database';
@@ -333,6 +334,7 @@ export function registerVoiceRoutes(
     permissionsStore: PermissionsStore;
     voiceGateway: VoiceGateway;
     voiceTracker?: VoiceHealthTracker;
+    toolRegistry?: ToolRegistry;
     alertMonitor?: AlertMonitor;
     requireSession: (request: FastifyRequest) => Promise<void>;
   },
@@ -497,6 +499,12 @@ export function registerVoiceRoutes(
         deps.voiceTracker?.recordSuccess();
       }
 
+      const toolDeclarations =
+        permissions.toolCalling && deps.toolRegistry
+          ? deps.toolRegistry.toGeminiLiveFunctionDeclarations(permissions)
+          : [];
+      const toolsEnabled = Boolean(permissions.toolCalling && toolDeclarations.length > 0);
+
       const instructions = buildMjVoiceInstructions({
         assistantName: settings.assistantName,
         userName: settings.userName,
@@ -504,6 +512,7 @@ export function registerVoiceRoutes(
         responseStyle: settings.responseStyle,
         languageMode,
         contextTurns,
+        toolsEnabled,
       });
 
       const resolvedModel = ephemeralSecret.model ?? targetVoiceModel;
@@ -520,6 +529,8 @@ export function registerVoiceRoutes(
         realtimeUrl: resolvedRealtimeUrl,
         ...(ephemeralSecret.protocol ? { protocol: ephemeralSecret.protocol } : {}),
         ...(safeFallbackReason ? { fallbackReason: safeFallbackReason } : {}),
+        toolsEnabled,
+        ...(toolsEnabled ? { toolDeclarations } : {}),
         model: resolvedModel,
         voice,
         languageMode,

@@ -127,6 +127,11 @@ const CORE_PRIVACY_ROWS: Array<{
     title: 'External AI Web Services',
     description: 'Allow outbound requests to cloud AI providers (local Ollama on localhost stays enabled).',
   },
+  {
+    key: 'toolCalling',
+    title: 'AI Tool & Function Calling',
+    description: 'Default OFF. Allow Gemini chat and Gemini Live to call permitted read/action tools with audit logging and 20s confirmation.',
+  },
 ];
 
 export function PrivacyCenterView({

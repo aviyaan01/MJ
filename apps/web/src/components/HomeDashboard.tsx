@@ -30,6 +30,7 @@ import {
   type ConversationDTO,
   type LanguageMode,
   type MessageDTO,
+  type PendingToolConfirmationDTO,
   type PublicSettingsDTO,
   type StructuredErrorPayload,
   type SystemHealthDTO,
@@ -38,6 +39,7 @@ import {
 } from '@mj/shared';
 import { isTauriDesktop } from '../desktop/desktopBridge.js';
 import { MarkdownMessage } from './MarkdownMessage.js';
+import { ToolConfirmationBanner } from './ToolConfirmationBanner.js';
 import { VoiceStateBar } from './VoiceStateBar.js';
 
 interface HomeDashboardProps {
@@ -63,6 +65,10 @@ interface HomeDashboardProps {
   } | null;
   activeError: StructuredErrorPayload | null;
   repeatErrorHint?: string | null;
+  pendingConfirmation?: PendingToolConfirmationDTO | null;
+  confirmationBusy?: boolean;
+  onConfirmToolAction?: () => void;
+  onCancelToolAction?: () => void;
   conversations: ConversationDTO[];
   onStartVoice: () => void;
   onStopVoice: () => void;
@@ -135,6 +141,9 @@ export function HomeDashboard({
   latestHomeExchange,
   activeError,
   repeatErrorHint,
+  pendingConfirmation,
+  onConfirmToolAction,
+  onCancelToolAction,
   onStartVoice,
   onStopVoice,
   onToggleMute,
@@ -624,6 +633,17 @@ export function HomeDashboard({
                     </button>
                   )
                 )}
+              </div>
+            )}
+
+            {/* 20s Confirmation Prompt for Risky Tool Calls */}
+            {pendingConfirmation && onConfirmToolAction && onCancelToolAction && (
+              <div className="mt-4 w-full">
+                <ToolConfirmationBanner
+                  confirmation={pendingConfirmation}
+                  onConfirm={onConfirmToolAction}
+                  onCancel={onCancelToolAction}
+                />
               </div>
             )}
 

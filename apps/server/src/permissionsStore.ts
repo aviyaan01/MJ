@@ -47,6 +47,10 @@ export class PermissionsStore {
         saved.externalWebServices !== undefined
           ? Boolean(saved.externalWebServices)
           : DEFAULT_PERMISSIONS_STATE.externalWebServices,
+      toolCalling:
+        saved.toolCalling !== undefined
+          ? Boolean(saved.toolCalling)
+          : DEFAULT_PERMISSIONS_STATE.toolCalling,
       // Stage 3 categories stay locked OFF in Stage 4/5
       memoryAccess: false,
       optionalAutomation: false,

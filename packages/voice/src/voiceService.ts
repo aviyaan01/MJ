@@ -26,6 +26,18 @@ export interface VoiceAudioLevels {
   outputLevel: number;
 }
 
+export interface GeminiLiveToolCallItem {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+}
+
+export interface GeminiLiveToolResponseItem {
+  id: string;
+  name: string;
+  response: Record<string, unknown>;
+}
+
 export interface VoiceServiceCallbacks {
   fetchClientSecret: () => Promise<VoiceClientSecretDTO>;
   fetchTtsAudio?: (text: string, signal: AbortSignal) => Promise<ArrayBuffer>;
@@ -35,6 +47,8 @@ export interface VoiceServiceCallbacks {
   onUserTranscript?: (transcript: string) => void;
   onAssistantTranscriptDelta?: (delta: string) => void;
   onAssistantTranscriptDone?: (fullText: string) => void;
+  onToolCall?: (calls: GeminiLiveToolCallItem[]) => Promise<GeminiLiveToolResponseItem[]>;
+  onToolCallCancellation?: (ids: string[]) => void;
   onError?: (error: StructuredErrorPayload) => void;
   onFreeFallbackRequested?: (secret: VoiceClientSecretDTO) => void;
   onTtsFallbackRequested?: (text: string) => boolean;
@@ -61,10 +75,12 @@ export function buildGeminiLiveSetupPayload(params: {
   voiceId: string;
   instructions: string;
   sessionHandle?: string | null;
+  functionDeclarations?: Array<Record<string, unknown>>;
 }) {
   const modelResource = params.model.startsWith('models/')
     ? params.model
     : `models/${params.model}`;
+  const hasTools = Array.isArray(params.functionDeclarations) && params.functionDeclarations.length > 0;
   return {
     setup: {
       model: modelResource,
@@ -81,6 +97,11 @@ export function buildGeminiLiveSetupPayload(params: {
       systemInstruction: {
         parts: [{ text: params.instructions }],
       },
+      ...(hasTools
+        ? {
+            tools: [{ functionDeclarations: params.functionDeclarations }],
+          }
+        : {}),
       inputAudioTranscription: {},
       outputAudioTranscription: {},
       realtimeInputConfig: {
@@ -470,6 +491,9 @@ export class MjVoiceService {
           voiceId: secret.voice || this.options.voiceId,
           instructions: secret.instructions,
           sessionHandle: this.geminiSessionHandle,
+          ...(secret.toolsEnabled && secret.toolDeclarations?.length
+            ? { functionDeclarations: secret.toolDeclarations }
+            : {}),
         });
         socket.send(JSON.stringify(setupPayload));
       } else {
@@ -744,6 +768,30 @@ export class MjVoiceService {
       return;
     }
 
+    const cancellation =
+      payload.toolCallCancellation && typeof payload.toolCallCancellation === 'object'
+        ? (payload.toolCallCancellation as Record<string, unknown>)
+        : null;
+    if (cancellation && Array.isArray(cancellation.ids)) {
+      const ids = cancellation.ids.filter(
+        (id): id is string => typeof id === 'string' && id.trim().length > 0,
+      );
+      if (ids.length > 0) {
+        this.callbacks.onToolCallCancellation?.(ids);
+      }
+    }
+
+    const toolCall =
+      payload.toolCall && typeof payload.toolCall === 'object'
+        ? (payload.toolCall as Record<string, unknown>)
+        : null;
+    if (toolCall && Array.isArray(toolCall.functionCalls)) {
+      void this.processGeminiLiveToolCalls(
+        toolCall.functionCalls as Array<Record<string, unknown>>,
+        this.ws,
+      );
+    }
+
     const sc =
       payload.serverContent && typeof payload.serverContent === 'object'
         ? (payload.serverContent as Record<string, unknown>)
@@ -829,6 +877,73 @@ export class MjVoiceService {
         this.stateMachine.transition(VoiceStates.LISTENING);
       }
     }
+  }
+
+  private async processGeminiLiveToolCalls(
+    rawCalls: Array<Record<string, unknown>>,
+    originSocket: WebSocket | null,
+  ): Promise<void> {
+    const calls: GeminiLiveToolCallItem[] = rawCalls
+      .filter((c) => c && typeof c === 'object' && typeof c.name === 'string' && c.name.trim())
+      .map((c, idx) => ({
+        id:
+          typeof c.id === 'string' && c.id.trim().length > 0
+            ? c.id.trim()
+            : `live_call_${Date.now()}_${idx}`,
+        name: String(c.name).trim(),
+        args:
+          c.args && typeof c.args === 'object' && !Array.isArray(c.args)
+            ? (c.args as Record<string, unknown>)
+            : {},
+      }));
+
+    if (calls.length === 0) return;
+
+    if (originSocket && originSocket.readyState === WebSocket.OPEN) {
+      this.stateMachine.transition(
+        VoiceStates.PROCESSING,
+        `Running permitted tool: ${calls[0]!.name}…`,
+      );
+    }
+
+    let responses: GeminiLiveToolResponseItem[];
+    if (!this.callbacks.onToolCall) {
+      responses = calls.map((call) => ({
+        id: call.id,
+        name: call.name,
+        response: {
+          error: 'Tool execution handler is disabled.',
+        },
+      }));
+    } else {
+      try {
+        responses = await this.callbacks.onToolCall(calls);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Tool execution failed.';
+        responses = calls.map((call) => ({
+          id: call.id,
+          name: call.name,
+          response: { error: msg },
+        }));
+      }
+    }
+
+    const activeWs = originSocket ?? this.ws;
+    if (!activeWs || this.ws !== activeWs || this.manualStop || activeWs.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    activeWs.send(
+      JSON.stringify({
+        toolResponse: {
+          functionResponses: responses.map((r) => ({
+            id: r.id,
+            name: r.name,
+            response: r.response,
+          })),
+        },
+      }),
+    );
   }
 
   private async ensurePlaybackContext(): Promise<AudioContext> {

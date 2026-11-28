@@ -26,12 +26,14 @@ import {
   type AiProviderId,
   type ConversationDTO,
   type MessageDTO,
+  type PendingToolConfirmationDTO,
   type PublicSettingsDTO,
   type StructuredErrorPayload,
   type UsageSummaryDTO,
   type VoiceState,
 } from '@mj/shared';
 import { MarkdownMessage } from './MarkdownMessage.js';
+import { ToolConfirmationBanner } from './ToolConfirmationBanner.js';
 import { VoiceStateBar } from './VoiceStateBar.js';
 
 interface ChatWorkspaceProps {
@@ -51,6 +53,9 @@ interface ChatWorkspaceProps {
   liveAssistantTranscript: string;
   activeError: StructuredErrorPayload | null;
   repeatErrorHint?: string | null;
+  pendingConfirmation?: PendingToolConfirmationDTO | null;
+  onConfirmToolAction?: () => void;
+  onCancelToolAction?: () => void;
   selectedProviderOverride?: string;
   onSelectProviderOverride?: (provider: string) => void;
   selectedModelOverride: string;
@@ -94,6 +99,9 @@ export function ChatWorkspace({
   liveAssistantTranscript,
   activeError,
   repeatErrorHint,
+  pendingConfirmation,
+  onConfirmToolAction,
+  onCancelToolAction,
   selectedProviderOverride = settings?.activeProvider ?? 'auto',
   onSelectProviderOverride,
   selectedModelOverride,
@@ -988,6 +996,15 @@ export function ChatWorkspace({
                   )
                 )}
               </div>
+            )}
+
+            {/* 20s Confirmation Prompt for Risky Tool Calls */}
+            {pendingConfirmation && onConfirmToolAction && onCancelToolAction && (
+              <ToolConfirmationBanner
+                confirmation={pendingConfirmation}
+                onConfirm={onConfirmToolAction}
+                onCancel={onCancelToolAction}
+              />
             )}
 
             <div ref={threadEndRef} />

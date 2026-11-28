@@ -18,13 +18,17 @@ import {
   ProviderRouterClient,
   XaiResponsesClient,
   buildMjSystemPrompt,
+  executeToolCallSafely,
   isLoopbackBaseUrl,
+  type ToolRegistry,
 } from '@mj/ai';
 import type { MjDatabaseRepository } from '@mj/database';
 import type { AlertMonitor } from '../alerting.js';
 import type { ServerConfig } from '../config.js';
 import type { PermissionsStore } from '../permissionsStore.js';
 import type { RuntimeSettingsStore } from '../settingsStore.js';
+import { ToolConfirmationManager } from '../toolConfirmations.js';
+import { buildServerToolExecutionContext } from './tools.js';
 
 export interface ConversationRouteDeps {
   config: ServerConfig;
@@ -33,6 +37,8 @@ export interface ConversationRouteDeps {
   permissionsStore: PermissionsStore;
   xaiClient: XaiResponsesClient;
   providerRouter?: ProviderRouterClient;
+  toolRegistry?: ToolRegistry;
+  confirmationManager?: ToolConfirmationManager;
   alertMonitor?: AlertMonitor;
   requireSession: (request: FastifyRequest) => Promise<void>;
 }
@@ -189,7 +195,10 @@ async function streamAssistantTurn(params: {
   updatedTitle?: string;
 }): Promise<void> {
   const { request, reply, deps, conversationId, userMessageId } = params;
-  const settings = await deps.settingsStore.getPublicSettings();
+  const [settings, permissions] = await Promise.all([
+    deps.settingsStore.getPublicSettings(),
+    deps.permissionsStore.getPermissions(),
+  ]);
   const activeProvider = params.providerOverride ?? settings.activeProvider ?? 'gemini';
   const activeModel = params.modelOverride?.trim() || settings.activeModel;
   const useStreaming = params.streamOverride ?? settings.streamResponses;
@@ -209,12 +218,18 @@ async function streamAssistantTurn(params: {
       ? { excludeMessageIds: [params.replaceAssistantMessageId] }
       : undefined,
   );
+  const openAiTools =
+    permissions.toolCalling && deps.toolRegistry
+      ? deps.toolRegistry.toOpenAiTools(permissions)
+      : [];
+  const toolsActiveForTurn = Boolean(permissions.toolCalling && openAiTools.length > 0);
   const instructions = buildMjSystemPrompt({
     assistantName: settings.assistantName,
     userName: settings.userName,
     persona: settings.voice.persona,
     responseStyle: settings.responseStyle,
     languageMode: settings.voice.languageMode,
+    toolsEnabled: toolsActiveForTurn,
   });
 
   beginSseStream(reply);
@@ -241,10 +256,141 @@ async function streamAssistantTurn(params: {
   let currentModel = activeModel;
   const startedAt = Date.now();
 
+  const onToolCall =
+    deps.toolRegistry && permissions.toolCalling
+      ? async (call: { id: string; name: string; args: Record<string, unknown> }) => {
+        writeSseEvent(reply, {
+          type: 'tool_status',
+          toolName: call.name,
+          status: 'calling',
+          detail: `Checking permissions for ${call.name}…`,
+        });
+
+        const registry = deps.toolRegistry!;
+        const confirmationManager = deps.confirmationManager;
+        const toolCtx = buildServerToolExecutionContext(
+          {
+            repo: deps.repo,
+            permissionsStore: deps.permissionsStore,
+            settingsStore: deps.settingsStore,
+            toolRegistry: registry,
+            confirmationManager: confirmationManager ?? new ToolConfirmationManager(),
+            requireSession: deps.requireSession,
+          },
+          {
+            channel: 'chat',
+            conversationId,
+            requestConfirmation: confirmationManager
+              ? async (req) => {
+                const pending = confirmationManager.createWaitablePending({
+                  toolName: req.toolName,
+                  args: req.args,
+                  summary: req.summary,
+                  requiredPermission: req.requiredPermission,
+                  conversationId,
+                  channel: 'chat',
+                });
+                writeSseEvent(reply, {
+                  type: 'tool_status',
+                  toolName: req.toolName,
+                  status: 'confirmation_required',
+                  detail: req.summary,
+                  confirmation: pending.dto,
+                });
+                const onAbort = () => pending.cancelSilently();
+                abortController.signal.addEventListener('abort', onAbort, { once: true });
+                try {
+                  return await pending.waitForDecision();
+                } finally {
+                  abortController.signal.removeEventListener('abort', onAbort);
+                }
+              }
+              : undefined,
+          },
+        );
+
+        const execResult = await executeToolCallSafely(
+          registry,
+          { name: call.name, args: call.args },
+          toolCtx,
+        );
+
+        writeSseEvent(reply, {
+          type: 'tool_status',
+          toolName: execResult.toolName || call.name,
+          status: execResult.status,
+          detail: execResult.ok
+            ? `Executed ${execResult.toolName} safely.`
+            : execResult.error ?? `Tool ${call.name} ${execResult.status}.`,
+          ...(execResult.clientAction ? { clientAction: execResult.clientAction } : {}),
+        });
+
+        return {
+          ok: execResult.ok,
+          status: execResult.status,
+          ...(execResult.result ? { output: execResult.result } : {}),
+          ...(execResult.error ? { error: execResult.error } : {}),
+          ...(execResult.errorCode ? { errorCode: execResult.errorCode } : {}),
+        };
+      }
+      : undefined;
+
   try {
     const result = deps.providerRouter
       ? await deps.providerRouter.createResponse({
-          provider: activeProvider,
+        provider: activeProvider,
+        model: activeModel,
+        instructions,
+        input: contextTurns,
+        reasoningEffort: settings.reasoningEffort,
+        maxOutputTokens: settings.maxOutputTokens,
+        stream: useStreaming,
+        timeoutMs: settings.timeoutMs,
+        freeOnly: params.freeOnly || deps.config.freeOnlyMode,
+        localOnly: params.localOnly,
+        signal: abortController.signal,
+        ...(openAiTools.length > 0 && onToolCall ? { tools: openAiTools, onToolCall } : {}),
+        onStatus: (phase, detail) => {
+          writeSseEvent(reply, { type: 'status', phase, detail });
+        },
+        onDelta: (delta) => {
+          accumulated += delta;
+          writeSseEvent(reply, { type: 'delta', text: delta });
+        },
+        onReset: async (info) => {
+          accumulated = '';
+          currentModel = info.nextModel;
+          await deps.repo.updateMessage(assistantPlaceholder.id, {
+            content: '',
+            model: info.nextModel,
+          });
+          writeSseEvent(reply, {
+            type: 'stream_reset',
+            conversationId,
+            assistantMessageId: assistantPlaceholder.id,
+            model: info.nextModel,
+            reason: info.reason,
+          });
+          writeSseEvent(reply, {
+            type: 'status',
+            phase: 'connecting',
+            detail: info.reason,
+          });
+        },
+      })
+      : (() => {
+        if (deps.config.freeOnlyMode && !isLoopbackBaseUrl(deps.config.xaiBaseUrl)) {
+          throw new AppError({
+            code: ErrorCodes.PERMISSION_DENIED,
+            category: 'privacy',
+            statusCode: 403,
+            requestId: request.id,
+            message: 'Paid xAI client is blocked while FREE_ONLY_MODE=true.',
+          });
+        }
+        return null;
+      })() ?? {
+        ...(await deps.xaiClient.createResponse({
           model: activeModel,
           instructions,
           input: contextTurns,
@@ -252,9 +398,8 @@ async function streamAssistantTurn(params: {
           maxOutputTokens: settings.maxOutputTokens,
           stream: useStreaming,
           timeoutMs: settings.timeoutMs,
-          freeOnly: params.freeOnly || deps.config.freeOnlyMode,
-          localOnly: params.localOnly,
           signal: abortController.signal,
+          ...(openAiTools.length > 0 && onToolCall ? { tools: openAiTools, onToolCall } : {}),
           onStatus: (phase, detail) => {
             writeSseEvent(reply, { type: 'status', phase, detail });
           },
@@ -262,58 +407,9 @@ async function streamAssistantTurn(params: {
             accumulated += delta;
             writeSseEvent(reply, { type: 'delta', text: delta });
           },
-          onReset: async (info) => {
-            accumulated = '';
-            currentModel = info.nextModel;
-            await deps.repo.updateMessage(assistantPlaceholder.id, {
-              content: '',
-              model: info.nextModel,
-            });
-            writeSseEvent(reply, {
-              type: 'stream_reset',
-              conversationId,
-              assistantMessageId: assistantPlaceholder.id,
-              model: info.nextModel,
-              reason: info.reason,
-            });
-            writeSseEvent(reply, {
-              type: 'status',
-              phase: 'connecting',
-              detail: info.reason,
-            });
-          },
-        })
-      : (() => {
-          if (deps.config.freeOnlyMode && !isLoopbackBaseUrl(deps.config.xaiBaseUrl)) {
-            throw new AppError({
-              code: ErrorCodes.PERMISSION_DENIED,
-              category: 'privacy',
-              statusCode: 403,
-              requestId: request.id,
-              message: 'Paid xAI client is blocked while FREE_ONLY_MODE=true.',
-            });
-          }
-          return null;
-        })() ?? {
-          ...(await deps.xaiClient.createResponse({
-            model: activeModel,
-            instructions,
-            input: contextTurns,
-            reasoningEffort: settings.reasoningEffort,
-            maxOutputTokens: settings.maxOutputTokens,
-            stream: useStreaming,
-            timeoutMs: settings.timeoutMs,
-            signal: abortController.signal,
-            onStatus: (phase, detail) => {
-              writeSseEvent(reply, { type: 'status', phase, detail });
-            },
-            onDelta: (delta) => {
-              accumulated += delta;
-              writeSseEvent(reply, { type: 'delta', text: delta });
-            },
-          })),
-          isFree: false,
-        };
+        })),
+        isFree: false,
+      };
 
     const finalText = result.text || accumulated;
     const costUsd =
@@ -386,10 +482,10 @@ async function streamAssistantTurn(params: {
       err instanceof AppError
         ? err
         : new AppError({
-            code: ErrorCodes.INTERNAL_ERROR,
-            category: 'internal',
-            cause: err,
-          });
+          code: ErrorCodes.INTERNAL_ERROR,
+          category: 'internal',
+          cause: err,
+        });
     appErr.requestId = request.id;
 
     if (appErr.code === ErrorCodes.ABORTED) {

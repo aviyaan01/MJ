@@ -14,7 +14,8 @@ export type OsCapabilityKey =
 export type PrivacyControlKey =
   | 'microphoneAccess'
   | 'voiceSessionAccess'
-  | 'externalWebServices';
+  | 'externalWebServices'
+  | 'toolCalling';
 
 export type ControllablePermissionKey = OsCapabilityKey | PrivacyControlKey;
 
@@ -37,6 +38,7 @@ export interface PermissionsStateDTO {
   microphoneAccess: boolean;
   voiceSessionAccess: boolean;
   externalWebServices: boolean;
+  toolCalling: boolean;
 
   // Stage 3 deferred categories — strictly OFF and non-activatable
   memoryAccess: false;
@@ -57,6 +59,7 @@ export const DEFAULT_PERMISSIONS_STATE: PermissionsStateDTO = {
   microphoneAccess: true,
   voiceSessionAccess: true,
   externalWebServices: true,
+  toolCalling: false,
   memoryAccess: false,
   optionalAutomation: false,
   cloudFileProcessing: false,
@@ -87,6 +90,7 @@ export const ControllablePermissionKeySchema = z.enum([
   'microphoneAccess',
   'voiceSessionAccess',
   'externalWebServices',
+  'toolCalling',
 ]);
 
 /**

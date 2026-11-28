@@ -18,10 +18,12 @@ import {
   type HostTelemetryDTO,
   type LanguageMode,
   type MessageDTO,
+  type PendingToolConfirmationDTO,
   type PermissionsStateDTO,
   type PublicSettingsDTO,
   type StructuredErrorPayload,
   type SystemHealthDTO,
+  type ToolCatalogItemDTO,
   type UsageSummaryDTO,
   type VoiceClientSecretDTO,
 } from '@mj/shared';
@@ -342,6 +344,74 @@ export const mjApi = {
     requestJson<{ voices: Array<{ id: string; label: string; description: string }> }>(
       '/api/voice/voices',
     ),
+
+  listTools: () =>
+    requestJson<{
+      toolCallingEnabled: boolean;
+      tools: Array<ToolCatalogItemDTO & { currentlyPermitted: boolean }>;
+    }>('/api/tools/list'),
+
+  listPendingToolConfirmations: () =>
+    requestJson<{ pending: PendingToolConfirmationDTO[] }>('/api/tools/pending'),
+
+  executeVoiceTool: (payload: {
+    callId?: string;
+    name: string;
+    args: Record<string, unknown>;
+    conversationId?: string;
+    confirmed?: boolean;
+  }) =>
+    requestJson<{
+      ok: boolean;
+      toolName: string;
+      status:
+        | 'executed'
+        | 'denied'
+        | 'cancelled'
+        | 'timed_out'
+        | 'confirmation_required'
+        | 'error';
+      result?: Record<string, unknown>;
+      errorCode?: string;
+      error?: string;
+      clientAction?: {
+        kind: 'open_approved_url' | 'open_approved_app';
+        target: string;
+      };
+      pendingConfirmation?: PendingToolConfirmationDTO;
+    }>('/api/voice/tools/execute', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  confirmToolAction: (payload: {
+    confirmationId: string;
+    decision?: 'approve' | 'cancel';
+    spokenText?: string;
+  }) =>
+    requestJson<{
+      ok: boolean;
+      toolName?: string;
+      status:
+        | 'executed'
+        | 'approved'
+        | 'denied'
+        | 'cancelled'
+        | 'timed_out'
+        | 'confirmation_required'
+        | 'error';
+      result?: Record<string, unknown>;
+      pendingConfirmation?: PendingToolConfirmationDTO;
+      errorCode?: string;
+      error?: string;
+      clientAction?: {
+        kind: 'open_approved_url' | 'open_approved_app';
+        target: string;
+      };
+    }>('/api/tools/confirm', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 
   recordVoiceUsage: (input: {
     conversationId?: string;

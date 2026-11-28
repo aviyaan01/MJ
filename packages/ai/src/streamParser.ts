@@ -1,9 +1,23 @@
 import { AppError, ErrorCodes, type TokenUsage } from '@mj/shared';
 
+export interface ParsedToolCall {
+  id: string;
+  name: string;
+  argumentsText: string;
+}
+
 export type ParsedSseEvent =
   | { type: 'meta'; responseId?: string; status?: string }
   | { type: 'status'; phase: 'connecting' | 'reasoning' | 'streaming'; detail: string }
   | { type: 'delta'; text: string }
+  | {
+      type: 'tool_call_delta';
+      index: number;
+      hasExplicitIndex: boolean;
+      id?: string;
+      name?: string;
+      argumentsDelta?: string;
+    }
   | { type: 'completed'; responseId?: string; fullText?: string; usage?: TokenUsage };
 
 export interface RawSseFrame {
@@ -166,6 +180,37 @@ export function extractOutputTextFromOpenAiChat(responseObj: unknown): string {
   return '';
 }
 
+export function extractToolCallsFromOpenAiChat(responseObj: unknown): ParsedToolCall[] {
+  if (!isRecord(responseObj)) return [];
+  if (!Array.isArray(responseObj.choices) || responseObj.choices.length === 0) return [];
+  const firstChoice = responseObj.choices[0];
+  if (!isRecord(firstChoice)) return [];
+  const msg = isRecord(firstChoice.message) ? firstChoice.message : null;
+  if (!msg || !Array.isArray(msg.tool_calls)) return [];
+
+  const calls: ParsedToolCall[] = [];
+  for (let i = 0; i < msg.tool_calls.length; i++) {
+    const tc = msg.tool_calls[i];
+    if (!isRecord(tc)) continue;
+    const fn = isRecord(tc.function) ? tc.function : null;
+    if (!fn || typeof fn.name !== 'string' || !fn.name.trim()) continue;
+    const id =
+      typeof tc.id === 'string' && tc.id.trim().length > 0 ? tc.id.trim() : `call_tool_${i}`;
+    const argumentsText =
+      typeof fn.arguments === 'string'
+        ? fn.arguments
+        : fn.arguments && typeof fn.arguments === 'object'
+          ? JSON.stringify(fn.arguments)
+          : '{}';
+    calls.push({
+      id,
+      name: fn.name.trim(),
+      argumentsText,
+    });
+  }
+  return calls;
+}
+
 /**
  * Translates an OpenAI-compatible `/v1/chat/completions` SSE frame
  * (Groq, Gemini, OpenRouter, Cerebras, Mistral, GitHub Models, Ollama) into normalized events.
@@ -246,6 +291,29 @@ export function parseOpenAiChatStreamFrame(frame: RawSseFrame): ParsedSseEvent[]
         }
         if (typeof delta.content === 'string' && delta.content.length > 0) {
           events.push({ type: 'delta', text: delta.content });
+        }
+        if (Array.isArray(delta.tool_calls)) {
+          for (let pos = 0; pos < delta.tool_calls.length; pos++) {
+            const tc = delta.tool_calls[pos];
+            if (!isRecord(tc)) continue;
+            const hasExplicitIndex = typeof tc.index === 'number' && Number.isFinite(tc.index);
+            const index = hasExplicitIndex ? (tc.index as number) : pos;
+            const id = typeof tc.id === 'string' && tc.id.length > 0 ? tc.id : undefined;
+            const fn = isRecord(tc.function) ? tc.function : null;
+            const name = fn && typeof fn.name === 'string' && fn.name.length > 0 ? fn.name : undefined;
+            const argumentsDelta =
+              fn && typeof fn.arguments === 'string' ? fn.arguments : undefined;
+            if (id || name || argumentsDelta !== undefined) {
+              events.push({
+                type: 'tool_call_delta',
+                index,
+                hasExplicitIndex,
+                ...(id ? { id } : {}),
+                ...(name ? { name } : {}),
+                ...(argumentsDelta !== undefined ? { argumentsDelta } : {}),
+              });
+            }
+          }
         }
       }
       if (typeof choice.finish_reason === 'string' && choice.finish_reason.length > 0) {

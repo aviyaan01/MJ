@@ -21,6 +21,7 @@ import {
   type ConversationDTO,
   type LanguageMode,
   type MessageDTO,
+  type PendingToolConfirmationDTO,
   type PermissionsStateDTO,
   type PublicSettingsDTO,
   type StructuredErrorPayload,
@@ -28,11 +29,13 @@ import {
   type UsageSummaryDTO,
   type VoicePersona,
   type VoiceState,
+  parseVoiceConfirmationDecision,
 } from '@mj/shared';
 import { MjVoiceService, VOICE_STATE_META } from '@mj/voice';
 import { ApiClientError, mjApi } from './api/client.js';
 import { MicActiveBanner } from './components/MicActiveBanner.js';
 import { Sidebar, type ActiveNavTab } from './components/Sidebar.js';
+import { ToolConfirmationBanner } from './components/ToolConfirmationBanner.js';
 import { nextRepeatedErrorState } from './components/VoiceStateBar.js';
 import {
   isTauriDesktop,
@@ -136,6 +139,8 @@ export function App() {
   const [activeError, setActiveError] = useState<StructuredErrorPayload | null>(null);
   const [repeatErrorHint, setRepeatErrorHint] = useState<string | null>(null);
   const [lastRetryAction, setLastRetryAction] = useState<(() => void) | null>(null);
+  const [pendingToolConfirmation, setPendingToolConfirmation] =
+    useState<PendingToolConfirmationDTO | null>(null);
   const [latestHomeExchange, setLatestHomeExchange] = useState<{
     conversationId: string;
     userPrompt: string;
@@ -147,6 +152,14 @@ export function App() {
   const freeVoiceRef = useRef<FreeBrowserVoiceController | null>(null);
   const wakeListenerRef = useRef<WakeWordListener | null>(null);
   const webSpeechUnavailableRef = useRef(false);
+  const pendingToolConfirmationRef = useRef<PendingToolConfirmationDTO | null>(null);
+  const confirmationExpiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const voiceToolResolversRef = useRef(
+    new Map<string, (response: Record<string, unknown>) => void>(),
+  );
+  const resolveConfirmationRef = useRef<
+    (confirmationId: string, input: { decision?: 'approve' | 'cancel'; spokenText?: string }) => Promise<boolean>
+  >(async () => false);
   const lastErrorSignatureRef = useRef<string | null>(null);
   const consecutiveErrorCountRef = useRef(0);
   const startVoiceRef = useRef<() => Promise<void>>(async () => { });
@@ -165,6 +178,204 @@ export function App() {
   useEffect(() => {
     activeConversationRef.current = activeConversation;
   }, [activeConversation]);
+
+  useEffect(() => {
+    pendingToolConfirmationRef.current = pendingToolConfirmation;
+  }, [pendingToolConfirmation]);
+
+  const executeToolClientAction = useCallback(
+    async (action: { kind: 'open_approved_url' | 'open_approved_app'; target: string }) => {
+      try {
+        if (action.kind === 'open_approved_url') {
+          if (isTauriDesktop()) {
+            await tauriOpenApprovedUrl(action.target);
+          } else {
+            window.open(action.target, '_blank', 'noopener,noreferrer');
+          }
+        } else if (action.kind === 'open_approved_app') {
+          if (isTauriDesktop()) {
+            await tauriOpenApprovedApp(action.target);
+          }
+        }
+      } catch {
+        // Ignore blocked popup / client open error after server audit log
+      }
+    },
+    [],
+  );
+
+  const clearPendingToolConfirmation = useCallback((confirmationId?: string) => {
+    if (confirmationId && pendingToolConfirmationRef.current?.confirmationId !== confirmationId) {
+      return;
+    }
+    if (confirmationExpiryTimerRef.current) {
+      clearTimeout(confirmationExpiryTimerRef.current);
+      confirmationExpiryTimerRef.current = null;
+    }
+    pendingToolConfirmationRef.current = null;
+    setPendingToolConfirmation(null);
+  }, []);
+
+  const resolveToolConfirmation = useCallback(
+    async (
+      confirmationId: string,
+      input: { decision?: 'approve' | 'cancel'; spokenText?: string },
+    ): Promise<boolean> => {
+      try {
+        const res = await mjApi.confirmToolAction({
+          confirmationId,
+          ...input,
+        });
+        if (res.status === 'confirmation_required') {
+          return false;
+        }
+        clearPendingToolConfirmation(confirmationId);
+        if (res.ok && res.clientAction) {
+          void executeToolClientAction(res.clientAction);
+        }
+        const voiceResolver = voiceToolResolversRef.current.get(confirmationId);
+        if (voiceResolver) {
+          voiceToolResolversRef.current.delete(confirmationId);
+          voiceResolver({
+            ok: res.ok,
+            status: res.status,
+            ...(res.result ? { output: res.result } : {}),
+            ...(res.error ? { error: res.error } : {}),
+          });
+        }
+        void mjApi.listAuditLogs().then((a) => setAuditLogs(a.entries)).catch(() => { });
+        return true;
+      } catch (err) {
+        clearPendingToolConfirmation(confirmationId);
+        const voiceResolver = voiceToolResolversRef.current.get(confirmationId);
+        if (voiceResolver) {
+          voiceToolResolversRef.current.delete(confirmationId);
+          voiceResolver({
+            ok: false,
+            status: 'error',
+            error: err instanceof Error ? err.message : 'Confirmation failed.',
+          });
+        }
+        return false;
+      }
+    },
+    [clearPendingToolConfirmation, executeToolClientAction],
+  );
+
+  useEffect(() => {
+    resolveConfirmationRef.current = resolveToolConfirmation;
+  }, [resolveToolConfirmation]);
+
+  const presentPendingToolConfirmation = useCallback(
+    (dto: PendingToolConfirmationDTO) => {
+      if (confirmationExpiryTimerRef.current) {
+        clearTimeout(confirmationExpiryTimerRef.current);
+      }
+      pendingToolConfirmationRef.current = dto;
+      setPendingToolConfirmation(dto);
+      const expiresMs = Date.parse(dto.expiresAt);
+      const delayMs = Number.isFinite(expiresMs)
+        ? Math.max(500, expiresMs - Date.now() + 200)
+        : dto.timeoutSeconds * 1000 + 200;
+      confirmationExpiryTimerRef.current = setTimeout(() => {
+        if (pendingToolConfirmationRef.current?.confirmationId === dto.confirmationId) {
+          void resolveConfirmationRef.current(dto.confirmationId, { decision: 'cancel' });
+        }
+      }, delayMs);
+    },
+    [],
+  );
+
+  // Optional spoken confirmation listener while a 20s confirmation banner is visible
+  useEffect(() => {
+    if (!pendingToolConfirmation) return;
+    if (!permissions.microphoneAccess || !permissions.voiceSessionAccess || voiceMuted) return;
+
+    const SpeechCtor =
+      typeof window !== 'undefined'
+        ? (window as unknown as {
+            SpeechRecognition?: new () => {
+              lang: string;
+              interimResults: boolean;
+              continuous: boolean;
+              maxAlternatives: number;
+              onresult: ((ev: { results: ArrayLike<ArrayLike<{ transcript?: string }>> }) => void) | null;
+              onerror: (() => void) | null;
+              onend: (() => void) | null;
+              start: () => void;
+              stop: () => void;
+            };
+            webkitSpeechRecognition?: new () => {
+              lang: string;
+              interimResults: boolean;
+              continuous: boolean;
+              maxAlternatives: number;
+              onresult: ((ev: { results: ArrayLike<ArrayLike<{ transcript?: string }>> }) => void) | null;
+              onerror: (() => void) | null;
+              onend: (() => void) | null;
+              start: () => void;
+              stop: () => void;
+            };
+          }).SpeechRecognition ??
+          (window as unknown as { webkitSpeechRecognition?: new () => any }).webkitSpeechRecognition
+        : undefined;
+    if (!SpeechCtor) return;
+
+    let active = true;
+    const rec = new SpeechCtor();
+    const langMode = settingsRef.current?.voice.languageMode ?? 'auto';
+    rec.lang =
+      langMode === 'bn'
+        ? 'bn-BD'
+        : langMode === 'hi' || langMode === 'hinglish'
+          ? 'hi-IN'
+          : 'en-IN';
+    rec.interimResults = false;
+    rec.continuous = true;
+    rec.maxAlternatives = 1;
+    rec.onresult = (ev: { results: ArrayLike<ArrayLike<{ transcript?: string }>> }) => {
+      if (!active) return;
+      for (let i = 0; i < ev.results.length; i++) {
+        const transcript = ev.results[i]?.[0]?.transcript?.trim() ?? '';
+        if (!transcript) continue;
+        const parsed = parseVoiceConfirmationDecision(transcript);
+        if (parsed) {
+          active = false;
+          try {
+            rec.stop();
+          } catch {
+            // ignore stop error
+          }
+          void resolveConfirmationRef.current(pendingToolConfirmation.confirmationId, {
+            decision: parsed,
+            spokenText: transcript,
+          });
+          break;
+        }
+      }
+    };
+    rec.onerror = () => {
+      // UI buttons + Gemini Live transcript remain active
+    };
+    rec.onend = () => {
+      // Do not restart automatically after end
+    };
+
+    try {
+      rec.start();
+    } catch {
+      // Ignore if microphone is exclusively locked by another recognizer
+    }
+
+    return () => {
+      active = false;
+      try {
+        rec.stop();
+      } catch {
+        // ignore stop error
+      }
+    };
+  }, [pendingToolConfirmation, permissions.microphoneAccess, permissions.voiceSessionAccess, voiceMuted]);
 
   useEffect(() => {
     settingsRef.current = settings;
@@ -326,6 +537,17 @@ export function App() {
           setVoiceAudioLevel(Math.max(inputLevel, outputLevel));
         },
         onUserTranscript: (transcript) => {
+          const activePending = pendingToolConfirmationRef.current;
+          if (activePending) {
+            const voiceDecision = parseVoiceConfirmationDecision(transcript);
+            if (voiceDecision) {
+              void resolveConfirmationRef.current(activePending.confirmationId, {
+                decision: voiceDecision,
+                spokenText: transcript,
+              });
+              return;
+            }
+          }
           setLiveUserTranscript(transcript);
           void (async () => {
             try {
@@ -346,6 +568,70 @@ export function App() {
               // ignore background persistence failure
             }
           })();
+        },
+        onToolCall: async (calls) => {
+          const responses: Array<{
+            id: string;
+            name: string;
+            response: Record<string, unknown>;
+          }> = [];
+          for (const call of calls) {
+            try {
+              const execRes = await mjApi.executeVoiceTool({
+                callId: call.id,
+                name: call.name,
+                args: call.args,
+                conversationId: activeConversationRef.current?.id,
+              });
+
+              if (execRes.status === 'confirmation_required' && execRes.pendingConfirmation) {
+                const pendingDto = execRes.pendingConfirmation;
+                const confirmedResponse = await new Promise<Record<string, unknown>>((resolve) => {
+                  voiceToolResolversRef.current.set(pendingDto.confirmationId, resolve);
+                  presentPendingToolConfirmation(pendingDto);
+                });
+                responses.push({
+                  id: call.id,
+                  name: call.name,
+                  response: confirmedResponse,
+                });
+              } else if (execRes.ok) {
+                if (execRes.clientAction) {
+                  void executeToolClientAction(execRes.clientAction);
+                }
+                void mjApi.listAuditLogs().then((a) => setAuditLogs(a.entries)).catch(() => { });
+                responses.push({
+                  id: call.id,
+                  name: call.name,
+                  response: { output: execRes.result ?? {} },
+                });
+              } else {
+                void mjApi.listAuditLogs().then((a) => setAuditLogs(a.entries)).catch(() => { });
+                responses.push({
+                  id: call.id,
+                  name: call.name,
+                  response: { error: execRes.error ?? 'Tool execution denied.' },
+                });
+              }
+            } catch (err) {
+              responses.push({
+                id: call.id,
+                name: call.name,
+                response: {
+                  error: err instanceof Error ? err.message : 'Tool execution error.',
+                },
+              });
+            }
+          }
+          return responses;
+        },
+        onToolCallCancellation: (ids) => {
+          const activePending = pendingToolConfirmationRef.current;
+          if (activePending?.callId && ids.includes(activePending.callId)) {
+            void resolveConfirmationRef.current(activePending.confirmationId, {
+              decision: 'cancel',
+            });
+          }
         },
         onAssistantTranscriptDelta: (delta) => {
           setLiveAssistantTranscript((prev) => prev + delta);
@@ -620,6 +906,7 @@ export function App() {
 
   const handleLogout = async () => {
     streamAbortRef.current?.abort();
+    clearPendingToolConfirmation();
     wakeListenerRef.current?.stop();
     freeVoiceRef.current?.stop();
     freeVoiceRef.current = null;
@@ -788,6 +1075,23 @@ export function App() {
       } else if (event.type === 'status') {
         setStreamingState(event.phase === 'streaming' ? 'streaming' : 'connecting');
         setStreamStatusDetail(event.detail);
+      } else if (event.type === 'tool_status') {
+        setStreamStatusDetail(event.detail);
+        if (event.status === 'confirmation_required' && event.confirmation) {
+          presentPendingToolConfirmation(event.confirmation);
+        } else if (
+          event.status === 'executed' ||
+          event.status === 'denied' ||
+          event.status === 'cancelled' ||
+          event.status === 'timed_out' ||
+          event.status === 'error'
+        ) {
+          clearPendingToolConfirmation();
+          if (event.status === 'executed' && event.clientAction) {
+            void executeToolClientAction(event.clientAction);
+          }
+          void mjApi.listAuditLogs().then((a) => setAuditLogs(a.entries)).catch(() => { });
+        }
       } else if (event.type === 'stream_reset') {
         finalAssistantText = '';
         setStreamingState('connecting');
@@ -1222,6 +1526,17 @@ export function App() {
           setLiveUserTranscript(text);
         },
         onSubmitTranscript: async (transcript) => {
+          const activePending = pendingToolConfirmationRef.current;
+          if (activePending) {
+            const voiceDecision = parseVoiceConfirmationDecision(transcript);
+            if (voiceDecision) {
+              await resolveConfirmationRef.current(activePending.confirmationId, {
+                decision: voiceDecision,
+                spokenText: transcript,
+              });
+              return '';
+            }
+          }
           setLiveUserTranscript(transcript);
           const reply = await runStream({
             mode: 'send',
@@ -1767,6 +2082,24 @@ export function App() {
           onStopAllMic={() => void handleStopAllMic()}
         />
 
+        {pendingToolConfirmation && activeTab !== 'home' && activeTab !== 'chat' && (
+          <div className="px-4 pt-4">
+            <ToolConfirmationBanner
+              confirmation={pendingToolConfirmation}
+              onConfirm={() =>
+                void resolveToolConfirmation(pendingToolConfirmation.confirmationId, {
+                  decision: 'approve',
+                })
+              }
+              onCancel={() =>
+                void resolveToolConfirmation(pendingToolConfirmation.confirmationId, {
+                  decision: 'cancel',
+                })
+              }
+            />
+          </div>
+        )}
+
         <Suspense
           fallback={
             <div
@@ -1798,6 +2131,19 @@ export function App() {
               latestHomeExchange={latestHomeExchange}
               activeError={activeError}
               repeatErrorHint={repeatErrorHint}
+              pendingConfirmation={pendingToolConfirmation}
+              onConfirmToolAction={() =>
+                pendingToolConfirmation &&
+                void resolveToolConfirmation(pendingToolConfirmation.confirmationId, {
+                  decision: 'approve',
+                })
+              }
+              onCancelToolAction={() =>
+                pendingToolConfirmation &&
+                void resolveToolConfirmation(pendingToolConfirmation.confirmationId, {
+                  decision: 'cancel',
+                })
+              }
               onStartVoice={() => void handleStartVoice()}
               onStopVoice={handleStopVoice}
               onToggleMute={handleToggleMute}
@@ -1834,6 +2180,19 @@ export function App() {
               liveAssistantTranscript={liveAssistantTranscript}
               activeError={activeError}
               repeatErrorHint={repeatErrorHint}
+              pendingConfirmation={pendingToolConfirmation}
+              onConfirmToolAction={() =>
+                pendingToolConfirmation &&
+                void resolveToolConfirmation(pendingToolConfirmation.confirmationId, {
+                  decision: 'approve',
+                })
+              }
+              onCancelToolAction={() =>
+                pendingToolConfirmation &&
+                void resolveToolConfirmation(pendingToolConfirmation.confirmationId, {
+                  decision: 'cancel',
+                })
+              }
               selectedProviderOverride={selectedProviderOverride}
               onSelectProviderOverride={handleSelectProviderOverride}
               selectedModelOverride={selectedModelOverride}

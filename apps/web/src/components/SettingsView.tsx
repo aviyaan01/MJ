@@ -215,27 +215,27 @@ export function SettingsView({
     availableVoices.length > 0
       ? availableVoices
       : settings?.voice.availableVoices ?? [
-          {
-            id: 'Aoede',
-            label: 'Aoede (Female · Default)',
-            description: 'Warm, cheerful & conversational female Gemini voice',
-          },
-          {
-            id: 'Kore',
-            label: 'Kore (Female)',
-            description: 'Clear, firm & expressive female Gemini voice',
-          },
-          {
-            id: 'Leda',
-            label: 'Leda (Female)',
-            description: 'Youthful, bright & friendly female Gemini voice',
-          },
-          {
-            id: 'Zephyr',
-            label: 'Zephyr (Female)',
-            description: 'Smooth, lively & warm female Gemini voice',
-          },
-        ];
+        {
+          id: 'Aoede',
+          label: 'Aoede (Female · Default)',
+          description: 'Warm, cheerful & conversational female Gemini voice',
+        },
+        {
+          id: 'Kore',
+          label: 'Kore (Female)',
+          description: 'Clear, firm & expressive female Gemini voice',
+        },
+        {
+          id: 'Leda',
+          label: 'Leda (Female)',
+          description: 'Youthful, bright & friendly female Gemini voice',
+        },
+        {
+          id: 'Zephyr',
+          label: 'Zephyr (Female)',
+          description: 'Smooth, lively & warm female Gemini voice',
+        },
+      ];
 
   const handlePreviewVoiceClick = async () => {
     setPreviewingVoice(true);

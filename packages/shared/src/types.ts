@@ -224,6 +224,38 @@ export interface ConnectivityCheckDTO {
 
 export const MJ_ACTIVE_STAGE = 'Stages 1, 2, 4 & 5 Complete' as const;
 
+export type ToolRiskLevel = 'safe' | 'confirm' | 'blocked';
+
+export type ToolExecutionStatus =
+  | 'executed'
+  | 'denied'
+  | 'cancelled'
+  | 'timed_out'
+  | 'confirmation_required'
+  | 'error';
+
+export interface ToolCatalogItemDTO {
+  name: string;
+  description: string;
+  risk: ToolRiskLevel;
+  requiredPermission: string;
+  parametersSchema: Record<string, unknown>;
+}
+
+export interface PendingToolConfirmationDTO {
+  confirmationId: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  summary: string;
+  requiredPermission: string;
+  conversationId?: string;
+  channel: 'chat' | 'voice';
+  callId?: string;
+  createdAt: string;
+  expiresAt: string;
+  timeoutSeconds: number;
+}
+
 export interface SystemHealthDTO {
   status: 'online' | 'degraded';
   stage: typeof MJ_ACTIVE_STAGE;
@@ -245,7 +277,7 @@ export interface SystemHealthDTO {
     conversationHistory: true;
     voice: true;
     memory: false;
-    tools: false;
+    tools: boolean;
     automation: false;
     desktop: true;
   };
@@ -264,6 +296,8 @@ export interface VoiceClientSecretDTO {
   realtimeUrl: string;
   protocol?: 'gemini-live' | 'xai-realtime' | 'free-browser';
   fallbackReason?: string;
+  toolsEnabled?: boolean;
+  toolDeclarations?: Array<Record<string, unknown>>;
   model: string;
   voice: string;
   languageMode: LanguageMode;
@@ -284,6 +318,17 @@ export type ChatStreamEvent =
       type: 'status';
       phase: 'connecting' | 'reasoning' | 'streaming';
       detail: string;
+    }
+  | {
+      type: 'tool_status';
+      toolName: string;
+      status: 'calling' | ToolExecutionStatus;
+      detail: string;
+      confirmation?: PendingToolConfirmationDTO;
+      clientAction?: {
+        kind: 'open_approved_url' | 'open_approved_app';
+        target: string;
+      };
     }
   | {
       type: 'stream_reset';

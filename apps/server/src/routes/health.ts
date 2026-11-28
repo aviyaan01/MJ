@@ -5,6 +5,7 @@ import type { ProviderRouterClient } from '@mj/ai';
 import type { MjDatabaseHandle } from '@mj/database';
 import type { AlertMonitor } from '../alerting.js';
 import type { ServerConfig } from '../config.js';
+import type { PermissionsStore } from '../permissionsStore.js';
 import type { RuntimeSettingsStore } from '../settingsStore.js';
 
 export const VOICE_DEGRADED_WINDOW_MS = 10 * 60 * 1000;
@@ -22,7 +23,7 @@ export interface VoiceOutcomeSnapshot {
 export class VoiceHealthTracker {
   private lastOutcome: VoiceOutcomeSnapshot | null = null;
 
-  constructor(private readonly nowFn: () => number = () => Date.now()) {}
+  constructor(private readonly nowFn: () => number = () => Date.now()) { }
 
   public recordSuccess(): void {
     this.lastOutcome = { ok: true, timestampMs: this.nowFn() };
@@ -50,6 +51,7 @@ export interface HealthRouteDeps {
   config: ServerConfig;
   dbHandle: MjDatabaseHandle;
   settingsStore: RuntimeSettingsStore;
+  permissionsStore?: PermissionsStore;
   startedAtMs: number;
   alertMonitor?: AlertMonitor;
   providerRouter?: ProviderRouterClient;
@@ -118,7 +120,10 @@ export function registerHealthRoutes(app: FastifyInstance, deps: HealthRouteDeps
 
   const buildHealthPayload = async (): Promise<{ dbOk: boolean; payload: SystemHealthDTO }> => {
     const dbOk = checkDatabaseHealth();
-    const settings = await deps.settingsStore.getPublicSettings();
+    const [settings, permissions] = await Promise.all([
+      deps.settingsStore.getPublicSettings(),
+      deps.permissionsStore?.getPermissions(),
+    ]);
     const anyAiReady = deps.providerRouter
       ? deps.providerRouter.hasAnyConfiguredProvider()
       : deps.config.apiKeyConfigured;
@@ -170,7 +175,7 @@ export function registerHealthRoutes(app: FastifyInstance, deps: HealthRouteDeps
         conversationHistory: true,
         voice: true,
         memory: false,
-        tools: false,
+        tools: Boolean(permissions?.toolCalling),
         automation: false,
         desktop: true,
       },

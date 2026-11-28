@@ -6,7 +6,12 @@ import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import { AppError, ErrorCodes, sanitizeDiagnosticText, sanitizeUrlForLog } from '@mj/shared';
-import { ProviderRouterClient, XaiResponsesClient } from '@mj/ai';
+import {
+  ProviderRouterClient,
+  XaiResponsesClient,
+  createDefaultToolRegistry,
+  type ToolRegistry,
+} from '@mj/ai';
 import {
   MjDatabaseRepository,
   createDatabase,
@@ -25,7 +30,9 @@ import { registerDesktopRoutes } from './routes/desktop.js';
 import { HealthWatchdog, VoiceHealthTracker, registerHealthRoutes } from './routes/health.js';
 import { registerPrivacyRoutes } from './routes/privacy.js';
 import { registerSettingsRoutes } from './routes/settings.js';
+import { registerToolRoutes } from './routes/tools.js';
 import { registerUsageRoutes } from './routes/usage.js';
+import { ToolConfirmationManager } from './toolConfirmations.js';
 import {
   createDefaultVoiceGateway,
   registerVoiceRoutes,
@@ -36,6 +43,9 @@ export interface BuildServerOptions {
   config?: ServerConfig;
   xaiClient?: XaiResponsesClient;
   providerRouter?: ProviderRouterClient;
+  toolRegistry?: ToolRegistry;
+  confirmationManager?: ToolConfirmationManager;
+  toolConfirmationTimeoutMs?: number;
   voiceGateway?: VoiceGateway;
   voiceTracker?: VoiceHealthTracker;
   alertMonitor?: AlertMonitor;
@@ -57,6 +67,8 @@ export interface MjServerContext {
   voiceTracker: VoiceHealthTracker;
   backupScheduler: DailyBackupScheduler;
   providerRouter: ProviderRouterClient;
+  toolRegistry: ToolRegistry;
+  confirmationManager: ToolConfirmationManager;
 }
 
 const ALERT_STATE_STORAGE_KEY = 'mj.alert_monitor.state.v1';
@@ -98,6 +110,10 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
   const settingsStore = new RuntimeSettingsStore(repo, config, providerRouter);
   const permissionsStore = new PermissionsStore(repo);
   const shortcutsStore = new ShortcutsStore(repo);
+  const toolRegistry = options.toolRegistry ?? createDefaultToolRegistry();
+  const confirmationManager =
+    options.confirmationManager ??
+    new ToolConfirmationManager({ timeoutMs: options.toolConfirmationTimeoutMs });
   let dbClosing = false;
   const alertMonitor =
     options.alertMonitor ??
@@ -225,6 +241,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
     config,
     dbHandle,
     settingsStore,
+    permissionsStore,
     startedAtMs,
     alertMonitor,
     providerRouter,
@@ -254,6 +271,14 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
     shortcutsStore,
     requireSession,
   });
+  registerToolRoutes(app, {
+    repo,
+    permissionsStore,
+    settingsStore,
+    toolRegistry,
+    confirmationManager,
+    requireSession,
+  });
   registerVoiceRoutes(app, {
     config,
     repo,
@@ -261,6 +286,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
     permissionsStore,
     voiceGateway,
     voiceTracker,
+    toolRegistry,
     alertMonitor,
     requireSession,
   });
@@ -271,6 +297,8 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
     permissionsStore,
     xaiClient,
     providerRouter,
+    toolRegistry,
+    confirmationManager,
     alertMonitor,
     requireSession,
   });
@@ -383,6 +411,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
 
   app.addHook('onClose', async () => {
     dbClosing = true;
+    confirmationManager.clearAll();
     healthWatchdog.stop();
     await alertMonitor.flushPersistence();
     backupScheduler.stop();
@@ -403,5 +432,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
     voiceTracker,
     backupScheduler,
     providerRouter,
+    toolRegistry,
+    confirmationManager,
   };
 }

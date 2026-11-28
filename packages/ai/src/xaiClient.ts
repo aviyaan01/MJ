@@ -10,15 +10,32 @@ import {
   SseFrameParser,
   extractOutputTextFromOpenAiChat,
   extractOutputTextFromResponse,
+  extractToolCallsFromOpenAiChat,
   extractUsageFromResponse,
   parseOpenAiChatStreamFrame,
   parseXaiResponsesStreamFrame,
+  type ParsedToolCall,
 } from './streamParser.js';
 
 export interface XaiTurnInput {
   role: 'user' | 'assistant';
   content: string;
 }
+
+export interface OpenAiToolDeclaration {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+export type AiToolCallHandler = (call: {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+}) => Promise<Record<string, unknown>>;
 
 export interface XaiClientConfig {
   apiKey: string;
@@ -42,6 +59,9 @@ export interface CreateResponseParams {
   stream: boolean;
   timeoutMs?: number;
   signal?: AbortSignal;
+  tools?: OpenAiToolDeclaration[];
+  onToolCall?: AiToolCallHandler;
+  maxToolRounds?: number;
   onStatus?: (phase: 'connecting' | 'reasoning' | 'streaming', detail: string) => void;
   onDelta?: (delta: string) => void;
   onReset?: () => void;
@@ -169,20 +189,31 @@ export class XaiResponsesClient {
         ? ['gemini', 'groq', 'openrouter', 'ollama', 'cerebras', 'github'].includes(this.providerId)
         : !this.baseUrl.toLowerCase().includes('mistral.ai'));
 
-    const bodyPayload: Record<string, unknown> =
+    const includeTools =
+      this.apiFormat === 'openai-chat' &&
+      Array.isArray(params.tools) &&
+      params.tools.length > 0 &&
+      Boolean(params.onToolCall);
+
+    const openAiMessages: Array<Record<string, unknown>> = [
+      ...(params.instructions ? [{ role: 'system', content: params.instructions }] : []),
+      ...params.input.map((turn) => ({
+        role: turn.role,
+        content: turn.content,
+      })),
+    ];
+
+    const buildBodyPayload = (allowTools: boolean): Record<string, unknown> =>
       this.apiFormat === 'openai-chat'
         ? {
             model,
-            messages: [
-              ...(params.instructions ? [{ role: 'system', content: params.instructions }] : []),
-              ...params.input.map((turn) => ({
-                role: turn.role,
-                content: turn.content,
-              })),
-            ],
+            messages: [...openAiMessages],
             stream: params.stream,
             ...(includeStreamOptions ? { stream_options: { include_usage: true } } : {}),
             ...(params.maxOutputTokens ? { max_tokens: params.maxOutputTokens } : {}),
+            ...(allowTools && includeTools
+              ? { tools: params.tools, tool_choice: 'auto' }
+              : {}),
           }
         : {
             model,
@@ -197,6 +228,97 @@ export class XaiResponsesClient {
             ...(params.reasoningEffort ? { reasoning: { effort: params.reasoningEffort } } : {}),
           };
 
+    const maxToolRounds = Math.max(1, Math.min(params.maxToolRounds ?? 5, 8));
+    let roundResult = await this.executeWithRetry(
+      buildBodyPayload(includeTools),
+      model,
+      timeoutMs,
+      startedAt,
+      params,
+    );
+
+    const totalUsage: TokenUsage = { ...roundResult.usage };
+    let combinedText = roundResult.text;
+    let toolRound = 0;
+
+    while (
+      this.apiFormat === 'openai-chat' &&
+      params.onToolCall &&
+      roundResult.toolCalls.length > 0 &&
+      toolRound < maxToolRounds
+    ) {
+      if (params.signal?.aborted) {
+        throw new AppError({
+          code: ErrorCodes.ABORTED,
+          category: 'internal',
+          statusCode: 499,
+          retryable: false,
+        });
+      }
+
+      openAiMessages.push({
+        role: 'assistant',
+        content: roundResult.text || null,
+        tool_calls: roundResult.toolCalls.map((tc) => ({
+          id: tc.id,
+          type: 'function',
+          function: {
+            name: tc.name,
+            arguments: tc.argumentsText || '{}',
+          },
+        })),
+      });
+
+      for (const tc of roundResult.toolCalls) {
+        params.onStatus?.('reasoning', `Executing tool: ${tc.name}…`);
+        const parsedArgs = parseToolArgumentsSafely(tc.argumentsText);
+        const toolOutput = await params.onToolCall({
+          id: tc.id,
+          name: tc.name,
+          args: parsedArgs,
+        });
+        openAiMessages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: JSON.stringify(toolOutput),
+        });
+      }
+
+      toolRound += 1;
+      const allowMoreTools = toolRound < maxToolRounds;
+      roundResult = await this.executeWithRetry(
+        buildBodyPayload(includeTools && allowMoreTools),
+        model,
+        timeoutMs,
+        startedAt,
+        params,
+      );
+      totalUsage.inputTokens += roundResult.usage.inputTokens;
+      totalUsage.outputTokens += roundResult.usage.outputTokens;
+      totalUsage.reasoningTokens += roundResult.usage.reasoningTokens;
+      totalUsage.cachedTokens += roundResult.usage.cachedTokens;
+      totalUsage.totalTokens += roundResult.usage.totalTokens;
+      if (roundResult.text) {
+        combinedText += roundResult.text;
+      }
+    }
+
+    return {
+      ...(roundResult.responseId ? { responseId: roundResult.responseId } : {}),
+      text: combinedText,
+      model: roundResult.model,
+      usage: totalUsage,
+      latencyMs: Date.now() - startedAt,
+    };
+  }
+
+  private async executeWithRetry(
+    bodyPayload: Record<string, unknown>,
+    model: string,
+    timeoutMs: number,
+    startedAt: number,
+    params: CreateResponseParams,
+  ): Promise<CreateResponseResult & { toolCalls: ParsedToolCall[] }> {
     let lastError: AppError | undefined;
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
@@ -270,7 +392,7 @@ export class XaiResponsesClient {
     timeoutMs: number,
     startedAt: number,
     params: CreateResponseParams,
-  ): Promise<CreateResponseResult> {
+  ): Promise<CreateResponseResult & { toolCalls: ParsedToolCall[] }> {
     const attemptController = new AbortController();
     let timedOut = false;
 
@@ -325,6 +447,8 @@ export class XaiResponsesClient {
           this.apiFormat === 'openai-chat'
             ? extractOutputTextFromOpenAiChat(json)
             : extractOutputTextFromResponse(json);
+        const toolCalls =
+          this.apiFormat === 'openai-chat' ? extractToolCallsFromOpenAiChat(json) : [];
         const usage =
           extractUsageFromResponse(json.usage ?? json.usageMetadata) ?? emptyUsage();
         const responseId = typeof json.id === 'string' ? json.id : undefined;
@@ -339,6 +463,7 @@ export class XaiResponsesClient {
           model: typeof json.model === 'string' ? json.model : model,
           usage,
           latencyMs: Date.now() - startedAt,
+          toolCalls,
         };
       }
 
@@ -362,6 +487,54 @@ export class XaiResponsesClient {
       let responseId: string | undefined;
       let usage: TokenUsage | undefined;
       let streamedAnyDelta = false;
+      const toolSlots: Array<{ id?: string; name?: string; argumentsText: string }> = [];
+      const syntheticIndexById = new Map<string, number>();
+
+      const applyStreamEvents = (events: ReturnType<typeof parseFrame>) => {
+        for (const ev of events) {
+          if (ev.type === 'meta' && ev.responseId) {
+            responseId = ev.responseId;
+          } else if (ev.type === 'status') {
+            params.onStatus?.(ev.phase, ev.detail);
+          } else if (ev.type === 'delta') {
+            if (!streamedAnyDelta) {
+              params.onStatus?.('streaming', 'Receiving response…');
+            }
+            streamedAnyDelta = true;
+            accumulatedText += ev.text;
+            params.onDelta?.(ev.text);
+          } else if (ev.type === 'tool_call_delta') {
+            let slotIndex = ev.index;
+            if (!ev.hasExplicitIndex) {
+              if (ev.id) {
+                const existing = syntheticIndexById.get(ev.id);
+                if (existing !== undefined) {
+                  slotIndex = existing;
+                } else {
+                  slotIndex = toolSlots.length;
+                  syntheticIndexById.set(ev.id, slotIndex);
+                }
+              } else {
+                slotIndex = Math.max(0, toolSlots.length - 1);
+              }
+            }
+            while (toolSlots.length <= slotIndex) {
+              toolSlots.push({ argumentsText: '' });
+            }
+            const slot = toolSlots[slotIndex]!;
+            if (ev.id) slot.id = ev.id;
+            if (ev.name) slot.name = (slot.name ?? '') + ev.name;
+            if (ev.argumentsDelta) slot.argumentsText += ev.argumentsDelta;
+          } else if (ev.type === 'completed') {
+            if (ev.responseId) responseId = ev.responseId;
+            if (ev.usage) usage = ev.usage;
+            if (!streamedAnyDelta && ev.fullText) {
+              accumulatedText = ev.fullText;
+              params.onDelta?.(ev.fullText);
+            }
+          }
+        }
+      };
 
       try {
         while (true) {
@@ -371,48 +544,13 @@ export class XaiResponsesClient {
 
           const frames = parser.push(value);
           for (const frame of frames) {
-            const events = parseFrame(frame);
-            for (const ev of events) {
-              if (ev.type === 'meta' && ev.responseId) {
-                responseId = ev.responseId;
-              } else if (ev.type === 'status') {
-                params.onStatus?.(ev.phase, ev.detail);
-              } else if (ev.type === 'delta') {
-                if (!streamedAnyDelta) {
-                  params.onStatus?.('streaming', 'Receiving response…');
-                }
-                streamedAnyDelta = true;
-                accumulatedText += ev.text;
-                params.onDelta?.(ev.text);
-              } else if (ev.type === 'completed') {
-                if (ev.responseId) responseId = ev.responseId;
-                if (ev.usage) usage = ev.usage;
-                if (!streamedAnyDelta && ev.fullText) {
-                  accumulatedText = ev.fullText;
-                  params.onDelta?.(ev.fullText);
-                }
-              }
-            }
+            applyStreamEvents(parseFrame(frame));
           }
         }
 
         const trailingFrames = parser.finish();
         for (const frame of trailingFrames) {
-          const events = parseFrame(frame);
-          for (const ev of events) {
-            if (ev.type === 'delta') {
-              streamedAnyDelta = true;
-              accumulatedText += ev.text;
-              params.onDelta?.(ev.text);
-            } else if (ev.type === 'completed') {
-              if (ev.responseId) responseId = ev.responseId;
-              if (ev.usage) usage = ev.usage;
-              if (!streamedAnyDelta && ev.fullText) {
-                accumulatedText = ev.fullText;
-                params.onDelta?.(ev.fullText);
-              }
-            }
-          }
+          applyStreamEvents(parseFrame(frame));
         }
       } catch (streamErr) {
         const mapped = normalizeToAppError(streamErr, {
@@ -435,12 +573,21 @@ export class XaiResponsesClient {
         reader.releaseLock();
       }
 
+      const toolCalls: ParsedToolCall[] = toolSlots
+        .filter((s) => Boolean(s.name?.trim()))
+        .map((s, idx) => ({
+          id: s.id?.trim() || `call_tool_${idx}`,
+          name: s.name!.trim(),
+          argumentsText: s.argumentsText || '{}',
+        }));
+
       return {
         ...(responseId ? { responseId } : {}),
         text: accumulatedText,
         model,
         usage: usage ?? emptyUsage(),
         latencyMs: Date.now() - startedAt,
+        toolCalls,
       };
     } catch (err) {
       throw normalizeToAppError(err, {
@@ -840,4 +987,18 @@ function emptyUsage(): TokenUsage {
     cachedTokens: 0,
     totalTokens: 0,
   };
+}
+
+function parseToolArgumentsSafely(rawJson: string): Record<string, unknown> {
+  const trimmed = rawJson.trim();
+  if (!trimmed) return {};
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    return {};
+  } catch {
+    return { _invalidArgumentsJson: rawJson };
+  }
 }
