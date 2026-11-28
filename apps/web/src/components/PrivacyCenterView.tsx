@@ -95,7 +95,7 @@ const OS_CAPABILITY_ROWS: Array<{
     key: 'wakeWordStandby',
     title: 'Optional Wake-Word Standby ("Hey MJ")',
     description:
-      'Always-listening standby defaults OFF. Enabling shows a persistent mic-active indicator everywhere.',
+      'Always-listening standby defaults OFF (supports English, বাংলা, Banglish & हिन्दी). Web browsers require one user click to grant microphone access; Tauri desktop allows wake-word startup only when this toggle is ON.',
     riskTag: 'Always-Listening',
   },
   {

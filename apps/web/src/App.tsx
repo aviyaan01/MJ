@@ -1,5 +1,9 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import {
+  AppError,
+  DEFAULT_AUTO_LISTEN,
+  DEFAULT_BARGE_IN_PCM16_THRESHOLD,
+  DEFAULT_FOLLOWUP_LISTEN_SECONDS,
   DEFAULT_PERMISSIONS_STATE,
   ErrorCodes,
   VoiceStates,
@@ -30,13 +34,18 @@ import { nextRepeatedErrorState } from './components/VoiceStateBar.js';
 import {
   isTauriDesktop,
   syncTauriMicTray,
+  tauriGetPermissions,
   tauriOpenApprovedApp,
   tauriOpenApprovedUrl,
   tauriRevokeAllPermissions,
   tauriSetSinglePermission,
   tauriValidateShortcutTrigger,
 } from './desktop/desktopBridge.js';
-import { WakeWordListener } from './voice/wakeWordListener.js';
+import {
+  BROWSER_CLICK_REQUIRED_MESSAGE,
+  WakeWordListener,
+  canAutoStartWakeWordAtLaunch,
+} from './voice/wakeWordListener.js';
 import {
   speakWithBrowserSpeechSynthesis,
   type FreeBrowserVoiceController,
@@ -114,6 +123,10 @@ export function App() {
   const [wakeWordStatusMessage, setWakeWordStatusMessage] = useState(
     'Wake-word standby is OFF.',
   );
+  const [hasBrowserUserGesture, setHasBrowserUserGesture] = useState(false);
+  const [browserMicPermission, setBrowserMicPermission] = useState<
+    'granted' | 'prompt' | 'denied' | 'unknown'
+  >('unknown');
 
   const [activeError, setActiveError] = useState<StructuredErrorPayload | null>(null);
   const [repeatErrorHint, setRepeatErrorHint] = useState<string | null>(null);
@@ -156,8 +169,55 @@ export function App() {
       speakingRate: settings?.voice.speakingRate ?? 1.0,
       volume: settings?.voice.volume ?? 0.9,
       voiceOutputEnabled: settings?.voice.voiceOutputEnabled ?? true,
+      autoListen: settings?.voice.autoListen ?? DEFAULT_AUTO_LISTEN,
+      bargeInThreshold: settings?.voice.bargeInThreshold ?? DEFAULT_BARGE_IN_PCM16_THRESHOLD,
+    });
+    wakeListenerRef.current?.updateOptions({
+      languageMode: settings?.voice.languageMode ?? 'auto',
     });
   }, [settings]);
+
+  // Track browser user activation gesture and Permissions API mic status for wake-word standby
+  useEffect(() => {
+    if (isTauriDesktop()) return;
+
+    const markGesture = () => {
+      setHasBrowserUserGesture(true);
+    };
+    window.addEventListener('pointerdown', markGesture, { once: true, passive: true });
+    window.addEventListener('keydown', markGesture, { once: true, passive: true });
+
+    let cancelled = false;
+    let statusObj: PermissionStatus | null = null;
+    const syncPerm = async () => {
+      try {
+        if (!navigator.permissions?.query) return;
+        const result = await navigator.permissions.query({
+          name: 'microphone' as PermissionName,
+        });
+        if (cancelled) return;
+        statusObj = result;
+        setBrowserMicPermission(result.state);
+        result.onchange = () => {
+          if (!cancelled) {
+            setBrowserMicPermission(result.state);
+          }
+        };
+      } catch {
+        // Permissions API query('microphone') not supported in all browsers
+      }
+    };
+    void syncPerm();
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener('pointerdown', markGesture);
+      window.removeEventListener('keydown', markGesture);
+      if (statusObj) {
+        statusObj.onchange = null;
+      }
+    };
+  }, []);
 
   const reportAppError = useCallback((payload: StructuredErrorPayload) => {
     const next = nextRepeatedErrorState(
@@ -218,6 +278,18 @@ export function App() {
     const service = new MjVoiceService(
       {
         fetchClientSecret: async () => {
+          const p = permissionsRef.current;
+          if (!p.microphoneAccess || !p.voiceSessionAccess) {
+            throw new AppError({
+              code: ErrorCodes.PERMISSION_DENIED,
+              category: 'privacy',
+              statusCode: 403,
+              message: !p.microphoneAccess
+                ? 'Microphone access is disabled in Privacy & Permissions.'
+                : 'Voice sessions are disabled in Privacy & Permissions.',
+              retryable: false,
+            });
+          }
           const convId = activeConversationRef.current?.id;
           return mjApi.requestVoiceClientSecret({
             ...(convId ? { conversationId: convId } : {}),
@@ -350,6 +422,8 @@ export function App() {
         speakingRate: 1.0,
         volume: 0.9,
         voiceOutputEnabled: true,
+        autoListen: DEFAULT_AUTO_LISTEN,
+        bargeInThreshold: DEFAULT_BARGE_IN_PCM16_THRESHOLD,
       },
     );
 
@@ -422,6 +496,7 @@ export function App() {
       convRes,
       voicesRes,
       permRes,
+      nativePerms,
       allowRes,
       auditRes,
       shortcutRes,
@@ -432,6 +507,7 @@ export function App() {
       mjApi.listConversations(),
       mjApi.getAvailableVoices().catch(() => ({ voices: [] })),
       mjApi.getPrivacyPermissions(),
+      isTauriDesktop() ? tauriGetPermissions() : Promise.resolve(null),
       mjApi.listAllowlist(),
       mjApi.listAuditLogs(),
       mjApi.listDesktopShortcuts(),
@@ -445,7 +521,16 @@ export function App() {
     setSelectedModelOverride(settingsRes.activeModel);
     setUsage(usageRes);
     setConversations(convRes.conversations);
-    setPermissions(permRes.permissions);
+    setPermissions({
+      ...permRes.permissions,
+      ...(nativePerms
+        ? {
+            wakeWordStandby: Boolean(
+              permRes.permissions.wakeWordStandby && nativePerms.wakeWordStandby !== false,
+            ),
+          }
+        : {}),
+    });
     setAllowlist(allowRes.entries);
     setAuditLogs(auditRes.entries);
     setShortcuts(shortcutRes.shortcuts);
@@ -1010,6 +1095,7 @@ export function App() {
   );
 
   const handleStartVoice = useCallback(async () => {
+    setHasBrowserUserGesture(true);
     clearErrorBanner();
     const currentPerms = permissionsRef.current;
     const isBrowserMode = settingsRef.current?.voice.voiceModel === 'free-browser-voice';
@@ -1080,6 +1166,11 @@ export function App() {
         volume: settingsRef.current?.voice.volume ?? 0.9,
         speakingRate: settingsRef.current?.voice.speakingRate ?? 1.0,
         voiceOutputEnabled: settingsRef.current?.voice.voiceOutputEnabled ?? true,
+        autoListen: settingsRef.current?.voice.autoListen ?? DEFAULT_AUTO_LISTEN,
+        followupListenSeconds:
+          settingsRef.current?.voice.followupListenSeconds ?? DEFAULT_FOLLOWUP_LISTEN_SECONDS,
+        bargeInThreshold:
+          settingsRef.current?.voice.bargeInThreshold ?? DEFAULT_BARGE_IN_PCM16_THRESHOLD,
         preferServerStt: useServerStt,
         initialNotice: options?.notice,
         getPermissions: () => permissionsRef.current,
@@ -1229,6 +1320,9 @@ export function App() {
 
   const handleTogglePermission = useCallback(
     async (key: ControllablePermissionKey, enabled: boolean) => {
+      if (enabled) {
+        setHasBrowserUserGesture(true);
+      }
       const res = await mjApi.setSinglePermission(key, enabled);
       setPermissions(res.permissions);
       await tauriSetSinglePermission(key, enabled);
@@ -1421,7 +1515,7 @@ export function App() {
     const listener = new WakeWordListener(
       (transcript) => {
         const current = permissionsRef.current;
-        if (!current.microphoneAccess || !current.voiceSessionAccess) {
+        if (!current.wakeWordStandby || !current.microphoneAccess || !current.voiceSessionAccess) {
           void mjApi
             .recordAuditLog({
               capability: 'wakeWordStandby',
@@ -1429,7 +1523,7 @@ export function App() {
               target: transcript || 'hey mj',
               outcome: 'denied',
               source: 'web',
-              detail: 'microphoneAccess or voiceSessionAccess is OFF.',
+              detail: 'wakeWordStandby, microphoneAccess, or voiceSessionAccess is OFF.',
             })
             .then(() => refreshAuditLogs())
             .catch(() => { });
@@ -1451,6 +1545,15 @@ export function App() {
         setWakeWordActive(status.active);
         setWakeWordStatusMessage(status.message);
       },
+      {
+        languageMode: settingsRef.current?.voice.languageMode ?? 'auto',
+        canRun: () => {
+          const current = permissionsRef.current;
+          return Boolean(
+            current.wakeWordStandby && current.microphoneAccess && current.voiceSessionAccess,
+          );
+        },
+      },
     );
     wakeListenerRef.current = listener;
     return () => {
@@ -1469,20 +1572,31 @@ export function App() {
     voiceState === 'reconnecting';
 
   useEffect(() => {
-    const shouldStandby =
-      Boolean(session?.authenticated) &&
-      permissions.wakeWordStandby &&
-      permissions.microphoneAccess &&
-      !micActive;
-    if (shouldStandby) {
+    const decision = canAutoStartWakeWordAtLaunch({
+      authenticated: Boolean(session?.authenticated),
+      isTauriDesktop: isTauriDesktop(),
+      wakeWordStandby: permissions.wakeWordStandby,
+      microphoneAccess: permissions.microphoneAccess,
+      voiceSessionAccess: permissions.voiceSessionAccess,
+      hasBrowserUserGesture,
+      browserMicPermission,
+      micActive,
+    });
+    if (decision.allowed) {
       wakeListenerRef.current?.start();
     } else {
       wakeListenerRef.current?.stop();
+      if (decision.reason === 'browser_click_required') {
+        setWakeWordStatusMessage(BROWSER_CLICK_REQUIRED_MESSAGE);
+      }
     }
   }, [
     session?.authenticated,
     permissions.wakeWordStandby,
     permissions.microphoneAccess,
+    permissions.voiceSessionAccess,
+    hasBrowserUserGesture,
+    browserMicPermission,
     micActive,
   ]);
 

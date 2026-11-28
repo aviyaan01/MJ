@@ -15,6 +15,7 @@ import { DesktopView } from '../apps/web/src/components/DesktopView.js';
 import { HomeDashboard } from '../apps/web/src/components/HomeDashboard.js';
 import { MicActiveBanner } from '../apps/web/src/components/MicActiveBanner.js';
 import { PrivacyCenterView } from '../apps/web/src/components/PrivacyCenterView.js';
+import { SettingsView } from '../apps/web/src/components/SettingsView.js';
 import { Sidebar } from '../apps/web/src/components/Sidebar.js';
 import { UnlockGate } from '../apps/web/src/components/UnlockGate.js';
 import { UsageDashboardView } from '../apps/web/src/components/UsageDashboardView.js';
@@ -68,6 +69,9 @@ const mockSettings: PublicSettingsDTO = {
     volume: 0.9,
     autoPlayback: false,
     voiceOutputEnabled: true,
+    autoListen: true,
+    followupListenSeconds: 7,
+    bargeInThreshold: 1400,
     languageMode: 'auto',
   },
 };
@@ -585,5 +589,20 @@ describe('Frontend React Views & Responsive UI Coverage (Sections 16 & 17)', () 
     expect(serverSttErrorHome).toContain('Server STT Transcription.');
     expect(serverSttErrorHome).toContain('Try Settings -&gt; Voice, or check VPN/browser');
     expect(serverSttErrorHome).not.toContain('>Retry</button>');
+
+    const settingsVoiceHtml = renderToStaticMarkup(
+      <SettingsView
+        settings={mockSettings}
+        usage={mockUsage}
+        session={{ authenticated: true, passcodeRequired: false, mode: 'local-dev', appEnv: 'test' }}
+        availableVoices={mockSettings.voice.availableVoices}
+        initialTab="voice"
+        onSaveSettings={async () => {}}
+        onRefreshUsage={async () => {}}
+      />,
+    );
+    expect(settingsVoiceHtml).toContain('Auto-Listen Follow-Up');
+    expect(settingsVoiceHtml).toContain('Follow-Up Listen Window');
+    expect(settingsVoiceHtml).toContain('Barge-In RMS Threshold (16-bit PCM)');
   });
 });

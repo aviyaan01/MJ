@@ -1,5 +1,7 @@
 import {
   AppError,
+  DEFAULT_AUTO_LISTEN,
+  DEFAULT_BARGE_IN_PCM16_THRESHOLD,
   ErrorCodes,
   VoiceStates,
   type LanguageMode,
@@ -11,6 +13,7 @@ import {
   GEMINI_LIVE_INPUT_SAMPLE_RATE,
   GEMINI_LIVE_OUTPUT_SAMPLE_RATE,
   XAI_REALTIME_SAMPLE_RATE,
+  computePcm16Rms,
   computeRmsLevel,
   float32ToPcm16Base64,
   pcm16Base64ToFloat32,
@@ -49,6 +52,54 @@ export interface VoiceRuntimeOptions {
   speakingRate: number;
   volume: number;
   voiceOutputEnabled: boolean;
+  autoListen?: boolean;
+  bargeInThreshold?: number;
+}
+
+export function buildGeminiLiveSetupPayload(params: {
+  model: string;
+  voiceId: string;
+  instructions: string;
+  sessionHandle?: string | null;
+}) {
+  const modelResource = params.model.startsWith('models/')
+    ? params.model
+    : `models/${params.model}`;
+  return {
+    setup: {
+      model: modelResource,
+      generationConfig: {
+        responseModalities: ['AUDIO'],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: {
+              voiceName: mapToGeminiPrebuiltVoice(params.voiceId),
+            },
+          },
+        },
+      },
+      systemInstruction: {
+        parts: [{ text: params.instructions }],
+      },
+      inputAudioTranscription: {},
+      outputAudioTranscription: {},
+      realtimeInputConfig: {
+        automaticActivityDetection: {
+          disabled: false,
+          startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
+          endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
+          prefixPaddingMs: 120,
+          silenceDurationMs: 650,
+        },
+      },
+      sessionResumption: params.sessionHandle
+        ? { handle: params.sessionHandle }
+        : {},
+      contextWindowCompression: {
+        slidingWindow: {},
+      },
+    },
+  };
 }
 
 const WORKLET_PROCESSOR_CODE = `
@@ -98,10 +149,17 @@ export class MjVoiceService {
   private currentAssistantTranscript = '';
   private lastAssistantText = '';
   private responseActive = false;
+  private geminiSessionHandle: string | null = null;
+  private goAwayReceived = false;
+  private lastBargeInAtMs = 0;
 
   constructor(callbacks: VoiceServiceCallbacks, initialOptions: VoiceRuntimeOptions) {
     this.callbacks = callbacks;
-    this.options = { ...initialOptions };
+    this.options = {
+      autoListen: DEFAULT_AUTO_LISTEN,
+      bargeInThreshold: DEFAULT_BARGE_IN_PCM16_THRESHOLD,
+      ...initialOptions,
+    };
 
     this.stateMachine.subscribe((state, detail) => {
       this.callbacks.onStateChange?.(state, detail ?? '');
@@ -155,6 +213,8 @@ export class MjVoiceService {
 
     this.manualStop = false;
     this.reconnectAttempts = 0;
+    this.geminiSessionHandle = null;
+    this.goAwayReceived = false;
     this.isMuted = false;
     this.callbacks.onMuteChange?.(false);
 
@@ -177,6 +237,10 @@ export class MjVoiceService {
 
   public async stopSession(reason: 'manual' | 'error' = 'manual'): Promise<void> {
     this.manualStop = reason === 'manual';
+    if (reason === 'manual') {
+      this.geminiSessionHandle = null;
+      this.goAwayReceived = false;
+    }
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -396,32 +460,17 @@ export class MjVoiceService {
         return;
       }
       opened = true;
-      this.reconnectAttempts = 0;
+      if (inferredProtocol !== 'gemini-live') {
+        this.reconnectAttempts = 0;
+      }
 
       if (inferredProtocol === 'gemini-live') {
-        const modelResource = secret.model.startsWith('models/')
-          ? secret.model
-          : `models/${secret.model}`;
-        const setupPayload = {
-          setup: {
-            model: modelResource,
-            generationConfig: {
-              responseModalities: ['AUDIO'],
-              speechConfig: {
-                voiceConfig: {
-                  prebuiltVoiceConfig: {
-                    voiceName: mapToGeminiPrebuiltVoice(secret.voice || this.options.voiceId),
-                  },
-                },
-              },
-            },
-            systemInstruction: {
-              parts: [{ text: secret.instructions }],
-            },
-            inputAudioTranscription: {},
-            outputAudioTranscription: {},
-          },
-        };
+        const setupPayload = buildGeminiLiveSetupPayload({
+          model: secret.model,
+          voiceId: secret.voice || this.options.voiceId,
+          instructions: secret.instructions,
+          sessionHandle: this.geminiSessionHandle,
+        });
         socket.send(JSON.stringify(setupPayload));
       } else {
         const sessionUpdatePayload = {
@@ -479,17 +528,28 @@ export class MjVoiceService {
       if (this.ws !== socket) return;
       this.ws = null;
 
-      if (this.manualStop || closeEvent.code === 1000) {
+      if (this.manualStop) {
+        return;
+      }
+
+      const autoListenActive = this.options.autoListen !== false;
+      const shouldReconnectOnClose =
+        closeEvent.code !== 1000 || this.goAwayReceived || autoListenActive;
+      if (!shouldReconnectOnClose) {
         return;
       }
 
       if (this.reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
         this.reconnectAttempts += 1;
+        this.goAwayReceived = false;
         this.stateMachine.transition(
           VoiceStates.RECONNECTING,
           `Voice connection interrupted. Reconnecting (${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})…`,
         );
-        const delayMs = Math.min(4000, 700 * 2 ** (this.reconnectAttempts - 1)) + Math.random() * 350;
+        const delayMs =
+          closeEvent.code === 1000 && autoListenActive
+            ? 250
+            : Math.min(4000, 700 * 2 ** (this.reconnectAttempts - 1)) + Math.random() * 350;
         this.reconnectTimer = setTimeout(() => {
           void this.openRealtimeSocket(true);
         }, delayMs);
@@ -658,7 +718,26 @@ export class MjVoiceService {
       return;
     }
 
+    const resumption =
+      payload.sessionResumptionUpdate && typeof payload.sessionResumptionUpdate === 'object'
+        ? (payload.sessionResumptionUpdate as Record<string, unknown>)
+        : null;
+    if (
+      resumption &&
+      resumption.resumable !== false &&
+      typeof resumption.newHandle === 'string' &&
+      resumption.newHandle.trim()
+    ) {
+      this.geminiSessionHandle = resumption.newHandle.trim();
+    }
+
+    if (payload.goAway && typeof payload.goAway === 'object') {
+      this.goAwayReceived = true;
+    }
+
     if (payload.setupComplete !== undefined) {
+      this.goAwayReceived = false;
+      this.reconnectAttempts = 0;
       if (this.stateMachine.getState() === VoiceStates.CONNECTING) {
         this.stateMachine.transition(VoiceStates.LISTENING);
       }
@@ -787,6 +866,24 @@ export class MjVoiceService {
     return this.audioContext;
   }
 
+  public shouldTriggerBargeIn(samples: Float32Array): boolean {
+    if (this.isMuted) return false;
+    const isCurrentlySpeaking =
+      this.stateMachine.getState() === VoiceStates.SPEAKING ||
+      this.activeSources.size > 0 ||
+      this.fallbackAudioBufferSource !== null;
+    if (!isCurrentlySpeaking) return false;
+
+    const threshold = this.options.bargeInThreshold ?? DEFAULT_BARGE_IN_PCM16_THRESHOLD;
+    const pcm16Rms = computePcm16Rms(samples);
+    if (pcm16Rms < threshold) return false;
+
+    const now = Date.now();
+    if (now - this.lastBargeInAtMs < 300) return false;
+    this.lastBargeInAtMs = now;
+    return true;
+  }
+
   private async initAudioAndMic(): Promise<void> {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new AppError({
@@ -823,6 +920,9 @@ export class MjVoiceService {
       }
 
       this.currentInputLevel = computeRmsLevel(samples);
+      if (this.shouldTriggerBargeIn(samples)) {
+        this.interrupt();
+      }
 
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
         return;

@@ -52,6 +52,21 @@ export async function tauriSetSinglePermission(
   await tauri.invoke('desktop_set_permission', { key, enabled });
 }
 
+export async function tauriGetPermissions(): Promise<{
+  wakeWordStandby?: boolean;
+  microphoneAccess?: boolean;
+} | null> {
+  const tauri = getTauri();
+  if (!tauri) return null;
+  try {
+    return await tauri.invoke<{ wakeWordStandby?: boolean; microphoneAccess?: boolean }>(
+      'desktop_get_permissions',
+    );
+  } catch {
+    return null;
+  }
+}
+
 export async function tauriRevokeAllPermissions(): Promise<void> {
   const tauri = getTauri();
   if (!tauri) return;

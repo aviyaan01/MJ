@@ -11,6 +11,11 @@ import {
 } from 'lucide-react';
 import { Panel, StatusPill } from '@mj/ui';
 import {
+  DEFAULT_AUTO_LISTEN,
+  DEFAULT_BARGE_IN_PCM16_THRESHOLD,
+  DEFAULT_FOLLOWUP_LISTEN_SECONDS,
+  MAX_FOLLOWUP_LISTEN_SECONDS,
+  MIN_FOLLOWUP_LISTEN_SECONDS,
   resolveProviderDisplay,
   type AiProviderId,
   type AuthSessionDTO,
@@ -28,6 +33,7 @@ interface SettingsViewProps {
   usage: UsageSummaryDTO | null;
   session: AuthSessionDTO | null;
   availableVoices: Array<{ id: string; label: string; description: string }>;
+  initialTab?: SettingsTab;
   onSaveSettings: (patch: Record<string, unknown>) => Promise<void>;
   onRefreshUsage: () => Promise<void>;
 }
@@ -46,10 +52,11 @@ export function SettingsView({
   usage,
   session,
   availableVoices,
+  initialTab = 'general',
   onSaveSettings,
   onRefreshUsage,
 }: SettingsViewProps) {
-  const [activeTab, setActiveTab] = useState<SettingsTab>('general');
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
   const [saving, setSaving] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
@@ -71,6 +78,11 @@ export function SettingsView({
   const [volume, setVolume] = useState(0.9);
   const [autoPlayback, setAutoPlayback] = useState(false);
   const [voiceOutputEnabled, setVoiceOutputEnabled] = useState(true);
+  const [autoListen, setAutoListen] = useState(DEFAULT_AUTO_LISTEN);
+  const [followupListenSeconds, setFollowupListenSeconds] = useState(
+    DEFAULT_FOLLOWUP_LISTEN_SECONDS,
+  );
+  const [bargeInThreshold, setBargeInThreshold] = useState(DEFAULT_BARGE_IN_PCM16_THRESHOLD);
 
   const [reducedMotionOverride, setReducedMotionOverride] = useState<'system' | 'reduce' | 'normal'>('system');
   const [compactDensity, setCompactDensity] = useState(false);
@@ -102,6 +114,11 @@ export function SettingsView({
     setVolume(settings.voice.volume);
     setAutoPlayback(settings.voice.autoPlayback);
     setVoiceOutputEnabled(settings.voice.voiceOutputEnabled);
+    setAutoListen(settings.voice.autoListen ?? DEFAULT_AUTO_LISTEN);
+    setFollowupListenSeconds(
+      settings.voice.followupListenSeconds ?? DEFAULT_FOLLOWUP_LISTEN_SECONDS,
+    );
+    setBargeInThreshold(settings.voice.bargeInThreshold ?? DEFAULT_BARGE_IN_PCM16_THRESHOLD);
 
     setReducedMotionOverride(settings.reducedMotionOverride);
     setCompactDensity(settings.compactDensity);
@@ -143,6 +160,9 @@ export function SettingsView({
           volume: Number(volume),
           autoPlayback,
           voiceOutputEnabled,
+          autoListen,
+          followupListenSeconds: Number(followupListenSeconds),
+          bargeInThreshold: Number(bargeInThreshold),
         },
         budget: {
           dailyCapUsd: Number(dailyCapUsd),
@@ -648,9 +668,70 @@ export function SettingsView({
                     className="w-full accent-[#9AC6E6]"
                   />
                 </div>
+
+                <div>
+                  <label
+                    htmlFor="followup-listen-seconds"
+                    className="mb-2 flex justify-between text-xs font-medium text-[#DCE6EE]"
+                  >
+                    <span>Follow-Up Listen Window</span>
+                    <span className="font-mono text-[#9AC6E6]">{followupListenSeconds}s</span>
+                  </label>
+                  <input
+                    id="followup-listen-seconds"
+                    type="range"
+                    min={MIN_FOLLOWUP_LISTEN_SECONDS}
+                    max={MAX_FOLLOWUP_LISTEN_SECONDS}
+                    step={1}
+                    value={followupListenSeconds}
+                    onChange={(e) => setFollowupListenSeconds(Number(e.target.value))}
+                    className="w-full accent-[#9AC6E6]"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="barge-in-threshold"
+                    className="mb-2 flex justify-between text-xs font-medium text-[#DCE6EE]"
+                  >
+                    <span>Barge-In RMS Threshold (16-bit PCM)</span>
+                    <span className="font-mono text-[#9AC6E6]">{bargeInThreshold}</span>
+                  </label>
+                  <input
+                    id="barge-in-threshold"
+                    type="range"
+                    min={200}
+                    max={6000}
+                    step={100}
+                    value={bargeInThreshold}
+                    onChange={(e) => setBargeInThreshold(Number(e.target.value))}
+                    className="w-full accent-[#9AC6E6]"
+                  />
+                </div>
               </div>
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label
+                  className="flex cursor-pointer items-center justify-between rounded-xl px-4 py-3"
+                  style={{
+                    backgroundColor: '#07090E',
+                    border: '1px solid var(--mj-border-subtle)',
+                  }}
+                >
+                  <div>
+                    <div className="text-xs font-medium text-[#DCE6EE]">Auto-Listen Follow-Up</div>
+                    <div className="text-[11px]" style={{ color: 'var(--mj-text-subtle)' }}>
+                      Keep listening for follow-ups after MJ finishes speaking
+                    </div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={autoListen}
+                    onChange={(e) => setAutoListen(e.target.checked)}
+                    className="h-4 w-4 accent-[#9AC6E6]"
+                  />
+                </label>
+
                 <label
                   className="flex cursor-pointer items-center justify-between rounded-xl px-4 py-3"
                   style={{

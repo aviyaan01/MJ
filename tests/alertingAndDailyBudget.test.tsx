@@ -291,6 +291,9 @@ describe('Uptime, Crash & Error-Rate Alerting, Daily Budget Warning & Log Saniti
         volume: 0.9,
         autoPlayback: false,
         voiceOutputEnabled: true,
+        autoListen: true,
+        followupListenSeconds: 7,
+        bargeInThreshold: 1400,
         languageMode: 'auto',
       },
     };

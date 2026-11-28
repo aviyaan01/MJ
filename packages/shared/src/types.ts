@@ -79,6 +79,14 @@ export interface BudgetSettings {
   sttRatePerHourUsd: number;
 }
 
+export const DEFAULT_AUTO_LISTEN = true;
+export const DEFAULT_FOLLOWUP_LISTEN_SECONDS = 7;
+export const MIN_FOLLOWUP_LISTEN_SECONDS = 3;
+export const MAX_FOLLOWUP_LISTEN_SECONDS = 30;
+export const DEFAULT_BARGE_IN_PCM16_THRESHOLD = 1400;
+export const MIN_BARGE_IN_PCM16_THRESHOLD = 200;
+export const MAX_BARGE_IN_PCM16_THRESHOLD = 10000;
+
 export interface VoiceSettings {
   voiceModel: string;
   availableVoiceModels: string[];
@@ -88,6 +96,9 @@ export interface VoiceSettings {
   volume: number;
   autoPlayback: boolean;
   voiceOutputEnabled: boolean;
+  autoListen: boolean;
+  followupListenSeconds: number;
+  bargeInThreshold: number;
   languageMode: LanguageMode;
 }
 

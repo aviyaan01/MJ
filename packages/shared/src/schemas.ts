@@ -100,6 +100,9 @@ export const UpdateSettingsSchema = z.object({
       volume: z.number().min(0).max(1).optional(),
       autoPlayback: z.boolean().optional(),
       voiceOutputEnabled: z.boolean().optional(),
+      autoListen: z.boolean().optional(),
+      followupListenSeconds: z.number().int().min(3).max(30).optional(),
+      bargeInThreshold: z.number().int().min(200).max(10000).optional(),
       languageMode: LanguageModeSchema.optional(),
     })
     .optional(),

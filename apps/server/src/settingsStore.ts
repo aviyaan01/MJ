@@ -1,7 +1,14 @@
 import {
   AppError,
+  DEFAULT_AUTO_LISTEN,
+  DEFAULT_BARGE_IN_PCM16_THRESHOLD,
   DEFAULT_BUDGET_SETTINGS,
+  DEFAULT_FOLLOWUP_LISTEN_SECONDS,
   ErrorCodes,
+  MAX_BARGE_IN_PCM16_THRESHOLD,
+  MAX_FOLLOWUP_LISTEN_SECONDS,
+  MIN_BARGE_IN_PCM16_THRESHOLD,
+  MIN_FOLLOWUP_LISTEN_SECONDS,
   resolveProviderDisplay,
   type AiProviderId,
   type BudgetSettings,
@@ -42,6 +49,9 @@ export interface PersistedSettingsPatch {
     volume?: number;
     autoPlayback?: boolean;
     voiceOutputEnabled?: boolean;
+    autoListen?: boolean;
+    followupListenSeconds?: number;
+    bargeInThreshold?: number;
     languageMode?: LanguageMode;
   };
 }
@@ -174,6 +184,21 @@ export class RuntimeSettingsStore {
         volume: saved.voice?.volume ?? 0.9,
         autoPlayback: saved.voice?.autoPlayback ?? false,
         voiceOutputEnabled: saved.voice?.voiceOutputEnabled ?? true,
+        autoListen: saved.voice?.autoListen ?? DEFAULT_AUTO_LISTEN,
+        followupListenSeconds: Math.min(
+          MAX_FOLLOWUP_LISTEN_SECONDS,
+          Math.max(
+            MIN_FOLLOWUP_LISTEN_SECONDS,
+            Math.round(saved.voice?.followupListenSeconds ?? DEFAULT_FOLLOWUP_LISTEN_SECONDS),
+          ),
+        ),
+        bargeInThreshold: Math.min(
+          MAX_BARGE_IN_PCM16_THRESHOLD,
+          Math.max(
+            MIN_BARGE_IN_PCM16_THRESHOLD,
+            Math.round(saved.voice?.bargeInThreshold ?? DEFAULT_BARGE_IN_PCM16_THRESHOLD),
+          ),
+        ),
         languageMode: saved.voice?.languageMode ?? 'auto',
       },
     };

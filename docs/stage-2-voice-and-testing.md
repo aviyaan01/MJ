@@ -27,3 +27,5 @@
    - **Interrupt / Barge-in**: Start speaking while MJ is `Speaking` OR click **Interrupt**; verify audio playback halts immediately (`Interrupted` -> `Listening`).
    - **Repeat / Read Aloud**: Click **Repeat** on Home or **Read aloud** in Chat to test `POST /api/voice/tts` fallback playback.
    - **Stop**: Click **Stop** to close the WebSocket, release microphone tracks (`Mic Off`), and record voice session duration into **Settings -> Usage & Budget**.
+   - **Follow-Up Auto-Listen & Barge-In**: With `voice.autoListen` enabled (default `true`), MJ reopens the microphone for `voice.followupListenSeconds` (default `7s`, `3–30s`) after finishing a spoken reply and returns to `"Say Hey MJ to wake me"` if silent. Speaking above `voice.bargeInThreshold` (`1400` PCM16 RMS) during playback halts TTS immediately and resumes listening.
+   - **Browser Click vs Tauri Desktop Wake Word**: Web browsers require **one user click** to grant microphone access before `WakeWordListener` can listen on page load. In the Tauri desktop app (`apps/desktop`), startup wake-word standby runs **only if** the user explicitly enabled `wakeWordStandby`.

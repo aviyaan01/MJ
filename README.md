@@ -89,6 +89,7 @@ npm run dev
 Open **http://localhost:5173** (or **http://127.0.0.1:5173**) in Chrome or Edge.
 - Use the **Provider & Model Switcher** in the **Chat** header (`Auto`, `Gemini`, `Ollama`, `Groq`) or switch defaults under **Settings > AI Model & API**.
 - Voice sessions connect via server-managed **Google Gemini Live** and automatically fall back to **Free Browser Voice** (`Web Speech API`) + **Groq Whisper STT** at `$0.00` cost if Gemini Live is unavailable.
+- **Hands-Free Follow-Up, Barge-In & Wake Word**: After starting voice once, **Auto-Listen** (`voice.autoListen=true`) automatically reopens the mic for `voice.followupListenSeconds` (default `7s`, range `3–30s`) when TTS finishes, returns to `"Say Hey MJ to wake me"` if silent, and stops TTS immediately if mic input exceeds `voice.bargeInThreshold` (`1400` on 16-bit PCM). **Important**: Browsers require **one user click** to grant microphone access before wake-word standby can begin listening; in the **Tauri desktop app**, wake-word standby starts automatically at launch **only if** the user explicitly enabled `wakeWordStandby` in Privacy & Permissions.
 
 ### Optional Windows Tauri Companion (`apps/desktop`)
 

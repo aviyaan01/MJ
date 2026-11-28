@@ -1,4 +1,5 @@
 import {
+  DEFAULT_BARGE_IN_PCM16_THRESHOLD,
   ErrorCodes,
   VoiceStates,
   type LanguageMode,
@@ -6,6 +7,7 @@ import {
   type StructuredErrorPayload,
   type VoiceState,
 } from '@mj/shared';
+import { uint8SamplesToPcm16Rms } from '@mj/voice';
 import {
   ApiClientError,
   mjApi,
@@ -13,11 +15,16 @@ import {
   type SttTranscribeResponse,
 } from '../api/client.js';
 import {
+  IDLE_WAKE_STATUS_MESSAGE,
+  clampFollowupSeconds,
   speakVoiceReply,
   startFreeBrowserVoiceSession,
+  type BargeInMonitorDeps,
   type FreeBrowserVoiceController,
   type WebSpeechUnavailableReason,
 } from './freeBrowserVoice.js';
+
+export { IDLE_WAKE_STATUS_MESSAGE };
 
 export const SERVER_STT_MAX_RECORDING_MS = 15_000;
 export const SERVER_STT_MAX_BASE64_CHARS = 12_000_000;
@@ -58,9 +65,11 @@ export interface ServerSttVoiceDeps {
     signal?: AbortSignal,
   ) => Promise<SttTranscribeResponse>;
   maxDurationMs?: number;
+  followupTimeoutMs?: number;
   silenceDurationMs?: number;
   minSpeechBeforeSilenceMs?: number;
   silenceThresholdRms?: number;
+  bargeInDeps?: BargeInMonitorDeps;
 }
 
 export function selectRecorderMimeType(
@@ -192,7 +201,7 @@ function toStructuredVoiceError(err: unknown, fallbackMessage: string): Structur
 /**
  * Records microphone audio via MediaRecorder (until silence or max 15s), enforces the 12 MB STT limit
  * and all privacy gates, sends base64 audio to `POST /api/voice/stt`, submits the transcript to chat,
- * and speaks the assistant reply.
+ * speaks the assistant reply (with RMS barge-in), and optionally reopens for follow-up listening.
  */
 export function startServerSttVoiceSession(
   params: {
@@ -200,6 +209,10 @@ export function startServerSttVoiceSession(
     volume: number;
     speakingRate: number;
     voiceOutputEnabled: boolean;
+    autoListen?: boolean;
+    followupListenSeconds?: number;
+    bargeInThreshold?: number;
+    isFollowup?: boolean;
     getPermissions?: () => VoicePrivacySubset;
     statusNotice?: string;
     onAudioLevel?: (level: number) => void;
@@ -247,14 +260,39 @@ export function startServerSttVoiceSession(
 
   let stopped = false;
   let aborted = false;
+  let speaking = false;
+  let activeTurnIsFollowup = Boolean(params.isFollowup);
   let stream: MediaStream | null = null;
   let recorder: MediaRecorderLike | null = null;
   let audioCtx: AudioContext | null = null;
   let silenceTimer: ReturnType<typeof setInterval> | null = null;
   let maxDurationTimer: ReturnType<typeof setTimeout> | null = null;
-  const uploadAbort = new AbortController();
+  let followupTimer: ReturnType<typeof setTimeout> | null = null;
+  let uploadAbort = new AbortController();
+  let clearBargeInSpeechHandler: (() => void) | null = null;
+
+  const autoListenEnabled = Boolean(params.autoListen);
+  const followupSecs = clampFollowupSeconds(params.followupListenSeconds);
+  const followupMs =
+    deps.followupTimeoutMs && deps.followupTimeoutMs > 0
+      ? deps.followupTimeoutMs
+      : followupSecs * 1000;
+
+  const canContinueVoice = (): boolean => {
+    if (stopped || aborted) return false;
+    if (!params.getPermissions) return true;
+    return (
+      checkVoicePrivacyPermissions(params.getPermissions(), {
+        requireExternalWebServices: true,
+      }) === null
+    );
+  };
 
   const cleanupMedia = () => {
+    if (followupTimer) {
+      clearTimeout(followupTimer);
+      followupTimer = null;
+    }
     if (silenceTimer) {
       clearInterval(silenceTimer);
       silenceTimer = null;
@@ -284,277 +322,364 @@ export function startServerSttVoiceSession(
     }
   };
 
+  const finishWithIdle = (detail = 'Ready') => {
+    cleanupMedia();
+    recorder = null;
+    params.onStateChange(VoiceStates.IDLE, detail);
+    params.onFinish();
+  };
+
   const prefix = params.statusNotice ? `${params.statusNotice} · ` : '';
 
-  void (async () => {
-    try {
-      params.onStateChange(
-        VoiceStates.REQUESTING_PERMISSION,
-        `${prefix}Requesting microphone permission…`,
-      );
-      stream = await getUserMediaFn({ audio: true });
-      if (stopped || aborted) {
-        cleanupMedia();
-        return;
-      }
+  const startCaptureTurn = (isFollowupTurn: boolean) => {
+    if (stopped || aborted) return;
+    if (!canContinueVoice()) {
+      stopped = true;
+      finishWithIdle('Ready');
+      return;
+    }
 
-      const recheckPerms = params.getPermissions
-        ? checkVoicePrivacyPermissions(params.getPermissions(), {
-            requireExternalWebServices: true,
-          })
-        : null;
-      if (recheckPerms) {
-        cleanupMedia();
-        params.onError(recheckPerms.message, recheckPerms);
-        params.onFinish();
-        return;
-      }
+    activeTurnIsFollowup = isFollowupTurn;
+    uploadAbort = new AbortController();
 
-      const mimeType = selectRecorderMimeType(deps.isMimeTypeSupported);
-      const activeRecorder: MediaRecorderLike = deps.createMediaRecorder
-        ? deps.createMediaRecorder(stream, mimeType)
-        : (new MediaRecorder(
-            stream,
-            mimeType ? { mimeType } : undefined,
-          ) as unknown as MediaRecorderLike);
-      recorder = activeRecorder;
-
-      const chunks: Blob[] = [];
-      let totalBytes = 0;
-      let recorderStopped = false;
-      const startedAtMs = Date.now();
-
-      const stopRecordingCleanly = () => {
-        if (recorderStopped) return;
-        recorderStopped = true;
-        if (activeRecorder.state !== 'inactive') {
-          try {
-            activeRecorder.stop();
-          } catch {
-            // ignore stop race
-          }
-        }
-      };
-
-      activeRecorder.ondataavailable = (ev) => {
-        if (ev.data && ev.data.size > 0) {
-          chunks.push(ev.data);
-          totalBytes += ev.data.size;
-          if (totalBytes >= SERVER_STT_MAX_RAW_BYTES) {
-            stopRecordingCleanly();
-          }
-        }
-      };
-
-      activeRecorder.onerror = (ev) => {
-        if (stopped || aborted) return;
-        cleanupMedia();
-        const errMsg = ev.error?.message || 'Microphone recorder error during capture.';
-        const payload = toStructuredVoiceError(new Error(errMsg), errMsg);
-        params.onError(payload.message, payload);
-        params.onFinish();
-      };
-
-      activeRecorder.onstop = () => {
-        cleanupMedia();
+    void (async () => {
+      try {
+        params.onStateChange(
+          VoiceStates.REQUESTING_PERMISSION,
+          isFollowupTurn
+            ? `${prefix}Reopening mic for follow-up (${followupSecs}s)…`
+            : `${prefix}Requesting microphone permission…`,
+        );
+        stream = await getUserMediaFn({ audio: true });
         if (stopped || aborted) {
+          cleanupMedia();
           return;
         }
 
-        const runtimePerms = params.getPermissions
+        const recheckPerms = params.getPermissions
           ? checkVoicePrivacyPermissions(params.getPermissions(), {
               requireExternalWebServices: true,
             })
           : null;
-        if (runtimePerms) {
-          params.onError(runtimePerms.message, runtimePerms);
+        if (recheckPerms) {
+          cleanupMedia();
+          params.onError(recheckPerms.message, recheckPerms);
           params.onFinish();
           return;
         }
 
-        void (async () => {
-          try {
-            const actualMime = (activeRecorder.mimeType || mimeType || 'audio/webm').trim();
-            const recordedBlob = new Blob(chunks, { type: actualMime });
-            const arrayBuf = await recordedBlob.arrayBuffer();
-            if (stopped || aborted) return;
+        const mimeType = selectRecorderMimeType(deps.isMimeTypeSupported);
+        const activeRecorder: MediaRecorderLike = deps.createMediaRecorder
+          ? deps.createMediaRecorder(stream, mimeType)
+          : (new MediaRecorder(
+              stream,
+              mimeType ? { mimeType } : undefined,
+            ) as unknown as MediaRecorderLike);
+        recorder = activeRecorder;
 
-            const bytes = new Uint8Array(arrayBuf);
-            if (bytes.byteLength === 0) {
-              params.onStateChange(VoiceStates.IDLE, 'No speech detected.');
-              params.onFinish();
-              return;
+        const chunks: Blob[] = [];
+        let totalBytes = 0;
+        let recorderStopped = false;
+        let heardSpeech = false;
+        let followupExpired = false;
+        const startedAtMs = Date.now();
+
+        const stopRecordingCleanly = () => {
+          if (recorderStopped) return;
+          recorderStopped = true;
+          if (activeRecorder.state !== 'inactive') {
+            try {
+              activeRecorder.stop();
+            } catch {
+              // ignore stop race
             }
-            if (bytes.byteLength > SERVER_STT_MAX_RAW_BYTES) {
-              const errPayload: StructuredErrorPayload = {
-                code: ErrorCodes.VALIDATION_ERROR,
-                category: 'validation',
-                statusCode: 413,
-                message: 'Recorded audio exceeds the 12 MB server transcription limit.',
-                retryable: true,
-              };
-              params.onError(errPayload.message, errPayload);
-              params.onFinish();
-              return;
-            }
-
-            const audioBase64 = uint8ArrayToBase64(bytes);
-            if (audioBase64.length < 4) {
-              params.onStateChange(VoiceStates.IDLE, 'No speech detected.');
-              params.onFinish();
-              return;
-            }
-            if (audioBase64.length > SERVER_STT_MAX_BASE64_CHARS) {
-              const errPayload: StructuredErrorPayload = {
-                code: ErrorCodes.VALIDATION_ERROR,
-                category: 'validation',
-                statusCode: 413,
-                message: 'Encoded audio exceeds the 12 MB server transcription limit.',
-                retryable: true,
-              };
-              params.onError(errPayload.message, errPayload);
-              params.onFinish();
-              return;
-            }
-
-            const durationSeconds = Math.max(
-              0.1,
-              Number(((Date.now() - startedAtMs) / 1000).toFixed(2)),
-            );
-            params.onStateChange(
-              VoiceStates.PROCESSING,
-              `${prefix}Transcribing via server STT…`,
-            );
-
-            const sttFn = deps.transcribeSpeech ?? mjApi.transcribeSpeech;
-            const sttResult = await sttFn(
-              {
-                audioBase64,
-                filename: `voice.${extensionForAudioMimeType(actualMime)}`,
-                mimeType: actualMime,
-                languageMode: params.languageMode,
-                durationSeconds,
-              },
-              uploadAbort.signal,
-            );
-            if (stopped || aborted) return;
-
-            const transcript = sttResult.text?.trim() ?? '';
-            if (!transcript) {
-              params.onStateChange(VoiceStates.IDLE, 'No clear speech detected.');
-              params.onFinish();
-              return;
-            }
-
-            params.onTranscriptPreview(transcript);
-            params.onStateChange(
-              VoiceStates.PROCESSING,
-              'Thinking via free AI provider…',
-            );
-
-            const replyText = await params.onSubmitTranscript(transcript);
-            if (stopped || aborted) return;
-
-            speakVoiceReply(replyText, {
-              volume: params.volume,
-              speakingRate: params.speakingRate,
-              languageMode: params.languageMode,
-              voiceOutputEnabled: params.voiceOutputEnabled,
-              onStateChange: params.onStateChange,
-              onFinish: params.onFinish,
-              isStopped: () => stopped || aborted,
-            });
-          } catch (err) {
-            if (stopped || aborted || (err instanceof Error && err.name === 'AbortError')) {
-              return;
-            }
-            const payload = toStructuredVoiceError(err, 'Server speech transcription failed.');
-            params.onError(payload.message, payload);
-            params.onFinish();
           }
-        })();
-      };
+        };
 
-      const maxMs = Math.max(
-        500,
-        Math.min(SERVER_STT_MAX_RECORDING_MS, deps.maxDurationMs ?? SERVER_STT_MAX_RECORDING_MS),
-      );
-      maxDurationTimer = setTimeout(() => {
-        stopRecordingCleanly();
-      }, maxMs);
+        const cancelFollowupTimer = () => {
+          if (followupTimer) {
+            clearTimeout(followupTimer);
+            followupTimer = null;
+          }
+        };
 
-      const Ctx =
-        deps.createAudioContext !== undefined
-          ? deps.createAudioContext
-          : () => {
-              if (typeof window === 'undefined') return null;
-              const AudioCtx =
-                window.AudioContext ??
-                (window as unknown as { webkitAudioContext?: typeof AudioContext })
-                  .webkitAudioContext;
-              return AudioCtx ? new AudioCtx() : null;
-            };
-
-      const ctx = typeof Ctx === 'function' ? Ctx() : Ctx;
-      if (ctx) {
-        try {
-          audioCtx = ctx;
-          const source = ctx.createMediaStreamSource(stream);
-          const analyser = ctx.createAnalyser();
-          analyser.fftSize = 1024;
-          source.connect(analyser);
-          const samples = new Uint8Array(analyser.fftSize);
-          const threshold = deps.silenceThresholdRms ?? 0.018;
-          const silenceLimitMs = deps.silenceDurationMs ?? 1600;
-          const minSpeechMs = deps.minSpeechBeforeSilenceMs ?? 700;
-          let heardSpeech = false;
-          let silenceStartedAt: number | null = null;
-
-          silenceTimer = setInterval(() => {
-            if (stopped || aborted || recorderStopped) return;
-            analyser.getByteTimeDomainData(samples);
-            let sumSq = 0;
-            for (let i = 0; i < samples.length; i++) {
-              const normalized = (samples[i]! - 128) / 128;
-              sumSq += normalized * normalized;
+        activeRecorder.ondataavailable = (ev) => {
+          if (ev.data && ev.data.size > 0) {
+            chunks.push(ev.data);
+            totalBytes += ev.data.size;
+            if (totalBytes >= SERVER_STT_MAX_RAW_BYTES) {
+              stopRecordingCleanly();
             }
-            const rms = Math.sqrt(sumSq / samples.length);
-            params.onAudioLevel?.(Math.min(1, rms * 4));
+          }
+        };
 
-            if (rms >= threshold) {
-              heardSpeech = true;
-              silenceStartedAt = null;
-            } else if (heardSpeech && Date.now() - startedAtMs >= minSpeechMs) {
-              if (silenceStartedAt === null) {
-                silenceStartedAt = Date.now();
-              } else if (Date.now() - silenceStartedAt >= silenceLimitMs) {
-                stopRecordingCleanly();
+        activeRecorder.onerror = (ev) => {
+          if (stopped || aborted) return;
+          cleanupMedia();
+          recorder = null;
+          const errMsg = ev.error?.message || 'Microphone recorder error during capture.';
+          const payload = toStructuredVoiceError(new Error(errMsg), errMsg);
+          params.onError(payload.message, payload);
+          params.onFinish();
+        };
+
+        activeRecorder.onstop = () => {
+          cleanupMedia();
+          recorder = null;
+          if (stopped || aborted) {
+            return;
+          }
+
+          if (followupExpired && !heardSpeech) {
+            finishWithIdle(IDLE_WAKE_STATUS_MESSAGE);
+            return;
+          }
+
+          const runtimePerms = params.getPermissions
+            ? checkVoicePrivacyPermissions(params.getPermissions(), {
+                requireExternalWebServices: true,
+              })
+            : null;
+          if (runtimePerms) {
+            params.onError(runtimePerms.message, runtimePerms);
+            params.onFinish();
+            return;
+          }
+
+          void (async () => {
+            try {
+              const actualMime = (activeRecorder.mimeType || mimeType || 'audio/webm').trim();
+              const recordedBlob = new Blob(chunks, { type: actualMime });
+              const arrayBuf = await recordedBlob.arrayBuffer();
+              if (stopped || aborted) return;
+
+              const bytes = new Uint8Array(arrayBuf);
+              if (bytes.byteLength === 0) {
+                finishWithIdle(
+                  isFollowupTurn ? IDLE_WAKE_STATUS_MESSAGE : 'No speech detected.',
+                );
+                return;
               }
-            }
-          }, 100);
-        } catch {
-          // AudioContext silence analysis unavailable; rely on max 15s timer or Stop button.
-        }
-      }
+              if (bytes.byteLength > SERVER_STT_MAX_RAW_BYTES) {
+                const errPayload: StructuredErrorPayload = {
+                  code: ErrorCodes.VALIDATION_ERROR,
+                  category: 'validation',
+                  statusCode: 413,
+                  message: 'Recorded audio exceeds the 12 MB server transcription limit.',
+                  retryable: true,
+                };
+                params.onError(errPayload.message, errPayload);
+                params.onFinish();
+                return;
+              }
 
-      activeRecorder.start(250);
-      params.onStateChange(
-        VoiceStates.LISTENING,
-        `${prefix}Recording mic for server STT (up to 15s)…`,
-      );
-    } catch (err) {
-      cleanupMedia();
-      if (stopped || aborted) return;
-      const payload = toStructuredVoiceError(err, 'Could not start microphone recording.');
-      params.onError(payload.message, payload);
-      params.onFinish();
-    }
-  })();
+              const audioBase64 = uint8ArrayToBase64(bytes);
+              if (audioBase64.length < 4) {
+                finishWithIdle(
+                  isFollowupTurn ? IDLE_WAKE_STATUS_MESSAGE : 'No speech detected.',
+                );
+                return;
+              }
+              if (audioBase64.length > SERVER_STT_MAX_BASE64_CHARS) {
+                const errPayload: StructuredErrorPayload = {
+                  code: ErrorCodes.VALIDATION_ERROR,
+                  category: 'validation',
+                  statusCode: 413,
+                  message: 'Encoded audio exceeds the 12 MB server transcription limit.',
+                  retryable: true,
+                };
+                params.onError(errPayload.message, errPayload);
+                params.onFinish();
+                return;
+              }
+
+              const durationSeconds = Math.max(
+                0.1,
+                Number(((Date.now() - startedAtMs) / 1000).toFixed(2)),
+              );
+              params.onStateChange(
+                VoiceStates.PROCESSING,
+                `${prefix}Transcribing via server STT…`,
+              );
+
+              const sttFn = deps.transcribeSpeech ?? mjApi.transcribeSpeech;
+              const sttResult = await sttFn(
+                {
+                  audioBase64,
+                  filename: `voice.${extensionForAudioMimeType(actualMime)}`,
+                  mimeType: actualMime,
+                  languageMode: params.languageMode,
+                  durationSeconds,
+                },
+                uploadAbort.signal,
+              );
+              if (stopped || aborted) return;
+
+              const transcript = sttResult.text?.trim() ?? '';
+              if (!transcript) {
+                finishWithIdle(
+                  isFollowupTurn ? IDLE_WAKE_STATUS_MESSAGE : 'No clear speech detected.',
+                );
+                return;
+              }
+
+              params.onTranscriptPreview(transcript);
+              params.onStateChange(
+                VoiceStates.PROCESSING,
+                'Thinking via free AI provider…',
+              );
+
+              const replyText = await params.onSubmitTranscript(transcript);
+              if (stopped || aborted) return;
+
+              speaking = true;
+              let bargeInTriggered = false;
+              clearBargeInSpeechHandler = () => {
+                bargeInTriggered = true;
+              };
+              speakVoiceReply(replyText, {
+                volume: params.volume,
+                speakingRate: params.speakingRate,
+                languageMode: params.languageMode,
+                voiceOutputEnabled: params.voiceOutputEnabled,
+                skipIdleTransition: autoListenEnabled && canContinueVoice(),
+                onStateChange: params.onStateChange,
+                isStopped: () => stopped || aborted || bargeInTriggered,
+                bargeIn: {
+                  enabled: true,
+                  threshold: params.bargeInThreshold ?? DEFAULT_BARGE_IN_PCM16_THRESHOLD,
+                  canListen: canContinueVoice,
+                  onAudioLevel: params.onAudioLevel,
+                  deps: deps.bargeInDeps,
+                  onBargeIn: () => {
+                    speaking = false;
+                    clearBargeInSpeechHandler = null;
+                    if (canContinueVoice()) {
+                      startCaptureTurn(false);
+                    } else {
+                      finishWithIdle('Ready');
+                    }
+                  },
+                },
+                onFinish: () => {
+                  speaking = false;
+                  clearBargeInSpeechHandler = null;
+                  if (stopped || aborted || bargeInTriggered) return;
+                  if (autoListenEnabled && canContinueVoice()) {
+                    startCaptureTurn(true);
+                  } else {
+                    finishWithIdle('Ready');
+                  }
+                },
+              });
+            } catch (err) {
+              speaking = false;
+              if (stopped || aborted || (err instanceof Error && err.name === 'AbortError')) {
+                return;
+              }
+              const payload = toStructuredVoiceError(err, 'Server speech transcription failed.');
+              params.onError(payload.message, payload);
+              params.onFinish();
+            }
+          })();
+        };
+
+        if (isFollowupTurn) {
+          followupTimer = setTimeout(() => {
+            if (stopped || aborted || heardSpeech) return;
+            followupExpired = true;
+            stopRecordingCleanly();
+          }, followupMs);
+        }
+
+        const maxMs = Math.max(
+          500,
+          Math.min(SERVER_STT_MAX_RECORDING_MS, deps.maxDurationMs ?? SERVER_STT_MAX_RECORDING_MS),
+        );
+        maxDurationTimer = setTimeout(() => {
+          stopRecordingCleanly();
+        }, maxMs);
+
+        const Ctx =
+          deps.createAudioContext !== undefined
+            ? deps.createAudioContext
+            : () => {
+                if (typeof window === 'undefined') return null;
+                const AudioCtx =
+                  window.AudioContext ??
+                  (window as unknown as { webkitAudioContext?: typeof AudioContext })
+                    .webkitAudioContext;
+                return AudioCtx ? new AudioCtx() : null;
+              };
+
+        const ctx = typeof Ctx === 'function' ? Ctx() : Ctx;
+        if (ctx) {
+          try {
+            audioCtx = ctx;
+            const source = ctx.createMediaStreamSource(stream);
+            const analyser = ctx.createAnalyser();
+            analyser.fftSize = 1024;
+            source.connect(analyser);
+            const samples = new Uint8Array(analyser.fftSize);
+            const threshold = deps.silenceThresholdRms ?? 0.018;
+            const silenceLimitMs = deps.silenceDurationMs ?? 1600;
+            const minSpeechMs = deps.minSpeechBeforeSilenceMs ?? 700;
+            let silenceStartedAt: number | null = null;
+
+            silenceTimer = setInterval(() => {
+              if (stopped || aborted || recorderStopped) return;
+              analyser.getByteTimeDomainData(samples);
+              const pcm16Rms = uint8SamplesToPcm16Rms(samples);
+              const rms = pcm16Rms / 32768;
+              params.onAudioLevel?.(Math.min(1, rms * 4));
+
+              if (rms >= threshold) {
+                if (!heardSpeech) {
+                  heardSpeech = true;
+                  cancelFollowupTimer();
+                }
+                silenceStartedAt = null;
+              } else if (heardSpeech && Date.now() - startedAtMs >= minSpeechMs) {
+                if (silenceStartedAt === null) {
+                  silenceStartedAt = Date.now();
+                } else if (Date.now() - silenceStartedAt >= silenceLimitMs) {
+                  stopRecordingCleanly();
+                }
+              }
+            }, 100);
+          } catch {
+            // AudioContext silence analysis unavailable; rely on max/followup timer or Stop button.
+          }
+        }
+
+        activeRecorder.start(250);
+        params.onStateChange(
+          VoiceStates.LISTENING,
+          isFollowupTurn
+            ? `${prefix}Listening for follow-up (${followupSecs}s)… Speak now`
+            : `${prefix}Recording mic for server STT (up to 15s)…`,
+        );
+      } catch (err) {
+        cleanupMedia();
+        recorder = null;
+        if (stopped || aborted) return;
+        const payload = toStructuredVoiceError(err, 'Could not start microphone recording.');
+        params.onError(payload.message, payload);
+        params.onFinish();
+      }
+    })();
+  };
+
+  startCaptureTurn(Boolean(params.isFollowup));
 
   return {
     stop: () => {
+      if (stopped) return;
       stopped = true;
       aborted = true;
+      speaking = false;
+      clearBargeInSpeechHandler?.();
+      clearBargeInSpeechHandler = null;
       uploadAbort.abort();
       if (recorder && recorder.state !== 'inactive') {
         try {
@@ -563,6 +688,7 @@ export function startServerSttVoiceSession(
           // ignore stop error
         }
       }
+      recorder = null;
       cleanupMedia();
       if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
         window.speechSynthesis.cancel();
@@ -571,11 +697,22 @@ export function startServerSttVoiceSession(
       params.onFinish();
     },
     interrupt: () => {
+      if (stopped) return;
+      clearBargeInSpeechHandler?.();
+      clearBargeInSpeechHandler = null;
       if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
         window.speechSynthesis.cancel();
       }
-      params.onStateChange(VoiceStates.IDLE, 'Ready');
-      params.onFinish();
+      if (speaking && autoListenEnabled && canContinueVoice()) {
+        speaking = false;
+        params.onStateChange(VoiceStates.INTERRUPTED, 'Speech interrupted. Listening…');
+        startCaptureTurn(false);
+        return;
+      }
+      speaking = false;
+      stopped = true;
+      aborted = true;
+      finishWithIdle(activeTurnIsFollowup ? IDLE_WAKE_STATUS_MESSAGE : 'Ready');
     },
   };
 }
@@ -591,6 +728,10 @@ export function startResilientFreeVoiceSession(
     volume: number;
     speakingRate: number;
     voiceOutputEnabled: boolean;
+    autoListen?: boolean;
+    followupListenSeconds?: number;
+    followupTimeoutMs?: number;
+    bargeInThreshold?: number;
     preferServerStt?: boolean;
     initialNotice?: string;
     getPermissions: () => VoicePrivacySubset;
@@ -607,6 +748,7 @@ export function startResilientFreeVoiceSession(
     startWebSpeech?: typeof startFreeBrowserVoiceSession;
     startServerStt?: typeof startServerSttVoiceSession;
     serverSttDeps?: ServerSttVoiceDeps;
+    bargeInDeps?: BargeInMonitorDeps;
   },
 ): FreeBrowserVoiceController {
   const permErr = checkVoicePrivacyPermissions(params.getPermissions(), {
@@ -624,7 +766,7 @@ export function startResilientFreeVoiceSession(
   const startWeb = deps?.startWebSpeech ?? startFreeBrowserVoiceSession;
   const startServer = deps?.startServerStt ?? startServerSttVoiceSession;
 
-  const launchServerStt = (notice?: string) => {
+  const launchServerStt = (notice?: string, isFollowup = false) => {
     if (stopped) return;
     const serverPermErr = checkVoicePrivacyPermissions(params.getPermissions(), {
       requireExternalWebServices: true,
@@ -637,12 +779,23 @@ export function startResilientFreeVoiceSession(
     if (notice) {
       params.onNotice(notice);
     }
+    const mergedServerDeps: ServerSttVoiceDeps = {
+      ...(deps?.serverSttDeps ?? {}),
+      ...(params.followupTimeoutMs ? { followupTimeoutMs: params.followupTimeoutMs } : {}),
+      ...(deps?.bargeInDeps && !deps?.serverSttDeps?.bargeInDeps
+        ? { bargeInDeps: deps.bargeInDeps }
+        : {}),
+    };
     activeController = startServer(
       {
         languageMode: params.languageMode,
         volume: params.volume,
         speakingRate: params.speakingRate,
         voiceOutputEnabled: params.voiceOutputEnabled,
+        autoListen: params.autoListen,
+        followupListenSeconds: params.followupListenSeconds,
+        bargeInThreshold: params.bargeInThreshold,
+        isFollowup,
         getPermissions: params.getPermissions,
         statusNotice: notice,
         onAudioLevel: params.onAudioLevel,
@@ -655,7 +808,7 @@ export function startResilientFreeVoiceSession(
         },
         onError: params.onError,
       },
-      deps?.serverSttDeps,
+      mergedServerDeps,
     );
   };
 
@@ -665,13 +818,20 @@ export function startResilientFreeVoiceSession(
 
   if (params.preferServerStt) {
     switchedToServerStt = true;
-    launchServerStt(sttFallbackNotice);
+    launchServerStt(sttFallbackNotice, false);
   } else {
     const webCtrl = startWeb({
       languageMode: params.languageMode,
       volume: params.volume,
       speakingRate: params.speakingRate,
       voiceOutputEnabled: params.voiceOutputEnabled,
+      autoListen: params.autoListen,
+      followupListenSeconds: params.followupListenSeconds,
+      followupTimeoutMs: params.followupTimeoutMs,
+      bargeInThreshold: params.bargeInThreshold,
+      getPermissions: params.getPermissions,
+      bargeInDeps: deps?.bargeInDeps,
+      onAudioLevel: params.onAudioLevel,
       ...(params.initialNotice ? { statusPrefix: params.initialNotice } : {}),
       onStateChange: params.onStateChange,
       onTranscriptPreview: params.onTranscriptPreview,
@@ -691,11 +851,11 @@ export function startResilientFreeVoiceSession(
           retryable: true,
         });
       },
-      onUnavailable: (reason) => {
+      onUnavailable: (reason, _detail, ctx) => {
         if (stopped || switchedToServerStt) return;
         switchedToServerStt = true;
         params.onUseServerSttFallback?.(reason);
-        launchServerStt(sttFallbackNotice);
+        launchServerStt(sttFallbackNotice, Boolean(ctx?.isFollowup));
       },
     });
     if (stopped) {

@@ -79,6 +79,39 @@ export function computeRmsLevel(samples: Float32Array): number {
   return Math.min(1, Number((rms * 3.5).toFixed(3)));
 }
 
+/**
+ * Computes root-mean-square amplitude on the 16-bit signed PCM scale (0..32768).
+ */
+export function computePcm16Rms(samples: Float32Array): number {
+  if (samples.length === 0) return 0;
+  let sumSq = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const v = samples[i] ?? 0;
+    sumSq += v * v;
+  }
+  return Math.sqrt(sumSq / samples.length) * 32768;
+}
+
+/**
+ * Computes 16-bit signed PCM RMS from unsigned 8-bit AnalyserNode time-domain bytes.
+ */
+export function uint8SamplesToPcm16Rms(samples: Uint8Array): number {
+  if (samples.length === 0) return 0;
+  let sumSq = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const normalized = ((samples[i] ?? 128) - 128) / 128;
+    sumSq += normalized * normalized;
+  }
+  return Math.sqrt(sumSq / samples.length) * 32768;
+}
+
+/**
+ * Converts a 16-bit PCM RMS threshold (e.g. 1400) into normalized Float32 RMS (0..1).
+ */
+export function pcm16ThresholdToNormalizedRms(thresholdPcm16 = 1400): number {
+  return Math.max(0, thresholdPcm16) / 32768;
+}
+
 function uint8ToBase64(bytes: Uint8Array): string {
   let binary = '';
   const chunkSize = 0x8000;
