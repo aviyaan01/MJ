@@ -33,6 +33,7 @@ import { registerSettingsRoutes } from './routes/settings.js';
 import { registerToolRoutes } from './routes/tools.js';
 import { registerUsageRoutes } from './routes/usage.js';
 import { ToolConfirmationManager } from './toolConfirmations.js';
+import { AppClipboardStore } from './webTools.js';
 import {
   createDefaultVoiceGateway,
   registerVoiceRoutes,
@@ -45,7 +46,9 @@ export interface BuildServerOptions {
   providerRouter?: ProviderRouterClient;
   toolRegistry?: ToolRegistry;
   confirmationManager?: ToolConfirmationManager;
+  appClipboardStore?: AppClipboardStore;
   toolConfirmationTimeoutMs?: number;
+  toolsFetchImpl?: typeof fetch;
   voiceGateway?: VoiceGateway;
   voiceTracker?: VoiceHealthTracker;
   alertMonitor?: AlertMonitor;
@@ -114,6 +117,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
   const confirmationManager =
     options.confirmationManager ??
     new ToolConfirmationManager({ timeoutMs: options.toolConfirmationTimeoutMs });
+  const appClipboardStore = options.appClipboardStore ?? new AppClipboardStore();
   let dbClosing = false;
   const alertMonitor =
     options.alertMonitor ??
@@ -272,11 +276,14 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
     requireSession,
   });
   registerToolRoutes(app, {
+    config,
     repo,
     permissionsStore,
     settingsStore,
     toolRegistry,
     confirmationManager,
+    appClipboardStore,
+    fetchImpl: options.toolsFetchImpl,
     requireSession,
   });
   registerVoiceRoutes(app, {
@@ -299,6 +306,8 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
     providerRouter,
     toolRegistry,
     confirmationManager,
+    appClipboardStore,
+    fetchImpl: options.toolsFetchImpl,
     alertMonitor,
     requireSession,
   });

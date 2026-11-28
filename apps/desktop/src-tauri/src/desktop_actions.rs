@@ -596,6 +596,54 @@ pub fn desktop_search_files(
     Ok(results)
 }
 
+#[tauri::command]
+pub fn desktop_open_folder(
+    app: AppHandle,
+    state: State<'_, DesktopAllowlistState>,
+    folder_path: String,
+) -> Result<String, String> {
+    let perms = load_permissions(&app);
+    if !perms.file_read {
+        let _ = append_audit_entry(
+            &app,
+            "fileRead",
+            "Blocked opening local folder",
+            &folder_path,
+            "denied",
+            Some("fileRead capability is OFF"),
+        );
+        return Err("fileRead capability is OFF.".to_string());
+    }
+
+    let approved_folders = {
+        let guard = state
+            .0
+            .lock()
+            .map_err(|_| "Allowlist state lock poisoned.".to_string())?;
+        guard.approved_folders.clone()
+    };
+
+    let canonical_folder = is_path_within_allowlist(Path::new(&folder_path), &approved_folders)?;
+    if !canonical_folder.is_dir() {
+        return Err("Approved folder target does not exist or is not a directory.".to_string());
+    }
+    let canonical_str = canonical_folder.to_string_lossy().to_string();
+
+    app.opener()
+        .open_path(canonical_str.as_str(), None::<&str>)
+        .map_err(|e| format!("Failed opening approved folder: {e}"))?;
+
+    let _ = append_audit_entry(
+        &app,
+        "fileRead",
+        "Opened approved desktop folder",
+        &canonical_str,
+        "allowed",
+        None,
+    );
+    Ok(canonical_str)
+}
+
 fn collect_files_bounded(dir: &Path, needle: &str, depth: usize, out: &mut Vec<FileSearchMatch>) {
     if depth > 4 || out.len() >= 100 {
         return;

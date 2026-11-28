@@ -31,10 +31,12 @@ import {
   type StructuredErrorPayload,
   type UsageSummaryDTO,
   type VoiceState,
+  type WebSearchSourceDTO,
 } from '@mj/shared';
 import { MarkdownMessage } from './MarkdownMessage.js';
 import { ToolConfirmationBanner } from './ToolConfirmationBanner.js';
 import { VoiceStateBar } from './VoiceStateBar.js';
+import { WebSourcesBar } from './WebSourcesBar.js';
 
 interface ChatWorkspaceProps {
   conversations: ConversationDTO[];
@@ -54,6 +56,9 @@ interface ChatWorkspaceProps {
   activeError: StructuredErrorPayload | null;
   repeatErrorHint?: string | null;
   pendingConfirmation?: PendingToolConfirmationDTO | null;
+  webSearchSources?: WebSearchSourceDTO[];
+  appClipboardText?: string | null;
+  onSyncAppClipboard?: (text: string) => Promise<void>;
   onConfirmToolAction?: () => void;
   onCancelToolAction?: () => void;
   selectedProviderOverride?: string;
@@ -100,6 +105,9 @@ export function ChatWorkspace({
   activeError,
   repeatErrorHint,
   pendingConfirmation,
+  webSearchSources = [],
+  appClipboardText,
+  onSyncAppClipboard,
   onConfirmToolAction,
   onCancelToolAction,
   selectedProviderOverride = settings?.activeProvider ?? 'auto',
@@ -1007,6 +1015,8 @@ export function ChatWorkspace({
               />
             )}
 
+            <WebSourcesBar sources={webSearchSources} />
+
             <div ref={threadEndRef} />
           </div>
         </div>
@@ -1033,12 +1043,30 @@ export function ChatWorkspace({
               rows={1}
               value={composerText}
               onChange={(e) => setComposerText(e.target.value)}
+              onPaste={(e) => {
+                const pasted = e.clipboardData?.getData('text/plain')?.trim();
+                if (pasted && onSyncAppClipboard) {
+                  void onSyncAppClipboard(pasted);
+                }
+              }}
               onKeyDown={handleKeyDown}
               placeholder="Message MJ Assistant… (Enter to send, Shift+Enter for new line)"
               aria-label="Message MJ Assistant"
               disabled={isTextBusy}
               className="max-h-44 min-w-0 flex-1 resize-none bg-transparent py-1.5 text-sm text-[#EDF3F8] outline-none placeholder:text-[#8B9CB0] disabled:opacity-60"
             />
+            {appClipboardText && (
+              <span
+                className="hidden sm:inline-block rounded-lg px-2 py-1 text-[10px]"
+                title={appClipboardText}
+                style={{
+                  backgroundColor: 'rgba(154, 198, 230, 0.08)',
+                  color: 'var(--mj-text-subtle)',
+                }}
+              >
+                App clipboard ({appClipboardText.length} chars)
+              </span>
+            )}
 
             {isTextBusy ? (
               <button

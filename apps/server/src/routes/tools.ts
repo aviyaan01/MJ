@@ -4,6 +4,7 @@ import {
   ErrorCodes,
   ExecuteVoiceToolSchema,
   validateInput,
+  z,
   type AuditSource,
 } from '@mj/shared';
 import {
@@ -12,20 +13,34 @@ import {
   type ToolRegistry,
 } from '@mj/ai';
 import type { MjDatabaseRepository } from '@mj/database';
+import type { ServerConfig } from '../config.js';
 import type { PermissionsStore } from '../permissionsStore.js';
 import type { RuntimeSettingsStore } from '../settingsStore.js';
 import { collectHostTelemetry } from '../systemTelemetry.js';
 import type { ToolConfirmationManager } from '../toolConfirmations.js';
+import {
+  AppClipboardStore,
+  executeServerWeatherReport,
+  executeServerWebSearch,
+} from '../webTools.js';
 
 export interface ToolRouteDeps {
+  config?: ServerConfig;
   repo: MjDatabaseRepository;
   permissionsStore: PermissionsStore;
   settingsStore: RuntimeSettingsStore;
   toolRegistry: ToolRegistry;
   confirmationManager: ToolConfirmationManager;
+  appClipboardStore?: AppClipboardStore;
+  fetchImpl?: typeof fetch;
   requireSession: (request: FastifyRequest) => Promise<void>;
   launchApprovedApp?: (target: string) => Promise<{ executed: boolean; detail?: string }>;
 }
+
+const SetAppClipboardSchema = z.object({
+  text: z.string().min(1).max(12000),
+  label: z.string().max(80).optional(),
+});
 
 export function buildServerToolExecutionContext(
   deps: ToolRouteDeps,
@@ -37,6 +52,7 @@ export function buildServerToolExecutionContext(
     requestConfirmation?: ToolExecutionContext['requestConfirmation'];
   },
 ): ToolExecutionContext {
+  const fetchFn = deps.fetchImpl ?? fetch;
   return {
     source: options.source ?? 'server',
     channel: options.channel,
@@ -54,6 +70,20 @@ export function buildServerToolExecutionContext(
       return matches.slice(0, limit ?? 5);
     },
     getSystemTelemetry: () => collectHostTelemetry(),
+    ...(deps.config
+      ? {
+          webSearch: (params) => executeServerWebSearch(deps.config!, params, fetchFn),
+          getWeatherReport: (params) => executeServerWeatherReport(deps.config!, params, fetchFn),
+        }
+      : {}),
+    ...(deps.appClipboardStore
+      ? {
+          getAppClipboard: async () => deps.appClipboardStore!.get(),
+          setAppClipboard: async (entry) => {
+            deps.appClipboardStore!.set(entry);
+          },
+        }
+      : {}),
     ...(options.requestConfirmation ? { requestConfirmation: options.requestConfirmation } : {}),
     ...(deps.launchApprovedApp ? { launchApprovedApp: deps.launchApprovedApp } : {}),
   };
@@ -78,6 +108,22 @@ export function registerToolRoutes(app: FastifyInstance, deps: ToolRouteDeps): v
     return {
       pending: deps.confirmationManager.listPending(),
     };
+  });
+
+  app.get('/api/tools/clipboard', { preHandler: deps.requireSession }, async () => {
+    return {
+      clipboard: deps.appClipboardStore?.get() ?? null,
+    };
+  });
+
+  app.post('/api/tools/clipboard', { preHandler: deps.requireSession }, async (request) => {
+    const body = validateInput(SetAppClipboardSchema, request.body ?? {});
+    const saved = deps.appClipboardStore?.set({ text: body.text, label: body.label }) ?? {
+      text: body.text,
+      ...(body.label ? { label: body.label } : {}),
+      updatedAt: new Date().toISOString(),
+    };
+    return { saved: true, clipboard: saved };
   });
 
   /**

@@ -119,6 +119,12 @@ export async function tauriOpenApprovedUrl(url: string): Promise<void> {
   });
 }
 
+export async function tauriOpenApprovedFolder(folderPath: string): Promise<string> {
+  return invokeTauri<string>('desktop_open_folder', {
+    folderPath,
+  });
+}
+
 export async function tauriSearchApprovedFiles(
   folderPath: string,
   query: string,

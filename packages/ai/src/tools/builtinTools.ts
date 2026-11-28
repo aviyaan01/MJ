@@ -1,5 +1,5 @@
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { basename, resolve } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { basename, join, resolve } from 'node:path';
 import {
   ALLOWLISTED_DESKTOP_SHORTCUTS,
   ErrorCodes,
@@ -325,41 +325,463 @@ export function createBuiltinTools(): Array<MjToolDefinition<any>> {
     },
   });
 
+function buildOpenUrlValidator() {
+  return async (
+    rawUrl: string,
+    ctx: ToolExecutionContext,
+  ): Promise<{ ok: true; safeUrl: string } | { ok: false; errorCode: string; detail: string; target: string }> => {
+    const approvedDomains = (await ctx.listAllowlist('web_domain')).map((d) => d.target);
+    const safeUrl = isApprovedHttpsUrl(rawUrl, approvedDomains);
+    if (!safeUrl) {
+      return {
+        ok: false,
+        errorCode: ErrorCodes.UNAPPROVED_TARGET,
+        detail:
+          'URL must be HTTPS (or localhost) and its domain must be approved in Privacy & Permissions allowlist.',
+        target: rawUrl,
+      };
+    }
+    return { ok: true, safeUrl };
+  };
+}
+
+function buildYouTubeTargetUrl(queryOrVideoId: string, mode: 'search' | 'play'): string {
+  const trimmed = queryOrVideoId.trim();
+  if (mode === 'play') {
+    if (/^[A-Za-z0-9_-]{11}$/.test(trimmed)) {
+      return `https://www.youtube.com/watch?v=${encodeURIComponent(trimmed)}`;
+    }
+    try {
+      const parsed = new URL(trimmed);
+      const host = parsed.hostname.toLowerCase();
+      if (
+        parsed.protocol === 'https:' &&
+        (host === 'youtube.com' || host === 'www.youtube.com' || host === 'm.youtube.com' || host === 'youtu.be')
+      ) {
+        return parsed.toString();
+      }
+    } catch {
+      // Not a full URL — turn search text into safe HTTPS YouTube search results URL
+    }
+  }
+  return `https://www.youtube.com/results?search_query=${encodeURIComponent(trimmed)}`;
+}
+
+interface BoundedFileMatch {
+  name: string;
+  path: string;
+  sizeBytes: number;
+}
+
+function collectFilesBounded(
+  dir: string,
+  needle: string,
+  depth: number,
+  out: BoundedFileMatch[],
+): void {
+  if (depth > 4 || out.length >= 100) return;
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (out.length >= 100) break;
+    const fullPath = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      collectFilesBounded(fullPath, needle, depth + 1, out);
+    } else if (entry.isFile()) {
+      if (!needle || entry.name.toLowerCase().includes(needle)) {
+        let sizeBytes = 0;
+        try {
+          sizeBytes = statSync(fullPath).size;
+        } catch {
+          sizeBytes = 0;
+        }
+        out.push({
+          name: entry.name,
+          path: fullPath,
+          sizeBytes,
+        });
+      }
+    }
+  }
+}
+
+  const validateUrl = buildOpenUrlValidator();
+
   const openApprovedUrlTool = defineTool({
     name: 'open_approved_url',
     description:
-      'Opens an allowlisted HTTPS website in the user browser or desktop companion. Requires webLaunch permission and explicit user confirmation.',
+      'Opens an allowlisted HTTPS website in the user browser or desktop companion. Requires webLaunch and externalWebServices permissions plus explicit user confirmation.',
     schema: z.object({
       url: z.string().min(8).max(500).describe('Full https:// URL matching an approved web domain.'),
     }),
     risk: 'confirm',
     requiredPermission: 'webLaunch',
+    requiredPermissions: ['externalWebServices'],
     getTarget: (args) => args.url,
     summarizeAction: (args) => `Open approved website: ${args.url.trim()}`,
-    validatePreflight: async (args, ctx) => {
-      const approvedDomains = (await ctx.listAllowlist('web_domain')).map((d) => d.target);
-      const safeUrl = isApprovedHttpsUrl(args.url, approvedDomains);
-      if (!safeUrl) {
-        return {
-          ok: false,
-          errorCode: ErrorCodes.UNAPPROVED_TARGET,
-          detail: 'URL must be HTTPS (or localhost) and match an approved domain in Privacy & Permissions.',
-          target: args.url,
-        };
-      }
-      return { ok: true };
-    },
+    validatePreflight: async (args, ctx) => validateUrl(args.url, ctx),
     execute: async (args, ctx) => {
-      const approvedDomains = (await ctx.listAllowlist('web_domain')).map((d) => d.target);
-      const safeUrl = isApprovedHttpsUrl(args.url, approvedDomains);
-      if (!safeUrl) {
-        throw new Error('URL failed allowlist verification.');
+      const check = await validateUrl(args.url, ctx);
+      if (!check.ok) {
+        throw new Error(check.detail);
       }
-      ctx.onClientAction?.({ kind: 'open_approved_url', target: safeUrl });
+      ctx.onClientAction?.({ kind: 'open_approved_url', target: check.safeUrl });
       return {
         approved: true,
-        url: safeUrl,
+        url: check.safeUrl,
         action: 'open_approved_url',
+        spokenBrief: `Opening ${check.safeUrl}.`,
+      };
+    },
+  });
+
+  const openUrlTool = defineTool({
+    name: 'open_url',
+    description:
+      'Opens an HTTPS URL whose domain is on the user allowlist via the allowlisted opener. Requires webLaunch and externalWebServices plus explicit confirmation.',
+    schema: z.object({
+      url: z.string().min(8).max(500).describe('Full https:// URL matching an approved domain.'),
+    }),
+    risk: 'confirm',
+    requiredPermission: 'webLaunch',
+    requiredPermissions: ['externalWebServices'],
+    getTarget: (args) => args.url,
+    summarizeAction: (args) => `Open approved URL: ${args.url.trim()}`,
+    validatePreflight: async (args, ctx) => validateUrl(args.url, ctx),
+    execute: async (args, ctx) => {
+      const check = await validateUrl(args.url, ctx);
+      if (!check.ok) {
+        throw new Error(check.detail);
+      }
+      ctx.onClientAction?.({ kind: 'open_approved_url', target: check.safeUrl });
+      return {
+        approved: true,
+        url: check.safeUrl,
+        action: 'open_approved_url',
+        spokenBrief: `Opening ${check.safeUrl}.`,
+      };
+    },
+  });
+
+  const youtubeSearchTool = defineTool({
+    name: 'youtube_search',
+    description:
+      'Opens YouTube search results over HTTPS via the allowlisted URL opener (requires youtube.com in approved web domains, webLaunch, and externalWebServices).',
+    schema: z.object({
+      query: z.string().min(1).max(200).describe('Search query for YouTube videos.'),
+    }),
+    risk: 'safe',
+    requiredPermission: 'webLaunch',
+    requiredPermissions: ['externalWebServices'],
+    getTarget: (args) => buildYouTubeTargetUrl(args.query, 'search'),
+    summarizeAction: (args) => `Search YouTube for "${args.query.trim()}"`,
+    validatePreflight: async (args, ctx) =>
+      validateUrl(buildYouTubeTargetUrl(args.query, 'search'), ctx),
+    execute: async (args, ctx) => {
+      const targetUrl = buildYouTubeTargetUrl(args.query, 'search');
+      const check = await validateUrl(targetUrl, ctx);
+      if (!check.ok) {
+        throw new Error(check.detail);
+      }
+      ctx.onClientAction?.({ kind: 'open_approved_url', target: check.safeUrl });
+      return {
+        approved: true,
+        query: args.query.trim(),
+        url: check.safeUrl,
+        spokenBrief: `Opened YouTube search for ${args.query.trim()}.`,
+      };
+    },
+  });
+
+  const youtubePlayTool = defineTool({
+    name: 'youtube_play',
+    description:
+      'Opens a YouTube video URL, video ID, or playback search over HTTPS via the allowlisted URL opener (requires youtube.com allowlisted, webLaunch, and externalWebServices).',
+    schema: z.object({
+      queryOrVideoId: z
+        .string()
+        .min(1)
+        .max(240)
+        .describe('11-character YouTube video ID, https://www.youtube.com/watch URL, or video title.'),
+    }),
+    risk: 'safe',
+    requiredPermission: 'webLaunch',
+    requiredPermissions: ['externalWebServices'],
+    getTarget: (args) => buildYouTubeTargetUrl(args.queryOrVideoId, 'play'),
+    summarizeAction: (args) => `Open YouTube playback for "${args.queryOrVideoId.trim()}"`,
+    validatePreflight: async (args, ctx) =>
+      validateUrl(buildYouTubeTargetUrl(args.queryOrVideoId, 'play'), ctx),
+    execute: async (args, ctx) => {
+      const targetUrl = buildYouTubeTargetUrl(args.queryOrVideoId, 'play');
+      const check = await validateUrl(targetUrl, ctx);
+      if (!check.ok) {
+        throw new Error(check.detail);
+      }
+      ctx.onClientAction?.({ kind: 'open_approved_url', target: check.safeUrl });
+      return {
+        approved: true,
+        url: check.safeUrl,
+        spokenBrief: `Opening YouTube for ${args.queryOrVideoId.trim()}.`,
+      };
+    },
+  });
+
+  const webSearchTool = defineTool({
+    name: 'web_search',
+    description:
+      'Searches the live web via server-side Gemini Google Search grounding or configured search API and returns a brief summary with verifiable sources. Requires externalWebServices.',
+    schema: z.object({
+      query: z.string().min(1).max(300).describe('Clean search query string.'),
+      maxResults: z.number().int().min(1).max(8).optional(),
+    }),
+    risk: 'safe',
+    requiredPermission: 'toolCalling',
+    requiredPermissions: ['externalWebServices'],
+    getTarget: (args) => args.query.trim(),
+    summarizeAction: (args) => `Search web for "${args.query.trim()}"`,
+    execute: async (args, ctx) => {
+      if (!ctx.webSearch) {
+        throw new Error('Server web search adapter is not configured.');
+      }
+      const res = await ctx.webSearch({
+        query: args.query.trim(),
+        maxResults: args.maxResults ?? 5,
+      });
+      return {
+        query: args.query.trim(),
+        provider: res.provider,
+        summary: res.summary,
+        sources: res.sources,
+        queriesUsed: res.queriesUsed ?? [args.query.trim()],
+        spokenBrief: res.summary,
+      };
+    },
+  });
+
+  const weatherReportTool = defineTool({
+    name: 'weather_report',
+    description:
+      'Fetches live current weather for a city using the server-side OpenWeather key. Requires externalWebServices.',
+    schema: z.object({
+      location: z.string().min(1).max(120).describe('City name (e.g. Dhaka, London, Tokyo).'),
+      units: z.enum(['metric', 'imperial']).optional(),
+    }),
+    risk: 'safe',
+    requiredPermission: 'toolCalling',
+    requiredPermissions: ['externalWebServices'],
+    getTarget: (args) => args.location.trim(),
+    summarizeAction: (args) => `Check live weather for "${args.location.trim()}"`,
+    execute: async (args, ctx) => {
+      if (!ctx.getWeatherReport) {
+        throw new Error('Server OpenWeather adapter is not configured.');
+      }
+      return ctx.getWeatherReport({
+        location: args.location.trim(),
+        units: args.units ?? 'metric',
+      });
+    },
+  });
+
+  const fileSearchTool = defineTool({
+    name: 'file_search',
+    description:
+      'Searches filenames inside a folder approved in Privacy & Permissions allowlist (bounded depth). Requires fileRead permission.',
+    schema: z.object({
+      folderPath: z.string().min(1).max(300).describe('Absolute path inside an allowlisted folder.'),
+      query: z.string().max(120).optional().default('').describe('Substring to match filenames.'),
+    }),
+    risk: 'safe',
+    requiredPermission: 'fileRead',
+    getTarget: (args) => args.folderPath,
+    summarizeAction: (args) => `Search files in "${args.folderPath.trim()}" matching "${args.query}"`,
+    validatePreflight: async (args, ctx) => validateFolderInsideAllowlist(args.folderPath, ctx),
+    execute: async (args) => {
+      const target = resolve(args.folderPath.trim());
+      const needle = (args.query ?? '').trim().toLowerCase();
+      const matches: BoundedFileMatch[] = [];
+      collectFilesBounded(target, needle, 0, matches);
+      return {
+        folderPath: target,
+        query: needle,
+        matchCount: matches.length,
+        matches: matches.slice(0, 25),
+        spokenBrief:
+          matches.length === 0
+            ? `No files matched "${needle}" in that approved folder.`
+            : `Found ${matches.length} matching file${matches.length === 1 ? '' : 's'}, starting with ${matches[0]!.name}.`,
+      };
+    },
+  });
+
+  const openFolderTool = defineTool({
+    name: 'open_folder',
+    description:
+      'Opens an approved folder in Explorer via the Tauri Desktop Companion (requires fileRead permission and folder allowlist).',
+    schema: z.object({
+      folderPath: z.string().min(1).max(300).describe('Absolute path inside an allowlisted folder.'),
+    }),
+    risk: 'safe',
+    requiredPermission: 'fileRead',
+    getTarget: (args) => args.folderPath,
+    summarizeAction: (args) => `Open approved folder "${args.folderPath.trim()}"`,
+    validatePreflight: async (args, ctx) => validateFolderInsideAllowlist(args.folderPath, ctx),
+    execute: async (args, ctx) => {
+      const target = resolve(args.folderPath.trim());
+      if (!existsSync(target) || !statSync(target).isDirectory()) {
+        throw new Error('Target approved folder does not exist.');
+      }
+      ctx.onClientAction?.({ kind: 'open_approved_folder', target });
+      return {
+        approved: true,
+        folderPath: target,
+        requiresDesktopCompanion: true,
+        spokenBrief: `Opening approved folder ${basename(target) || target}.`,
+      };
+    },
+  });
+
+  const organizeFilesTool = defineTool({
+    name: 'organize_files',
+    description:
+      'Organizes files inside an approved folder into Documents, Images, Data, and Other subfolders. Requires fileWrite permission and explicit confirmation.',
+    schema: z.object({
+      folderPath: z.string().min(1).max(300).describe('Absolute path inside an allowlisted folder.'),
+    }),
+    risk: 'confirm',
+    requiredPermission: 'fileWrite',
+    getTarget: (args) => args.folderPath,
+    summarizeAction: (args) => `Organize files inside approved folder "${args.folderPath.trim()}"`,
+    validatePreflight: async (args, ctx) => validateFolderInsideAllowlist(args.folderPath, ctx),
+    execute: async (args) => {
+      const root = resolve(args.folderPath.trim());
+      const entries = readdirSync(root, { withFileTypes: true });
+      let movedCount = 0;
+      let skippedCount = 0;
+      const details: string[] = [];
+
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        const src = join(root, entry.name);
+        const ext = (entry.name.split('.').pop() ?? '').toLowerCase();
+        const category =
+          ext === 'pdf' || ext === 'docx' || ext === 'txt' || ext === 'md'
+            ? 'Documents'
+            : ext === 'png' || ext === 'jpg' || ext === 'jpeg' || ext === 'webp'
+              ? 'Images'
+              : ext === 'csv' || ext === 'xlsx' || ext === 'json'
+                ? 'Data'
+                : 'Other';
+
+        const destDir = join(root, category);
+        mkdirSync(destDir, { recursive: true });
+        const dest = join(destDir, entry.name);
+        if (existsSync(dest)) {
+          skippedCount += 1;
+          continue;
+        }
+        try {
+          renameSync(src, dest);
+          movedCount += 1;
+          if (details.length < 20) {
+            details.push(`${entry.name} -> ${category}/${entry.name}`);
+          }
+        } catch {
+          skippedCount += 1;
+        }
+      }
+
+      return {
+        folderPath: root,
+        movedCount,
+        skippedCount,
+        details,
+        spokenBrief: `Organized ${movedCount} file${movedCount === 1 ? '' : 's'} (${skippedCount} skipped) into subfolders.`,
+      };
+    },
+  });
+
+  const clipboardCopyTool = defineTool({
+    name: 'clipboard_copy',
+    description:
+      'Copies text to MJ Assistant in-app clipboard (and writes OS clipboard when permitted). Requires clipboardWrite permission.',
+    schema: z.object({
+      text: z.string().min(1).max(10000).describe('Text snippet to copy.'),
+      label: z.string().max(80).optional().describe('Optional short label for the snippet.'),
+    }),
+    risk: 'safe',
+    requiredPermission: 'clipboardWrite',
+    getTarget: (args) => args.label?.trim() || `${args.text.length} chars`,
+    summarizeAction: (args) => `Copy ${args.text.length} chars to in-app clipboard`,
+    execute: async (args, ctx) => {
+      await ctx.setAppClipboard?.({ text: args.text, label: args.label });
+      ctx.onClientAction?.({
+        kind: 'clipboard_copy',
+        text: args.text,
+        ...(args.label?.trim() ? { label: args.label.trim() } : {}),
+      });
+      return {
+        copied: true,
+        charCount: args.text.length,
+        preview: args.text.slice(0, 120),
+        spokenBrief: `Copied ${args.text.length} characters cleanly.`,
+      };
+    },
+  });
+
+  const clipboardPasteSummaryTool = defineTool({
+    name: 'clipboard_paste_summary',
+    description:
+      'Summarizes text pasted or copied inside the MJ app (uses provided text or the in-app clipboard buffer, never snooping background OS clipboard).',
+    schema: z.object({
+      text: z.string().max(12000).optional().describe('Optional explicit pasted text to summarize.'),
+      maxBullets: z.number().int().min(1).max(7).optional(),
+    }),
+    risk: 'safe',
+    requiredPermission: 'toolCalling',
+    getTarget: () => 'in_app_clipboard',
+    summarizeAction: () => 'Summarize text in MJ in-app clipboard',
+    execute: async (args, ctx) => {
+      const stored = args.text?.trim() ? null : await ctx.getAppClipboard?.();
+      const rawText = args.text?.trim() || stored?.text?.trim() || '';
+      if (!rawText) {
+        return {
+          hasContent: false,
+          charCount: 0,
+          summaryPoints: [],
+          spokenBrief:
+            'Nothing is in the app clipboard yet. Paste or copy text inside MJ first.',
+        };
+      }
+
+      const maxBullets = args.maxBullets ?? 4;
+      const lines = rawText
+        .split(/\r?\n+/)
+        .map((l) => l.trim())
+        .filter(Boolean);
+      const sentences = rawText
+        .split(/(?<=[.!?।])\s+|\r?\n+/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      const summaryPoints = sentences.slice(0, maxBullets).map((s) => s.slice(0, 220));
+      const wordCount = rawText.split(/\s+/).filter(Boolean).length;
+      const spokenBrief =
+        summaryPoints.length > 0
+          ? `Clipboard has ${wordCount} words across ${lines.length} line${lines.length === 1 ? '' : 's'}. Key point: ${summaryPoints[0]}`
+          : `Clipboard has ${wordCount} words.`;
+
+      return {
+        hasContent: true,
+        ...(stored?.label ? { label: stored.label } : {}),
+        charCount: rawText.length,
+        wordCount,
+        lineCount: lines.length,
+        summaryPoints,
+        contentPreview: rawText.slice(0, 400),
+        spokenBrief,
       };
     },
   });
@@ -806,6 +1228,16 @@ function hasControlChars(text: string): boolean {
     readApprovedFileTool,
     writeApprovedNoteTool,
     openApprovedUrlTool,
+    openUrlTool,
+    youtubeSearchTool,
+    youtubePlayTool,
+    webSearchTool,
+    weatherReportTool,
+    fileSearchTool,
+    openFolderTool,
+    organizeFilesTool,
+    clipboardCopyTool,
+    clipboardPasteSummaryTool,
     openApprovedAppTool,
     closeApprovedAppTool,
     volumeSetTool,

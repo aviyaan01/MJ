@@ -250,10 +250,17 @@ export type DesktopWindowActionKind = 'minimize_all' | 'maximize' | 'switch' | '
 
 export type DesktopPowerActionKind = 'shutdown' | 'restart' | 'sleep' | 'logoff';
 
+export interface WebSearchSourceDTO {
+  title: string;
+  url: string;
+}
+
 export type DesktopClientAction =
   | { kind: 'open_approved_url'; target: string }
   | { kind: 'open_approved_app'; target: string }
   | { kind: 'close_approved_app'; target: string }
+  | { kind: 'open_approved_folder'; target: string }
+  | { kind: 'clipboard_copy'; text: string; label?: string }
   | { kind: 'volume_set'; level: number }
   | { kind: 'volume_mute'; muted?: boolean }
   | { kind: 'brightness_set'; level: number }
@@ -366,6 +373,7 @@ export type ChatStreamEvent =
       detail: string;
       confirmation?: PendingToolConfirmationDTO;
       clientAction?: DesktopClientAction;
+      sources?: WebSearchSourceDTO[];
     }
   | {
       type: 'stream_reset';

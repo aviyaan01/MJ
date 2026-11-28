@@ -28,6 +28,7 @@ import type { ServerConfig } from '../config.js';
 import type { PermissionsStore } from '../permissionsStore.js';
 import type { RuntimeSettingsStore } from '../settingsStore.js';
 import { ToolConfirmationManager } from '../toolConfirmations.js';
+import type { AppClipboardStore } from '../webTools.js';
 import { buildServerToolExecutionContext } from './tools.js';
 
 export interface ConversationRouteDeps {
@@ -39,6 +40,8 @@ export interface ConversationRouteDeps {
   providerRouter?: ProviderRouterClient;
   toolRegistry?: ToolRegistry;
   confirmationManager?: ToolConfirmationManager;
+  appClipboardStore?: AppClipboardStore;
+  fetchImpl?: typeof fetch;
   alertMonitor?: AlertMonitor;
   requireSession: (request: FastifyRequest) => Promise<void>;
 }
@@ -270,11 +273,14 @@ async function streamAssistantTurn(params: {
         const confirmationManager = deps.confirmationManager;
         const toolCtx = buildServerToolExecutionContext(
           {
+            config: deps.config,
             repo: deps.repo,
             permissionsStore: deps.permissionsStore,
             settingsStore: deps.settingsStore,
             toolRegistry: registry,
             confirmationManager: confirmationManager ?? new ToolConfirmationManager(),
+            appClipboardStore: deps.appClipboardStore,
+            fetchImpl: deps.fetchImpl,
             requireSession: deps.requireSession,
           },
           {
@@ -323,6 +329,9 @@ async function streamAssistantTurn(params: {
             ? `Executed ${execResult.toolName} safely.`
             : execResult.error ?? `Tool ${call.name} ${execResult.status}.`,
           ...(execResult.clientAction ? { clientAction: execResult.clientAction } : {}),
+          ...(execResult.sources && execResult.sources.length > 0
+            ? { sources: execResult.sources }
+            : {}),
         });
 
         return {

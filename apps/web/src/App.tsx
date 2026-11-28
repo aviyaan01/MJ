@@ -30,6 +30,7 @@ import {
   type UsageSummaryDTO,
   type VoicePersona,
   type VoiceState,
+  type WebSearchSourceDTO,
   parseVoiceConfirmationDecision,
 } from '@mj/shared';
 import { MjVoiceService, VOICE_STATE_META } from '@mj/voice';
@@ -46,6 +47,7 @@ import {
   tauriLockScreen,
   tauriMuteVolume,
   tauriOpenApprovedApp,
+  tauriOpenApprovedFolder,
   tauriOpenApprovedUrl,
   tauriPowerAction,
   tauriPressShortcut,
@@ -152,6 +154,8 @@ export function App() {
   const [lastRetryAction, setLastRetryAction] = useState<(() => void) | null>(null);
   const [pendingToolConfirmation, setPendingToolConfirmation] =
     useState<PendingToolConfirmationDTO | null>(null);
+  const [webSearchSources, setWebSearchSources] = useState<WebSearchSourceDTO[]>([]);
+  const [appClipboardText, setAppClipboardText] = useState<string | null>(null);
   const [latestHomeExchange, setLatestHomeExchange] = useState<{
     conversationId: string;
     userPrompt: string;
@@ -196,6 +200,14 @@ export function App() {
 
   const executeToolClientAction = useCallback(async (action: DesktopClientAction) => {
     try {
+      if (action.kind === 'clipboard_copy') {
+        setAppClipboardText(action.text);
+        if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(action.text).catch(() => {});
+        }
+        return;
+      }
+
       if (action.kind === 'open_approved_url') {
         if (isTauriDesktop()) {
           await tauriOpenApprovedUrl(action.target);
@@ -215,6 +227,9 @@ export function App() {
           break;
         case 'close_approved_app':
           await tauriCloseApprovedApp(action.target);
+          break;
+        case 'open_approved_folder':
+          await tauriOpenApprovedFolder(action.target);
           break;
         case 'volume_set':
           await tauriSetVolume(action.level);
@@ -641,6 +656,9 @@ export function App() {
                   response: confirmedResponse,
                 });
               } else if (execRes.ok) {
+                if (execRes.sources && execRes.sources.length > 0) {
+                  setWebSearchSources(execRes.sources);
+                }
                 if (execRes.clientAction) {
                   void executeToolClientAction(execRes.clientAction);
                 }
@@ -1026,6 +1044,7 @@ export function App() {
     streamAbortRef.current = abortController;
 
     clearErrorBanner();
+    setWebSearchSources([]);
     setStreamingState('connecting');
     setStreamStatusDetail('Connecting to AI provider…');
 
@@ -1132,6 +1151,9 @@ export function App() {
           event.status === 'error'
         ) {
           clearPendingToolConfirmation();
+          if (event.sources && event.sources.length > 0) {
+            setWebSearchSources(event.sources);
+          }
           if (event.status === 'executed' && event.clientAction) {
             void executeToolClientAction(event.clientAction);
           }
@@ -2177,6 +2199,7 @@ export function App() {
               activeError={activeError}
               repeatErrorHint={repeatErrorHint}
               pendingConfirmation={pendingToolConfirmation}
+              webSearchSources={webSearchSources}
               onConfirmToolAction={() =>
                 pendingToolConfirmation &&
                 void resolveToolConfirmation(pendingToolConfirmation.confirmationId, {
@@ -2226,6 +2249,12 @@ export function App() {
               activeError={activeError}
               repeatErrorHint={repeatErrorHint}
               pendingConfirmation={pendingToolConfirmation}
+              webSearchSources={webSearchSources}
+              appClipboardText={appClipboardText}
+              onSyncAppClipboard={async (text) => {
+                setAppClipboardText(text);
+                await mjApi.setAppClipboard({ text }).catch(() => {});
+              }}
               onConfirmToolAction={() =>
                 pendingToolConfirmation &&
                 void resolveToolConfirmation(pendingToolConfirmation.confirmationId, {

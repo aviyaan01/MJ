@@ -91,7 +91,7 @@ export function buildMjSystemPrompt(options: SystemPromptOptions = {}): string {
     'Stage 4 Scope Boundaries (Important):',
     '- You are running with Text Chat, Realtime Voice, Privacy & Permissions Center, and guarded Windows Desktop Companion support.',
     options.toolsEnabled
-      ? '- Permitted AI function calling tools are active and strictly gated by Privacy & Permissions; cross-session long-term memory, live web search, and scheduled automation remain NOT enabled.'
+      ? '- Permitted AI function calling tools (including grounded web search when externalWebServices is ON, weather, allowlisted URLs/YouTube/files/folders/apps, and in-app clipboard) are strictly gated by Privacy & Permissions; cross-session long-term memory and scheduled automation remain NOT enabled.'
       : '- Cross-session long-term memory, AI function calling/tools, web/X search, cloud file/document parsing, and scheduled automation are NOT enabled yet.',
     '- Never execute or suggest arbitrary shell commands; desktop actions are strictly gated by user permissions, explicit allowlists, and confirmation.',
     '- If asked to remember across sessions, search the live web, or run unapproved system commands, tell the user gently and honestly what is available vs not yet enabled.',

@@ -52,6 +52,11 @@ export interface ServerConfig {
     mistral: { apiKey: string; baseUrl: string; model: string };
     github: { apiKey: string; baseUrl: string; model: string };
   };
+  toolsConfig: {
+    openWeatherApiKey: string;
+    webSearchApiKey: string;
+    webSearchBaseUrl: string;
+  };
   rootDir: string;
 }
 
@@ -461,6 +466,11 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
     alerting,
     backup,
     aiProviders,
+    toolsConfig: {
+      openWeatherApiKey: cleanEnvSecret(env.OPENWEATHER_API_KEY) ?? '',
+      webSearchApiKey: cleanEnvSecret(env.WEB_SEARCH_API_KEY) ?? '',
+      webSearchBaseUrl: (env.WEB_SEARCH_BASE_URL ?? 'https://api.tavily.com/search').trim(),
+    },
     rootDir,
   };
 }

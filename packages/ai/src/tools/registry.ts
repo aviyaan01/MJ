@@ -34,7 +34,11 @@ export class ToolRegistry {
     }
     return this.listAll().filter((tool) => {
       if (tool.risk === 'blocked') return false;
-      return Boolean(permissions[tool.requiredPermission]);
+      if (!permissions[tool.requiredPermission]) return false;
+      if (tool.requiredPermissions?.some((perm) => !permissions[perm])) {
+        return false;
+      }
+      return true;
     });
   }
 

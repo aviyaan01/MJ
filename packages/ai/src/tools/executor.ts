@@ -110,23 +110,28 @@ export async function executeToolCallSafely(
     };
   }
 
-  if (!permissions[tool.requiredPermission]) {
-    const detail = `Tool "${tool.name}" blocked because "${tool.requiredPermission}" permission is OFF in Privacy & Permissions.`;
-    await ctx.recordAuditLog({
-      capability: tool.requiredPermission,
-      action: `Blocked AI tool "${tool.name}" (${tool.requiredPermission} OFF)`,
-      target,
-      outcome: 'denied',
-      source: ctx.source,
-      detail,
-    });
-    return {
-      ok: false,
-      toolName: tool.name,
-      status: 'denied',
-      errorCode: ErrorCodes.PERMISSION_DENIED,
-      error: detail,
-    };
+  const requiredList = Array.from(
+    new Set([tool.requiredPermission, ...(tool.requiredPermissions ?? [])]),
+  );
+  for (const reqPerm of requiredList) {
+    if (!permissions[reqPerm]) {
+      const detail = `Tool "${tool.name}" blocked because "${reqPerm}" permission is OFF in Privacy & Permissions.`;
+      await ctx.recordAuditLog({
+        capability: reqPerm,
+        action: `Blocked AI tool "${tool.name}" (${reqPerm} OFF)`,
+        target,
+        outcome: 'denied',
+        source: ctx.source,
+        detail,
+      });
+      return {
+        ok: false,
+        toolName: tool.name,
+        status: 'denied',
+        errorCode: ErrorCodes.PERMISSION_DENIED,
+        error: detail,
+      };
+    }
   }
 
   if (tool.validatePreflight) {
@@ -216,6 +221,9 @@ export async function executeToolCallSafely(
 
   try {
     const result = await tool.execute(args, scopedCtx);
+    const sources = Array.isArray(result.sources)
+      ? (result.sources as ToolExecutionResult['sources'])
+      : undefined;
     await ctx.recordAuditLog({
       capability: tool.requiredPermission,
       action: `Executed AI tool "${tool.name}"`,
@@ -230,6 +238,7 @@ export async function executeToolCallSafely(
       status: 'executed',
       result,
       ...(capturedClientAction ? { clientAction: capturedClientAction } : {}),
+      ...(sources && sources.length > 0 ? { sources } : {}),
     };
   } catch (err) {
     const errMsg =

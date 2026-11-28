@@ -11,6 +11,7 @@ import type {
   PermissionsStateDTO,
   ToolRiskLevel,
   UsageSummaryDTO,
+  WebSearchSourceDTO,
   z,
 } from '@mj/shared';
 
@@ -46,6 +47,21 @@ export interface ToolExecutionContext {
   getSystemTelemetry: () => Promise<HostTelemetryDTO>;
   requestConfirmation?: (req: ToolConfirmationRequest) => Promise<ToolConfirmDecision>;
   launchApprovedApp?: (target: string) => Promise<{ executed: boolean; detail?: string }>;
+  webSearch?: (params: {
+    query: string;
+    maxResults: number;
+  }) => Promise<{
+    summary: string;
+    sources: WebSearchSourceDTO[];
+    queriesUsed?: string[];
+    provider: string;
+  }>;
+  getWeatherReport?: (params: {
+    location: string;
+    units: 'metric' | 'imperial';
+  }) => Promise<Record<string, unknown>>;
+  getAppClipboard?: () => Promise<{ text: string; label?: string; updatedAt?: string } | null>;
+  setAppClipboard?: (entry: { text: string; label?: string }) => Promise<void>;
   onClientAction?: (action: DesktopClientAction) => void;
 }
 
@@ -59,6 +75,7 @@ export interface MjToolDefinition<
   geminiParameters?: Record<string, unknown>;
   risk: ToolRiskLevel;
   requiredPermission: ControllablePermissionKey;
+  requiredPermissions?: ControllablePermissionKey[];
   getTarget?: (args: z.infer<TSchema>) => string;
   summarizeAction?: (args: z.infer<TSchema>) => string;
   validatePreflight?: (
@@ -79,4 +96,5 @@ export interface ToolExecutionResult {
   errorCode?: string;
   error?: string;
   clientAction?: DesktopClientAction;
+  sources?: WebSearchSourceDTO[];
 }

@@ -36,11 +36,13 @@ import {
   type SystemHealthDTO,
   type UsageSummaryDTO,
   type VoiceState,
+  type WebSearchSourceDTO,
 } from '@mj/shared';
 import { isTauriDesktop } from '../desktop/desktopBridge.js';
 import { MarkdownMessage } from './MarkdownMessage.js';
 import { ToolConfirmationBanner } from './ToolConfirmationBanner.js';
 import { VoiceStateBar } from './VoiceStateBar.js';
+import { WebSourcesBar } from './WebSourcesBar.js';
 
 interface HomeDashboardProps {
   health: SystemHealthDTO | null;
@@ -66,6 +68,7 @@ interface HomeDashboardProps {
   activeError: StructuredErrorPayload | null;
   repeatErrorHint?: string | null;
   pendingConfirmation?: PendingToolConfirmationDTO | null;
+  webSearchSources?: WebSearchSourceDTO[];
   confirmationBusy?: boolean;
   onConfirmToolAction?: () => void;
   onCancelToolAction?: () => void;
@@ -142,6 +145,7 @@ export function HomeDashboard({
   activeError,
   repeatErrorHint,
   pendingConfirmation,
+  webSearchSources = [],
   onConfirmToolAction,
   onCancelToolAction,
   onStartVoice,
@@ -734,6 +738,7 @@ export function HomeDashboard({
                     </span>
                   )}
                 </div>
+                <WebSourcesBar sources={webSearchSources} />
               </div>
             )}
 

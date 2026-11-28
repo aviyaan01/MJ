@@ -27,6 +27,7 @@ import {
   type ToolCatalogItemDTO,
   type UsageSummaryDTO,
   type VoiceClientSecretDTO,
+  type WebSearchSourceDTO,
 } from '@mj/shared';
 
 const RAW_API_BASE =
@@ -376,6 +377,7 @@ export const mjApi = {
       errorCode?: string;
       error?: string;
       clientAction?: DesktopClientAction;
+      sources?: WebSearchSourceDTO[];
       pendingConfirmation?: PendingToolConfirmationDTO;
     }>('/api/voice/tools/execute', {
       method: 'POST',
@@ -403,7 +405,22 @@ export const mjApi = {
       errorCode?: string;
       error?: string;
       clientAction?: DesktopClientAction;
+      sources?: WebSearchSourceDTO[];
     }>('/api/tools/confirm', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  getAppClipboard: () =>
+    requestJson<{
+      clipboard: { text: string; label?: string; updatedAt: string } | null;
+    }>('/api/tools/clipboard'),
+
+  setAppClipboard: (payload: { text: string; label?: string }) =>
+    requestJson<{
+      saved: boolean;
+      clipboard: { text: string; label?: string; updatedAt: string };
+    }>('/api/tools/clipboard', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),

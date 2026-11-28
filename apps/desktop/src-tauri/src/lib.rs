@@ -45,6 +45,7 @@ pub fn run() {
             desktop_actions::desktop_open_app,
             desktop_actions::desktop_open_url,
             desktop_actions::desktop_search_files,
+            desktop_actions::desktop_open_folder,
             desktop_actions::desktop_organize_files,
             desktop_actions::desktop_send_notification,
             desktop_actions::desktop_sync_mic_tray,
