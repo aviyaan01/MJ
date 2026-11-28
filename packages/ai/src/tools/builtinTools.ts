@@ -356,6 +356,7 @@ function buildYouTubeTargetUrl(queryOrVideoId: string, mode: 'search' | 'play'):
       const host = parsed.hostname.toLowerCase();
       if (
         parsed.protocol === 'https:' &&
+        !trimmed.includes('@') &&
         (host === 'youtube.com' || host === 'www.youtube.com' || host === 'm.youtube.com' || host === 'youtu.be')
       ) {
         return parsed.toString();

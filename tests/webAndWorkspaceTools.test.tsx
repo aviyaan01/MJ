@@ -409,7 +409,7 @@ describe('Web Search, Weather, YouTube, Approved Folder & In-App Clipboard Tools
         method: 'POST',
         url: '/api/voice/tools/execute',
         headers: { cookie },
-        payload: { name: 'open_url', args: { url: 'https://www.youtube.com/@GoogleDevelopers' } },
+        payload: { name: 'open_url', args: { url: 'https://www.youtube.com/watch?v=M7lc1UVf-VE' } },
       })
     ).json();
     expect(openPending.status).toBe('confirmation_required');
@@ -425,8 +425,21 @@ describe('Web Search, Weather, YouTube, Approved Folder & In-App Clipboard Tools
     expect(openConfirmed.ok).toBe(true);
     expect(openConfirmed.clientAction).toEqual({
       kind: 'open_approved_url',
-      target: 'https://www.youtube.com/@GoogleDevelopers',
+      target: 'https://www.youtube.com/watch?v=M7lc1UVf-VE',
     });
+
+    // Rejects userinfo-spoofed URLs even when youtube.com is allowlisted
+    const spoofedOpen = (
+      await ctx.app.inject({
+        method: 'POST',
+        url: '/api/voice/tools/execute',
+        headers: { cookie },
+        payload: { name: 'open_url', args: { url: 'https://youtube.com@evil.com/' } },
+      })
+    ).json();
+    expect(spoofedOpen.ok).toBe(false);
+    expect(spoofedOpen.status).toBe('denied');
+    expect(spoofedOpen.errorCode).toBe(ErrorCodes.UNAPPROVED_TARGET);
   });
 
   it('restricts file_search, open_folder, and organize_files to approved folders with confirm=true for moves, and validates desktop_actions.rs', () => {
