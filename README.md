@@ -30,7 +30,7 @@ mj-assistant/
 
 ## Prerequisites
 
-- **Node.js 24 LTS** (built-in `node:sqlite` is used—no C++ native compilation required)
+- **Node.js >= 22** (Node 22.13+ / 24 LTS recommended; built-in `node:sqlite` is used—no C++ native compilation required)
 - **npm 10+**
 - **Primary AI & Voice Provider (Free Tier)**: **Google Gemini API Key** from [aistudio.google.com/apikey](https://aistudio.google.com/apikey) (`GEMINI_API_KEY`)
 - **Recommended Zero-Cost Fallbacks**:

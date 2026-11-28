@@ -47,7 +47,7 @@ npm run db:backup
 
 ---
 
-## 3. Step-by-Step Restore Procedure (Local / Node 24 Host)
+## 3. Step-by-Step Restore Procedure (Local / Node >= 22 Host)
 
 ### Step 1: Stop the Running MJ Server
 Stop `@mj/server` so no active process holds SQLite locks or appends WAL frames:

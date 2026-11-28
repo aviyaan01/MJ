@@ -55,7 +55,7 @@ npm run build
 npm run db:migrate
 ```
 - `apps/web/dist`: Static production Vite bundle (`sourcemap: false`, split lazy route chunks).
-- `apps/server/dist`: Compiled Fastify Node 24 server.
+- `apps/server/dist`: Compiled Fastify server (Node >= 22 / Node 24 LTS).
 
 ### 3.3 Single-Server Static + API Launch
 With `SERVE_WEB_DIST=true` (automatic when `APP_ENV=production`), Fastify serves `apps/web/dist` for non-`/api/*` routes alongside the `/api/*` backend:
@@ -78,7 +78,7 @@ Notice the server's Helmet CSP allows `connect-src 'self' wss://api.x.ai https:/
 ## 4. Windows Tauri 2 Desktop Companion (`apps/desktop`)
 
 ### Prerequisites on Windows 10/11
-1. **Node.js 24 LTS** & **npm 10+**
+1. **Node.js >= 22** (22 LTS / 24 LTS recommended) & **npm 10+**
 2. **Rust toolchain (`rustup`, `rustc`, `cargo`)**: https://rustup.rs/
 3. **Microsoft C++ Build Tools (MSVC)** (Desktop development with C++ workload)
 4. **Microsoft Edge WebView2 Runtime** (pre-installed on Windows 10/11; NSIS/MSI bundle includes bootstrapper fallback)
