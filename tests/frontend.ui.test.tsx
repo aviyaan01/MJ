@@ -63,8 +63,13 @@ const mockSettings: PublicSettingsDTO = {
   voice: {
     voiceModel: 'grok-voice-latest',
     availableVoiceModels: ['grok-voice-latest'],
-    voiceId: 'ara',
-    availableVoices: [{ id: 'ara', label: 'Ara', description: 'Warm' }],
+    voiceId: 'Aoede',
+    availableVoices: [
+      { id: 'Aoede', label: 'Aoede (Female · Default)', description: 'Warm conversational female voice' },
+      { id: 'Kore', label: 'Kore (Female)', description: 'Clear female voice' },
+      { id: 'Leda', label: 'Leda (Female)', description: 'Bright female voice' },
+      { id: 'Zephyr', label: 'Zephyr (Female)', description: 'Smooth female voice' },
+    ],
     speakingRate: 1.0,
     volume: 0.9,
     autoPlayback: false,
@@ -72,6 +77,7 @@ const mockSettings: PublicSettingsDTO = {
     autoListen: true,
     followupListenSeconds: 7,
     bargeInThreshold: 1400,
+    persona: 'friendly',
     languageMode: 'auto',
   },
 };
@@ -592,6 +598,20 @@ describe('Frontend React Views & Responsive UI Coverage (Sections 16 & 17)', () 
     expect(serverSttErrorHome).toContain('Try Settings -&gt; Voice, or check VPN/browser');
     expect(serverSttErrorHome).not.toContain('>Retry</button>');
 
+    const settingsGeneralHtml = renderToStaticMarkup(
+      <SettingsView
+        settings={{ ...mockSettings, userName: 'Tariq' }}
+        usage={mockUsage}
+        session={{ authenticated: true, passcodeRequired: false, mode: 'local-dev', appEnv: 'test' }}
+        availableVoices={mockSettings.voice.availableVoices}
+        initialTab="general"
+        onSaveSettings={async () => {}}
+        onRefreshUsage={async () => {}}
+      />,
+    );
+    expect(settingsGeneralHtml).toContain('Your Name (Optional)');
+    expect(settingsGeneralHtml).toContain('value="Tariq"');
+
     const settingsVoiceHtml = renderToStaticMarkup(
       <SettingsView
         settings={mockSettings}
@@ -606,6 +626,10 @@ describe('Frontend React Views & Responsive UI Coverage (Sections 16 & 17)', () 
     expect(settingsVoiceHtml).toContain('Auto-Listen Follow-Up');
     expect(settingsVoiceHtml).toContain('Follow-Up Listen Window');
     expect(settingsVoiceHtml).toContain('Barge-In RMS Threshold (16-bit PCM)');
+    expect(settingsVoiceHtml).toContain('Preview voice');
+    expect(settingsVoiceHtml).toContain('Conversation Persona');
+    expect(settingsVoiceHtml).toContain('Aoede (Female · Default)');
+    expect(settingsVoiceHtml).toContain('Leda (Female)');
     expect(settingsVoiceHtml).toContain('हिन्दी (Hindi)');
     expect(settingsVoiceHtml).toContain('Hinglish preference');
   });

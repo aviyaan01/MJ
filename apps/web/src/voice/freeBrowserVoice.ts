@@ -253,6 +253,49 @@ export function detectTtsLanguageForText(text: string, languageMode: LanguageMod
   return 'en-US';
 }
 
+const PREFERRED_FEMALE_VOICE_PATTERNS: readonly RegExp[] = [
+  /\bfemale\b/i,
+  /\bwoman\b/i,
+  /\bzira\b/i,
+  /\bheera\b/i,
+  /\bneerja\b/i,
+  /\btanishaa?\b/i,
+  /\bsamantha\b/i,
+  /\bnabanita\b/i,
+  /\bkalpana\b/i,
+  /\bswara\b/i,
+  /\blekha\b/i,
+  /\bkavya\b/i,
+  /\bshruti\b/i,
+  /\bpriya\b/i,
+  /\bnisha\b/i,
+  /\bsonia\b/i,
+  /\bjenny\b/i,
+  /\baria\b/i,
+  /\blibby\b/i,
+  /\bnatasha\b/i,
+  /\bvictoria\b/i,
+  /\bkaren\b/i,
+  /\bmoira\b/i,
+  /\btessa\b/i,
+  /\ballison\b/i,
+  /\bava\b/i,
+  /\bsusan\b/i,
+  /\bhazel\b/i,
+  /\b(?:aoede|kore|leda|zephyr)\b/i,
+  /\bgoogle\s+(?:हिन्दी|বাংলা|us\s+english)\b/i,
+];
+
+export function isPreferredFemaleVoiceName(voiceName: string | undefined): boolean {
+  if (!voiceName) return false;
+  const trimmed = voiceName.trim();
+  if (!trimmed) return false;
+  if (/\bmale\b/i.test(trimmed) && !/\bfemale\b/i.test(trimmed)) {
+    return false;
+  }
+  return PREFERRED_FEMALE_VOICE_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
 export function selectBestSpeechSynthesisVoice<
   T extends { lang: string; default?: boolean; name?: string },
 >(voices: readonly T[], targetLang: string): T | undefined {
@@ -260,14 +303,23 @@ export function selectBestSpeechSynthesisVoice<
   const normalizedTarget = targetLang.toLowerCase();
   const basePrefix = normalizedTarget.split('-')[0]!;
 
-  const exact = voices.find((v) => v.lang.toLowerCase() === normalizedTarget);
-  if (exact) return exact;
-
-  const sameLang = voices.find((v) => {
+  const isExactLocale = (v: T) => v.lang.toLowerCase() === normalizedTarget;
+  const isBaseLocale = (v: T) => {
     const l = v.lang.toLowerCase();
     return l === basePrefix || l.startsWith(`${basePrefix}-`) || l.startsWith(`${basePrefix}_`);
-  });
-  return sameLang;
+  };
+
+  // Prefer female voices matching exact locale, then base language, before any fallback voice.
+  const exactFemale = voices.find((v) => isExactLocale(v) && isPreferredFemaleVoiceName(v.name));
+  if (exactFemale) return exactFemale;
+
+  const baseFemale = voices.find((v) => isBaseLocale(v) && isPreferredFemaleVoiceName(v.name));
+  if (baseFemale) return baseFemale;
+
+  const exactAny = voices.find(isExactLocale);
+  if (exactAny) return exactAny;
+
+  return voices.find(isBaseLocale);
 }
 
 export function speakWithBrowserSpeechSynthesis(

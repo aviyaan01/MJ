@@ -361,23 +361,27 @@ function resolveGeminiOrigin(baseUrl?: string): string {
   }
 }
 
-function mapGeminiVoiceName(voiceId: string | undefined): string {
+export function mapGeminiVoiceName(voiceId: string | undefined): string {
   switch ((voiceId ?? '').trim().toLowerCase()) {
     case 'sal':
+    case 'charon':
       return 'Charon';
     case 'rex':
+    case 'fenrir':
       return 'Fenrir';
     case 'eve':
+    case 'kore':
       return 'Kore';
     case 'leo':
-      return 'Puck';
-    case 'aoede':
-    case 'charon':
-    case 'fenrir':
-    case 'kore':
     case 'puck':
+      return 'Puck';
+    case 'leda':
+      return 'Leda';
     case 'zephyr':
-      return voiceId!.trim().charAt(0).toUpperCase() + voiceId!.trim().slice(1).toLowerCase();
+      return 'Zephyr';
+    case 'orus':
+      return 'Orus';
+    case 'aoede':
     case 'ara':
     default:
       return 'Aoede';

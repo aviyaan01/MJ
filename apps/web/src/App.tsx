@@ -4,7 +4,9 @@ import {
   DEFAULT_AUTO_LISTEN,
   DEFAULT_BARGE_IN_PCM16_THRESHOLD,
   DEFAULT_FOLLOWUP_LISTEN_SECONDS,
+  DEFAULT_GEMINI_FEMALE_VOICE_ID,
   DEFAULT_PERMISSIONS_STATE,
+  DEFAULT_VOICE_PERSONA,
   ErrorCodes,
   VoiceStates,
   acceleratorFromKeyboardEvent,
@@ -24,6 +26,7 @@ import {
   type StructuredErrorPayload,
   type SystemHealthDTO,
   type UsageSummaryDTO,
+  type VoicePersona,
   type VoiceState,
 } from '@mj/shared';
 import { MjVoiceService, VOICE_STATE_META } from '@mj/voice';
@@ -166,7 +169,7 @@ export function App() {
   useEffect(() => {
     settingsRef.current = settings;
     voiceServiceRef.current?.updateOptions({
-      voiceId: settings?.voice.voiceId ?? 'ara',
+      voiceId: settings?.voice.voiceId ?? DEFAULT_GEMINI_FEMALE_VOICE_ID,
       languageMode: settings?.voice.languageMode ?? 'auto',
       speakingRate: settings?.voice.speakingRate ?? 1.0,
       volume: settings?.voice.volume ?? 0.9,
@@ -419,7 +422,7 @@ export function App() {
         },
       },
       {
-        voiceId: 'ara',
+        voiceId: DEFAULT_GEMINI_FEMALE_VOICE_ID,
         languageMode: 'auto',
         speakingRate: 1.0,
         volume: 0.9,
@@ -527,10 +530,10 @@ export function App() {
       ...permRes.permissions,
       ...(nativePerms
         ? {
-            wakeWordStandby: Boolean(
-              permRes.permissions.wakeWordStandby && nativePerms.wakeWordStandby !== false,
-            ),
-          }
+          wakeWordStandby: Boolean(
+            permRes.permissions.wakeWordStandby && nativePerms.wakeWordStandby !== false,
+          ),
+        }
         : {}),
     });
     setAllowlist(allowRes.entries);
@@ -792,8 +795,8 @@ export function App() {
         setMessages((prev) =>
           prev.map((m) =>
             m.id === event.assistantMessageId ||
-            m.id === realAssistantId ||
-            m.id === tempAssistantId
+              m.id === realAssistantId ||
+              m.id === tempAssistantId
               ? { ...m, content: '', model: event.model, status: 'streaming' }
               : m,
           ),
@@ -802,11 +805,11 @@ export function App() {
           setLatestHomeExchange((prev) =>
             prev
               ? {
-                  ...prev,
-                  assistantMessage: prev.assistantMessage
-                    ? { ...prev.assistantMessage, content: '', model: event.model }
-                    : prev.assistantMessage,
-                }
+                ...prev,
+                assistantMessage: prev.assistantMessage
+                  ? { ...prev.assistantMessage, content: '', model: event.model }
+                  : prev.assistantMessage,
+              }
               : prev,
           );
         }
@@ -1339,6 +1342,84 @@ export function App() {
     speakTextResilient(text);
   };
 
+  const handlePreviewVoice = useCallback(
+    async (params: { voiceId: string; languageMode: LanguageMode; persona: VoicePersona }) => {
+      const s = settingsRef.current;
+      const perms = permissionsRef.current;
+      if (!perms.voiceSessionAccess) {
+        throw new Error('Voice sessions are disabled in Privacy & Permissions.');
+      }
+      if (s?.voice.voiceOutputEnabled === false) {
+        throw new Error('Voice Output is disabled in Settings -> Voice & Language.');
+      }
+
+      const nameGreeting = s?.userName?.trim() ? ` ${s.userName.trim()}` : '';
+      const activePersona = params.persona ?? s?.voice.persona ?? DEFAULT_VOICE_PERSONA;
+      const sampleText =
+        params.languageMode === 'bn'
+          ? `হ্যালো${nameGreeting}! আমি এমজে, তোমার সাথেই আছি। বলো কীভাবে সাহায্য করি?`
+          : params.languageMode === 'hi'
+            ? `नमस्ते${nameGreeting}! मैं एमजे हूँ, बताओ आज मैं तुम्हारी क्या मदद कर सकती हूँ?`
+            : params.languageMode === 'hinglish'
+              ? `Hey${nameGreeting}! Main MJ hoon, main abhi dekh rahi hoon — bolo kya help chahiye?`
+              : params.languageMode === 'banglish'
+                ? `Hey${nameGreeting}! Ami MJ, bolo aj ki niye kaj korbo?`
+                : activePersona === 'professional'
+                  ? `Hello${nameGreeting}, this is MJ. Ready whenever you want to begin.`
+                  : `Hey${nameGreeting}! I'm MJ — super glad to chat with you today!`;
+
+      const isBrowserOnly = s?.voice.voiceModel === 'free-browser-voice';
+      if (!isBrowserOnly && perms.externalWebServices) {
+        try {
+          const audioBytes = await mjApi.fetchTtsAudio(
+            sampleText,
+            {
+              voiceId: params.voiceId,
+              languageMode: params.languageMode,
+            },
+            AbortSignal.timeout(15000),
+          );
+          const AudioCtx =
+            window.AudioContext ||
+            (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+          if (AudioCtx) {
+            const ctx = new AudioCtx();
+            const decoded = await ctx.decodeAudioData(audioBytes.slice(0));
+            const src = ctx.createBufferSource();
+            const gain = ctx.createGain();
+            gain.gain.value = s?.voice.volume ?? 0.9;
+            src.buffer = decoded;
+            src.playbackRate.value = s?.voice.speakingRate ?? 1.0;
+            src.connect(gain);
+            gain.connect(ctx.destination);
+            src.onended = () => {
+              void ctx.close().catch(() => { });
+            };
+            src.start();
+            return;
+          }
+        } catch (err) {
+          if (err instanceof ApiClientError && err.payload.code === ErrorCodes.PERMISSION_DENIED) {
+            throw err;
+          }
+          // Fall back to female Browser SpeechSynthesis when server TTS is unavailable
+        }
+      }
+
+      await new Promise<void>((resolve) => {
+        speakWithBrowserSpeechSynthesis(sampleText, {
+          volume: s?.voice.volume ?? 0.9,
+          speakingRate: s?.voice.speakingRate ?? 1.0,
+          languageMode: params.languageMode,
+          voiceOutputEnabled: true,
+          onEnd: () => resolve(),
+          onError: () => resolve(),
+        });
+      });
+    },
+    [],
+  );
+
   const handleChangeLanguageMode = async (mode: LanguageMode) => {
     await handleSaveSettings({ voice: { languageMode: mode } });
   };
@@ -1830,6 +1911,7 @@ export function App() {
               session={session}
               availableVoices={availableVoices}
               onSaveSettings={handleSaveSettings}
+              onPreviewVoice={handlePreviewVoice}
               onRefreshUsage={async () => {
                 const u = await mjApi.getUsage();
                 setUsage(u);

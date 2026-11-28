@@ -11,6 +11,7 @@ import type { BackupSchedulerConfig } from './backupScheduler.js';
 export interface ServerConfig {
   appEnv: 'development' | 'test' | 'production';
   freeOnlyMode: boolean;
+  userName?: string;
   host: string;
   port: number;
   corsOrigins: string[];
@@ -115,6 +116,7 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
   const rawAppEnv = (env.APP_ENV ?? 'development').trim().toLowerCase();
   const appEnv: ServerConfig['appEnv'] =
     rawAppEnv === 'production' ? 'production' : rawAppEnv === 'test' ? 'test' : 'development';
+  const userName = cleanEnvSecret(env.USER_NAME);
 
   const rawApiKey = (env.XAI_API_KEY ?? '').trim();
   const apiKeyConfigured = !isPlaceholderValue(rawApiKey);
@@ -427,6 +429,7 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
   return {
     appEnv,
     freeOnlyMode,
+    ...(userName ? { userName } : {}),
     host: (env.HOST ?? '127.0.0.1').trim(),
     port: Number.isFinite(portNum) && portNum > 0 ? portNum : 3001,
     corsOrigins,

@@ -7,6 +7,7 @@ export type MessageChannel = 'text' | 'voice';
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 export type ResponseStyle = 'balanced' | 'concise' | 'detailed';
 export type LanguageMode = 'auto' | 'en' | 'bn' | 'banglish' | 'hi' | 'hinglish';
+export type VoicePersona = 'friendly' | 'professional';
 export type EngineStatus = 'ready' | 'unconfigured' | 'degraded' | 'error';
 
 export const VoiceStates = {
@@ -86,6 +87,8 @@ export const MAX_FOLLOWUP_LISTEN_SECONDS = 30;
 export const DEFAULT_BARGE_IN_PCM16_THRESHOLD = 1400;
 export const MIN_BARGE_IN_PCM16_THRESHOLD = 200;
 export const MAX_BARGE_IN_PCM16_THRESHOLD = 10000;
+export const DEFAULT_VOICE_PERSONA: VoicePersona = 'friendly';
+export const DEFAULT_GEMINI_FEMALE_VOICE_ID = 'Aoede';
 
 export interface VoiceSettings {
   voiceModel: string;
@@ -99,11 +102,13 @@ export interface VoiceSettings {
   autoListen: boolean;
   followupListenSeconds: number;
   bargeInThreshold: number;
+  persona: VoicePersona;
   languageMode: LanguageMode;
 }
 
 export interface PublicSettingsDTO {
   assistantName: string;
+  userName?: string;
   freeOnlyMode?: boolean;
   activeProvider?: AiProviderId;
   providers?: ProviderInfoDTO[];

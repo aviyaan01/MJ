@@ -211,6 +211,8 @@ async function streamAssistantTurn(params: {
   );
   const instructions = buildMjSystemPrompt({
     assistantName: settings.assistantName,
+    userName: settings.userName,
+    persona: settings.voice.persona,
     responseStyle: settings.responseStyle,
     languageMode: settings.voice.languageMode,
   });

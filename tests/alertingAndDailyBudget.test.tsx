@@ -285,8 +285,8 @@ describe('Uptime, Crash & Error-Rate Alerting, Daily Budget Warning & Log Saniti
       voice: {
         voiceModel: 'grok-voice-latest',
         availableVoiceModels: ['grok-voice-latest'],
-        voiceId: 'ara',
-        availableVoices: [{ id: 'ara', label: 'Ara', description: 'Warm' }],
+        voiceId: 'Aoede',
+        availableVoices: [{ id: 'Aoede', label: 'Aoede (Female · Default)', description: 'Warm' }],
         speakingRate: 1,
         volume: 0.9,
         autoPlayback: false,
@@ -294,6 +294,7 @@ describe('Uptime, Crash & Error-Rate Alerting, Daily Budget Warning & Log Saniti
         autoListen: true,
         followupListenSeconds: 7,
         bargeInThreshold: 1400,
+        persona: 'friendly',
         languageMode: 'auto',
       },
     };

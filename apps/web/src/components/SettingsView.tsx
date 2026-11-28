@@ -8,12 +8,15 @@ import {
   Save,
   ShieldCheck,
   Sliders,
+  Volume2,
 } from 'lucide-react';
 import { Panel, StatusPill } from '@mj/ui';
 import {
   DEFAULT_AUTO_LISTEN,
   DEFAULT_BARGE_IN_PCM16_THRESHOLD,
   DEFAULT_FOLLOWUP_LISTEN_SECONDS,
+  DEFAULT_GEMINI_FEMALE_VOICE_ID,
+  DEFAULT_VOICE_PERSONA,
   MAX_FOLLOWUP_LISTEN_SECONDS,
   MIN_FOLLOWUP_LISTEN_SECONDS,
   resolveProviderDisplay,
@@ -24,7 +27,9 @@ import {
   type ReasoningEffort,
   type ResponseStyle,
   type UsageSummaryDTO,
+  type VoicePersona,
 } from '@mj/shared';
+import { speakWithBrowserSpeechSynthesis } from '../voice/freeBrowserVoice.js';
 
 type SettingsTab = 'general' | 'model' | 'voice' | 'appearance' | 'usage' | 'security';
 
@@ -36,6 +41,11 @@ interface SettingsViewProps {
   initialTab?: SettingsTab;
   onSaveSettings: (patch: Record<string, unknown>) => Promise<void>;
   onRefreshUsage: () => Promise<void>;
+  onPreviewVoice?: (params: {
+    voiceId: string;
+    languageMode: LanguageMode;
+    persona: VoicePersona;
+  }) => Promise<void>;
 }
 
 const TABS: Array<{ id: SettingsTab; label: string; icon: typeof Sliders }> = [
@@ -55,13 +65,18 @@ export function SettingsView({
   initialTab = 'general',
   onSaveSettings,
   onRefreshUsage,
+  onPreviewVoice,
 }: SettingsViewProps) {
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
   const [saving, setSaving] = useState(false);
+  const [previewingVoice, setPreviewingVoice] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
 
-  const [responseStyle, setResponseStyle] = useState<ResponseStyle>('balanced');
+  const [userName, setUserName] = useState(settings?.userName ?? '');
+  const [responseStyle, setResponseStyle] = useState<ResponseStyle>(
+    settings?.responseStyle ?? 'balanced',
+  );
   const [activeProvider, setActiveProvider] = useState<AiProviderId>('auto');
   const [activeModel, setActiveModel] = useState('gemini-2.5-flash');
   const [customModel, setCustomModel] = useState('');
@@ -72,7 +87,8 @@ export function SettingsView({
 
   const [voiceModel, setVoiceModel] = useState('gemini-2.5-flash-native-audio-preview-12-2025');
   const [customVoiceModel, setCustomVoiceModel] = useState('');
-  const [voiceId, setVoiceId] = useState('ara');
+  const [voiceId, setVoiceId] = useState<string>(DEFAULT_GEMINI_FEMALE_VOICE_ID);
+  const [persona, setPersona] = useState<VoicePersona>(DEFAULT_VOICE_PERSONA);
   const [languageMode, setLanguageMode] = useState<LanguageMode>('auto');
   const [speakingRate, setSpeakingRate] = useState(1.0);
   const [volume, setVolume] = useState(0.9);
@@ -99,6 +115,7 @@ export function SettingsView({
 
   useEffect(() => {
     if (!settings) return;
+    setUserName(settings.userName ?? '');
     setResponseStyle(settings.responseStyle);
     setActiveProvider(settings.activeProvider ?? 'auto');
     setActiveModel(settings.activeModel);
@@ -108,7 +125,12 @@ export function SettingsView({
     setStreamResponses(settings.streamResponses);
 
     setVoiceModel(settings.voice.voiceModel);
-    setVoiceId(settings.voice.voiceId);
+    setVoiceId(
+      settings.voice.voiceId === 'ara'
+        ? DEFAULT_GEMINI_FEMALE_VOICE_ID
+        : settings.voice.voiceId,
+    );
+    setPersona(settings.voice.persona ?? DEFAULT_VOICE_PERSONA);
     setLanguageMode(settings.voice.languageMode);
     setSpeakingRate(settings.voice.speakingRate);
     setVolume(settings.voice.volume);
@@ -143,6 +165,7 @@ export function SettingsView({
       const modelToSave = customModel.trim() || activeModel;
       const voiceModelToSave = customVoiceModel.trim() || voiceModel;
       await onSaveSettings({
+        userName: userName.trim(),
         responseStyle,
         activeProvider,
         activeModel: modelToSave,
@@ -155,6 +178,7 @@ export function SettingsView({
         voice: {
           voiceModel: voiceModelToSave,
           voiceId,
+          persona,
           languageMode,
           speakingRate: Number(speakingRate),
           volume: Number(volume),
@@ -191,8 +215,53 @@ export function SettingsView({
     availableVoices.length > 0
       ? availableVoices
       : settings?.voice.availableVoices ?? [
-        { id: 'ara', label: 'Ara', description: 'Warm and conversational' },
-      ];
+          {
+            id: 'Aoede',
+            label: 'Aoede (Female · Default)',
+            description: 'Warm, cheerful & conversational female Gemini voice',
+          },
+          {
+            id: 'Kore',
+            label: 'Kore (Female)',
+            description: 'Clear, firm & expressive female Gemini voice',
+          },
+          {
+            id: 'Leda',
+            label: 'Leda (Female)',
+            description: 'Youthful, bright & friendly female Gemini voice',
+          },
+          {
+            id: 'Zephyr',
+            label: 'Zephyr (Female)',
+            description: 'Smooth, lively & warm female Gemini voice',
+          },
+        ];
+
+  const handlePreviewVoiceClick = async () => {
+    setPreviewingVoice(true);
+    setErrorText(null);
+    try {
+      if (onPreviewVoice) {
+        await onPreviewVoice({ voiceId, languageMode, persona });
+      } else {
+        speakWithBrowserSpeechSynthesis(
+          persona === 'professional'
+            ? "Hello, this is MJ. How can I help you today?"
+            : "Hey there! I'm MJ, ready whenever you need me.",
+          {
+            volume,
+            speakingRate,
+            languageMode,
+            voiceOutputEnabled,
+          },
+        );
+      }
+    } catch (err) {
+      setErrorText(err instanceof Error ? err.message : 'Unable to preview voice.');
+    } finally {
+      setPreviewingVoice(false);
+    }
+  };
 
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-8 lg:py-8">
@@ -267,8 +336,30 @@ export function SettingsView({
                     color: 'var(--mj-accent-ice)',
                   }}
                 >
-                  MJ Assistant (Original JARVIS-inspired identity · English, বাংলা &amp; Banglish)
+                  MJ Assistant · Warm female AI friend (English, বাংলা, हिन्दी, Banglish &amp; Hinglish)
                 </div>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="user-name"
+                  className="mb-2 block text-xs font-medium text-[#DCE6EE]"
+                >
+                  Your Name (Optional)
+                </label>
+                <input
+                  id="user-name"
+                  type="text"
+                  maxLength={80}
+                  value={userName}
+                  onChange={(e) => setUserName(e.target.value)}
+                  placeholder="How should MJ call you? (e.g. Tariq, or configure USER_NAME in .env)"
+                  className="w-full rounded-xl px-3.5 py-2.5 text-sm text-[#EDF3F8] outline-none placeholder:text-[#8B9CB0]"
+                  style={{
+                    backgroundColor: '#07090E',
+                    border: '1px solid var(--mj-border-strong)',
+                  }}
+                />
               </div>
 
               <div>
@@ -594,23 +685,57 @@ export function SettingsView({
 
                 <div>
                   <label htmlFor="voice-preset" className="mb-2 block text-xs font-medium text-[#DCE6EE]">
-                    Assistant Voice Persona
+                    Gemini Female Voice
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <select
+                      id="voice-preset"
+                      value={voiceId}
+                      onChange={(e) => setVoiceId(e.target.value)}
+                      className="min-w-0 flex-1 rounded-xl px-3.5 py-2.5 text-sm text-[#EDF3F8] outline-none"
+                      style={{
+                        backgroundColor: '#07090E',
+                        border: '1px solid var(--mj-border-strong)',
+                      }}
+                    >
+                      {voiceChoices.map((v) => (
+                        <option key={v.id} value={v.id}>
+                          {v.label} — {v.description}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => void handlePreviewVoiceClick()}
+                      disabled={previewingVoice}
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-xl px-3 py-2.5 text-xs font-medium text-[#EDF3F8] transition hover:brightness-110 disabled:opacity-50"
+                      style={{
+                        backgroundColor: 'rgba(154, 198, 230, 0.14)',
+                        border: '1px solid var(--mj-border-strong)',
+                      }}
+                    >
+                      <Volume2 className="h-3.5 w-3.5 text-[#9AC6E6]" />
+                      <span>{previewingVoice ? 'Playing…' : 'Preview voice'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label htmlFor="voice-persona" className="mb-2 block text-xs font-medium text-[#DCE6EE]">
+                    Conversation Persona
                   </label>
                   <select
-                    id="voice-preset"
-                    value={voiceId}
-                    onChange={(e) => setVoiceId(e.target.value)}
+                    id="voice-persona"
+                    value={persona}
+                    onChange={(e) => setPersona(e.target.value as VoicePersona)}
                     className="w-full rounded-xl px-3.5 py-2.5 text-sm text-[#EDF3F8] outline-none"
                     style={{
                       backgroundColor: '#07090E',
                       border: '1px solid var(--mj-border-strong)',
                     }}
                   >
-                    {voiceChoices.map((v) => (
-                      <option key={v.id} value={v.id}>
-                        {v.label} — {v.description}
-                      </option>
-                    ))}
+                    <option value="friendly">Friendly — Warm, cheerful close friend (Default)</option>
+                    <option value="professional">Professional — Calm, composed &amp; concise</option>
                   </select>
                 </div>
 

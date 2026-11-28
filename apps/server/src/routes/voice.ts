@@ -223,11 +223,26 @@ export function createDefaultVoiceGateway(
     listVoices: async () => {
       if (freeOnly || (!preferXaiOnly && !config.apiKeyConfigured)) {
         return [
-          { id: 'ara', label: 'Ara (Aoede)', description: 'Warm conversational Gemini Live voice' },
-          { id: 'sal', label: 'Sal (Charon)', description: 'Balanced informative Gemini Live voice' },
-          { id: 'rex', label: 'Rex (Fenrir)', description: 'Crisp analytical Gemini Live voice' },
-          { id: 'eve', label: 'Eve (Kore)', description: 'Clear firm Gemini Live voice' },
-          { id: 'leo', label: 'Leo (Puck)', description: 'Upbeat natural Gemini Live voice' },
+          {
+            id: 'Aoede',
+            label: 'Aoede (Female · Default)',
+            description: 'Warm, cheerful & conversational female Gemini voice',
+          },
+          {
+            id: 'Kore',
+            label: 'Kore (Female)',
+            description: 'Clear, firm & expressive female Gemini voice',
+          },
+          {
+            id: 'Leda',
+            label: 'Leda (Female)',
+            description: 'Youthful, bright & friendly female Gemini voice',
+          },
+          {
+            id: 'Zephyr',
+            label: 'Zephyr (Female)',
+            description: 'Smooth, lively & warm female Gemini voice',
+          },
         ];
       }
       return fetchAvailableVoices(xaiApiConfig);
@@ -484,6 +499,8 @@ export function registerVoiceRoutes(
 
       const instructions = buildMjVoiceInstructions({
         assistantName: settings.assistantName,
+        userName: settings.userName,
+        persona: settings.voice.persona,
         responseStyle: settings.responseStyle,
         languageMode,
         contextTurns,

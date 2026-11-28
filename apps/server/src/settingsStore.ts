@@ -4,6 +4,8 @@ import {
   DEFAULT_BARGE_IN_PCM16_THRESHOLD,
   DEFAULT_BUDGET_SETTINGS,
   DEFAULT_FOLLOWUP_LISTEN_SECONDS,
+  DEFAULT_GEMINI_FEMALE_VOICE_ID,
+  DEFAULT_VOICE_PERSONA,
   ErrorCodes,
   MAX_BARGE_IN_PCM16_THRESHOLD,
   MAX_FOLLOWUP_LISTEN_SECONDS,
@@ -16,6 +18,7 @@ import {
   type PublicSettingsDTO,
   type ReasoningEffort,
   type ResponseStyle,
+  type VoicePersona,
 } from '@mj/shared';
 import type { ProviderRouterClient } from '@mj/ai';
 import type { MjDatabaseRepository } from '@mj/database';
@@ -24,14 +27,30 @@ import type { ServerConfig } from './config.js';
 const SETTINGS_STORAGE_KEY = 'mj.runtime_settings.v1';
 
 const DEFAULT_AVAILABLE_VOICES = [
-  { id: 'ara', label: 'Ara', description: 'Warm and conversational' },
-  { id: 'sal', label: 'Sal', description: 'Smooth and balanced' },
-  { id: 'rex', label: 'Rex', description: 'Clear and professional' },
-  { id: 'eve', label: 'Eve', description: 'Energetic and upbeat' },
-  { id: 'leo', label: 'Leo', description: 'Calm and authoritative' },
+  {
+    id: 'Aoede',
+    label: 'Aoede (Female · Default)',
+    description: 'Warm, cheerful & conversational female Gemini voice',
+  },
+  {
+    id: 'Kore',
+    label: 'Kore (Female)',
+    description: 'Clear, firm & expressive female Gemini voice',
+  },
+  {
+    id: 'Leda',
+    label: 'Leda (Female)',
+    description: 'Youthful, bright & friendly female Gemini voice',
+  },
+  {
+    id: 'Zephyr',
+    label: 'Zephyr (Female)',
+    description: 'Smooth, lively & warm female Gemini voice',
+  },
 ];
 
 export interface PersistedSettingsPatch {
+  userName?: string;
   activeProvider?: AiProviderId;
   activeModel?: string;
   reasoningEffort?: ReasoningEffort;
@@ -52,6 +71,7 @@ export interface PersistedSettingsPatch {
     autoListen?: boolean;
     followupListenSeconds?: number;
     bargeInThreshold?: number;
+    persona?: VoicePersona;
     languageMode?: LanguageMode;
   };
 }
@@ -154,8 +174,21 @@ export class RuntimeSettingsStore {
         }).hostLabel
       : this.config.xaiBaseHost;
 
+    const resolvedUserName =
+      saved.userName !== undefined
+        ? saved.userName.trim() || undefined
+        : this.config.userName;
+    const rawVoiceId = saved.voice?.voiceId?.trim();
+    const voiceId =
+      rawVoiceId === 'ara'
+        ? 'Aoede'
+        : rawVoiceId === 'eve'
+          ? 'Kore'
+          : rawVoiceId || DEFAULT_GEMINI_FEMALE_VOICE_ID;
+
     return {
       assistantName: 'MJ Assistant',
+      ...(resolvedUserName ? { userName: resolvedUserName } : {}),
       freeOnlyMode: this.config.freeOnlyMode,
       activeProvider,
       ...(providers.length > 0 ? { providers } : {}),
@@ -178,7 +211,7 @@ export class RuntimeSettingsStore {
       voice: {
         voiceModel,
         availableVoiceModels,
-        voiceId: saved.voice?.voiceId ?? 'ara',
+        voiceId,
         availableVoices: DEFAULT_AVAILABLE_VOICES,
         speakingRate: saved.voice?.speakingRate ?? 1.0,
         volume: saved.voice?.volume ?? 0.9,
@@ -199,6 +232,7 @@ export class RuntimeSettingsStore {
             Math.round(saved.voice?.bargeInThreshold ?? DEFAULT_BARGE_IN_PCM16_THRESHOLD),
           ),
         ),
+        persona: saved.voice?.persona ?? DEFAULT_VOICE_PERSONA,
         languageMode: saved.voice?.languageMode ?? 'auto',
       },
     };

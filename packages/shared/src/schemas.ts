@@ -4,6 +4,7 @@ import { AppError, ErrorCodes } from './errors.js';
 export const ReasoningEffortSchema = z.enum(['low', 'medium', 'high', 'xhigh']);
 export const ResponseStyleSchema = z.enum(['balanced', 'concise', 'detailed']);
 export const LanguageModeSchema = z.enum(['auto', 'en', 'bn', 'banglish', 'hi', 'hinglish']);
+export const VoicePersonaSchema = z.enum(['friendly', 'professional']);
 export const AiProviderIdSchema = z.enum([
   'auto',
   'xai',
@@ -70,6 +71,7 @@ export const TtsRequestSchema = z.object({
 });
 
 export const UpdateSettingsSchema = z.object({
+  userName: z.string().trim().max(80).optional(),
   activeProvider: AiProviderIdSchema.optional(),
   activeModel: z.string().trim().min(1).max(100).optional(),
   reasoningEffort: ReasoningEffortSchema.optional(),
@@ -103,6 +105,7 @@ export const UpdateSettingsSchema = z.object({
       autoListen: z.boolean().optional(),
       followupListenSeconds: z.number().int().min(3).max(30).optional(),
       bargeInThreshold: z.number().int().min(200).max(10000).optional(),
+      persona: VoicePersonaSchema.optional(),
       languageMode: LanguageModeSchema.optional(),
     })
     .optional(),
