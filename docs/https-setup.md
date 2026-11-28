@@ -79,14 +79,14 @@ In your backend runtime environment ([apps/server/.env.production.example](../ap
   > Tip: Hosting under the same parent domain (`app.` + `api.yourdomain.com`) with `COOKIE_DOMAIN=.yourdomain.com` prevents third-party cookie restrictions in browsers such as Safari/ITP.
 
 ### 2. Frontend Permissions & Content Security Policy (CSP)
-If you configure CSP headers on your Frontend host or CDN, allow connections to your HTTPS backend AND direct browser WebSocket sessions to xAI Realtime (which uses only backend-issued short-lived `client_secret` tokens):
+If you configure CSP headers on your Frontend host or CDN, allow connections to your HTTPS backend AND direct browser WebSocket sessions to Gemini Live (which uses only backend-issued short-lived tokens):
 
 ```text
 default-src 'self';
 script-src 'self';
 style-src 'self' 'unsafe-inline';
 img-src 'self' data:;
-connect-src 'self' https://api.yourdomain.com wss://api.x.ai https://api.x.ai;
+connect-src 'self' https://api.yourdomain.com wss://generativelanguage.googleapis.com https://generativelanguage.googleapis.com;
 media-src 'self' blob:;
 object-src 'none';
 frame-ancestors 'none';

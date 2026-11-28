@@ -21,7 +21,7 @@ import { UsageDashboardView } from '../apps/web/src/components/UsageDashboardVie
 
 const mockHealth: SystemHealthDTO = {
   status: 'online',
-  stage: 'Stage 5 · Monitoring, Usage & Final Delivery',
+  stage: 'Stages 1, 2, 4 & 5 Complete',
   backend: 'online',
   database: 'healthy',
   aiEngine: 'ready',

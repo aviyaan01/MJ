@@ -244,7 +244,7 @@ describe('Uptime, Crash & Error-Rate Alerting, Daily Budget Warning & Log Saniti
 
     const baseHealth: SystemHealthDTO = {
       status: 'online',
-      stage: 'Stage 5 · Monitoring, Usage & Final Delivery',
+      stage: 'Stages 1, 2, 4 & 5 Complete',
       backend: 'online',
       database: 'healthy',
       aiEngine: 'ready',

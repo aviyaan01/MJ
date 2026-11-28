@@ -21,6 +21,7 @@ import {
 import { Panel, StatusPill } from '@mj/ui';
 import { VOICE_STATE_META } from '@mj/voice';
 import {
+  MJ_ACTIVE_STAGE,
   resolveProviderDisplay,
   type ConnectivityCheckDTO,
   type PublicSettingsDTO,
@@ -870,7 +871,7 @@ export function UsageDashboardView({
           </span>
         </div>
         <span className="font-mono text-[11px]" style={{ color: 'var(--mj-accent-blue)' }}>
-          {health?.stage ?? 'Stage 5 · Monitoring, Usage & Final Delivery'}
+          {health?.stage ?? MJ_ACTIVE_STAGE}
         </span>
       </Panel>
     </div>

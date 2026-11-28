@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { MJ_ACTIVE_STAGE } from '@mj/shared';
 import { buildServer, type MjServerContext } from '../apps/server/src/app.js';
 import { loadServerConfig } from '../apps/server/src/config.js';
 import type { VoiceGateway } from '../apps/server/src/routes/voice.js';
@@ -57,10 +58,14 @@ describe('Split Production Deployment Readiness', () => {
     expect(okRes.body).not.toContain(secretKey);
     const okPayload = okRes.json() as Record<string, unknown>;
     expect(okPayload.status).toBe('online');
+    expect(okPayload.stage).toBe(MJ_ACTIVE_STAGE);
     expect(okPayload.backend).toBe('online');
     expect(okPayload.database).toBe('healthy');
     expect(okPayload.aiEngine).toBe('ready');
     expect(okPayload.voiceEngine).toBe('ready');
+
+    const readmeTitleLine = readFileSync(resolve(process.cwd(), 'README.md'), 'utf8').split(/\r?\n/)[0] ?? '';
+    expect(readmeTitleLine).toContain(String(okPayload.stage));
 
     const apiOkRes = await ctx.app.inject({
       method: 'GET',
@@ -226,5 +231,65 @@ describe('Split Production Deployment Readiness', () => {
     expect(clientSource).toContain('VITE_API_BASE_URL');
     expect(clientSource).toContain('resolveApiUrl(');
     expect(clientSource).toContain('fetch(resolveApiUrl(url)');
+  });
+
+  it('enforces nginx CSP headers, consistent X-Forwarded-For trustProxy config, and zero inline scripts in SPA HTML', () => {
+    const rootDir = resolve(process.cwd());
+
+    // 1. Static frontend Nginx serves only SPA assets and removes misleading commented X-Forwarded-For lines
+    const frontendNginx = readFileSync(resolve(rootDir, 'deploy/nginx.frontend.conf'), 'utf8');
+    expect(frontendNginx).not.toContain('location /api');
+    expect(frontendNginx).not.toContain('proxy_pass');
+    expect(frontendNginx).not.toContain('X-Forwarded-For');
+    expect(frontendNginx).not.toContain('$proxy_add_x_forwarded_for');
+
+    const locationMatch = frontendNginx.match(/location\s+\/\s*\{[\s\S]*?\}/);
+    expect(locationMatch).not.toBeNull();
+    const locationBlock = locationMatch![0];
+    expect(locationBlock).toContain('add_header Content-Security-Policy');
+    expect(locationBlock).toContain("default-src 'self'");
+    expect(locationBlock).toContain("script-src 'self'");
+    expect(locationBlock).toContain("style-src 'self' 'unsafe-inline'");
+    expect(locationBlock).toContain(
+      "connect-src 'self' https://api.yourdomain.com wss://generativelanguage.googleapis.com https://generativelanguage.googleapis.com",
+    );
+    expect(locationBlock).toContain("media-src 'self' blob:");
+    expect(locationBlock).toContain("object-src 'none'");
+    expect(locationBlock).toContain("frame-ancestors 'none'");
+
+    // Dockerfile.frontend supports injecting VITE_API_BASE_URL origin into connect-src at build time
+    const dockerfileFrontend = readFileSync(resolve(rootDir, 'Dockerfile.frontend'), 'utf8');
+    expect(dockerfileFrontend).toContain('ARG VITE_API_BASE_URL');
+    expect(dockerfileFrontend).toContain('https://api.yourdomain.com');
+
+    // 2. HTTPS reverse proxy overwrites X-Forwarded-For with $remote_addr cleanly for Fastify trustProxy
+    const httpsNginx = readFileSync(resolve(rootDir, 'deploy/nginx-https.conf'), 'utf8');
+    expect(httpsNginx).toContain('proxy_set_header X-Forwarded-For $remote_addr;');
+    expect(httpsNginx).not.toContain('$proxy_add_x_forwarded_for');
+
+    const serverApp = readFileSync(resolve(rootDir, 'apps/server/src/app.ts'), 'utf8');
+    expect(serverApp).toContain("trustProxy: config.appEnv === 'production'");
+
+    // 3. Stage string in health route matches README title
+    const readmeTitleLine = readFileSync(resolve(rootDir, 'README.md'), 'utf8').split(/\r?\n/)[0] ?? '';
+    expect(readmeTitleLine).toContain(MJ_ACTIVE_STAGE);
+
+    // 4. Verify SPA entry HTML (source + built dist if built) contains only external scripts and zero inline handlers
+    const htmlPaths = [resolve(rootDir, 'apps/web/index.html')];
+    const distHtmlPath = resolve(rootDir, 'apps/web/dist/index.html');
+    if (existsSync(distHtmlPath)) {
+      htmlPaths.push(distHtmlPath);
+    }
+
+    for (const htmlPath of htmlPaths) {
+      const html = readFileSync(htmlPath, 'utf8');
+      const scriptTags = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
+      expect(scriptTags.length).toBeGreaterThan(0);
+      for (const [, attrs, body] of scriptTags) {
+        expect(attrs).toMatch(/\bsrc\s*=\s*["'][^"']+["']/i);
+        expect(body.trim()).toBe('');
+      }
+      expect(html).not.toMatch(/\s+on[a-z]+\s*=/i);
+    }
   });
 });

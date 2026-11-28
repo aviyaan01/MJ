@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import type { SystemHealthDTO } from '@mj/shared';
+import { MJ_ACTIVE_STAGE, type SystemHealthDTO } from '@mj/shared';
 import { SESSION_COOKIE_NAME, verifySessionToken } from '../auth.js';
 import type { ProviderRouterClient } from '@mj/ai';
 import type { MjDatabaseHandle } from '@mj/database';
@@ -151,7 +151,7 @@ export function registerHealthRoutes(app: FastifyInstance, deps: HealthRouteDeps
 
     const payload: SystemHealthDTO = {
       status: dbOk ? 'online' : 'degraded',
-      stage: 'Stage 5 · Monitoring, Usage & Final Delivery',
+      stage: MJ_ACTIVE_STAGE,
       backend: 'online',
       database: dbOk ? 'healthy' : 'unavailable',
       aiEngine: aiEngineState,

@@ -206,9 +206,11 @@ export interface ConnectivityCheckDTO {
   note: string;
 }
 
+export const MJ_ACTIVE_STAGE = 'Stages 1, 2, 4 & 5 Complete' as const;
+
 export interface SystemHealthDTO {
   status: 'online' | 'degraded';
-  stage: 'Stage 5 · Monitoring, Usage & Final Delivery';
+  stage: typeof MJ_ACTIVE_STAGE;
   backend: 'online';
   database: 'healthy' | 'unavailable';
   aiEngine: EngineStatus;
