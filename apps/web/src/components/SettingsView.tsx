@@ -628,10 +628,12 @@ export function SettingsView({
                       border: '1px solid var(--mj-border-strong)',
                     }}
                   >
-                    <option value="auto">Automatic (AUTO · English + বাংলা + Banglish)</option>
+                    <option value="auto">Automatic (AUTO · English + বাংলা + हिन्दी + Mix)</option>
                     <option value="en">English</option>
                     <option value="bn">বাংলা (Bengali)</option>
+                    <option value="hi">हिन्दी (Hindi)</option>
                     <option value="banglish">Banglish preference</option>
+                    <option value="hinglish">Hinglish preference</option>
                   </select>
                 </div>
 

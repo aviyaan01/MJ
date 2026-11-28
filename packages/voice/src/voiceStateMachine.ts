@@ -33,7 +33,7 @@ export const VOICE_STATE_META: Record<VoiceState, VoiceStateMeta> = {
   [VoiceStates.LISTENING]: {
     state: VoiceStates.LISTENING,
     label: 'Listening',
-    description: 'Microphone active. Speak naturally in English, বাংলা, or Banglish.',
+    description: 'Microphone active. Speak naturally in English, বাংলা, हिन्दी, Banglish, or Hinglish.',
     tone: 'good',
     stepOrder: 4,
   },

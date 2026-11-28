@@ -51,7 +51,9 @@ import {
   type FreeBrowserVoiceController,
 } from './voice/freeBrowserVoice.js';
 import {
+  AUTO_LANGUAGE_SERVER_STT_NOTICE,
   checkVoicePrivacyPermissions,
+  shouldPreferServerSttForAuto,
   startResilientFreeVoiceSession,
 } from './voice/serverSttVoice.js';
 
@@ -1099,8 +1101,14 @@ export function App() {
     clearErrorBanner();
     const currentPerms = permissionsRef.current;
     const isBrowserMode = settingsRef.current?.voice.voiceModel === 'free-browser-voice';
+    const langMode = settingsRef.current?.voice.languageMode ?? 'auto';
+    const preferServerSttForAuto = shouldPreferServerSttForAuto(
+      langMode,
+      currentPerms.externalWebServices,
+    );
     const permErr = checkVoicePrivacyPermissions(currentPerms, {
-      requireExternalWebServices: !isBrowserMode || webSpeechUnavailableRef.current,
+      requireExternalWebServices:
+        !isBrowserMode || webSpeechUnavailableRef.current || preferServerSttForAuto,
     });
     if (permErr) {
       reportAppError(permErr);
@@ -1122,7 +1130,12 @@ export function App() {
       void startVoiceRef.current();
     });
     if (isBrowserMode) {
-      await freeVoiceFallbackRef.current({ preferServerStt: webSpeechUnavailableRef.current });
+      await freeVoiceFallbackRef.current({
+        preferServerStt: webSpeechUnavailableRef.current || preferServerSttForAuto,
+        ...(preferServerSttForAuto && !webSpeechUnavailableRef.current
+          ? { notice: AUTO_LANGUAGE_SERVER_STT_NOTICE }
+          : {}),
+      });
       return;
     }
     await voiceServiceRef.current?.startSession();
@@ -1131,8 +1144,15 @@ export function App() {
   const startFreeVoiceFallback = useCallback(
     async (options?: { preferServerStt?: boolean; notice?: string }) => {
       freeVoiceRef.current?.stop();
-      const useServerStt = Boolean(options?.preferServerStt || webSpeechUnavailableRef.current);
       const currentPerms = permissionsRef.current;
+      const langMode = settingsRef.current?.voice.languageMode ?? 'auto';
+      const preferServerSttForAuto = shouldPreferServerSttForAuto(
+        langMode,
+        currentPerms.externalWebServices,
+      );
+      const useServerStt = Boolean(
+        options?.preferServerStt || webSpeechUnavailableRef.current || preferServerSttForAuto,
+      );
       const permErr = checkVoicePrivacyPermissions(currentPerms, {
         requireExternalWebServices: useServerStt,
       });
@@ -1154,15 +1174,20 @@ export function App() {
       clearErrorBanner();
       setLiveUserTranscript('');
       setLiveAssistantTranscript('');
+      const effectiveNotice =
+        options?.notice ??
+        (preferServerSttForAuto && !webSpeechUnavailableRef.current
+          ? AUTO_LANGUAGE_SERVER_STT_NOTICE
+          : undefined);
       setLastRetryAction(() => () => {
         void freeVoiceFallbackRef.current({
-          preferServerStt: webSpeechUnavailableRef.current,
-          ...(options?.notice ? { notice: options.notice } : {}),
+          preferServerStt: webSpeechUnavailableRef.current || preferServerSttForAuto,
+          ...(effectiveNotice ? { notice: effectiveNotice } : {}),
         });
       });
 
       freeVoiceRef.current = startResilientFreeVoiceSession({
-        languageMode: settingsRef.current?.voice.languageMode ?? 'auto',
+        languageMode: langMode,
         volume: settingsRef.current?.voice.volume ?? 0.9,
         speakingRate: settingsRef.current?.voice.speakingRate ?? 1.0,
         voiceOutputEnabled: settingsRef.current?.voice.voiceOutputEnabled ?? true,
@@ -1172,7 +1197,7 @@ export function App() {
         bargeInThreshold:
           settingsRef.current?.voice.bargeInThreshold ?? DEFAULT_BARGE_IN_PCM16_THRESHOLD,
         preferServerStt: useServerStt,
-        initialNotice: options?.notice,
+        initialNotice: effectiveNotice,
         getPermissions: () => permissionsRef.current,
         onNotice: (notice) => {
           setVoiceDetail(notice);

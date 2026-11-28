@@ -3,7 +3,7 @@ import { AppError, ErrorCodes } from './errors.js';
 
 export const ReasoningEffortSchema = z.enum(['low', 'medium', 'high', 'xhigh']);
 export const ResponseStyleSchema = z.enum(['balanced', 'concise', 'detailed']);
-export const LanguageModeSchema = z.enum(['auto', 'en', 'bn', 'banglish']);
+export const LanguageModeSchema = z.enum(['auto', 'en', 'bn', 'banglish', 'hi', 'hinglish']);
 export const AiProviderIdSchema = z.enum([
   'auto',
   'xai',

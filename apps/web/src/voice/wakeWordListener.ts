@@ -18,22 +18,27 @@ export const BROWSER_CLICK_REQUIRED_MESSAGE =
   'Browser requires one click to grant microphone access before wake-word standby can start.';
 
 export const DEFAULT_WAKE_PHRASES: readonly string[] = [
-  // English & Banglish
+  // English, Banglish & Hinglish
   'hey mj',
   'hi mj',
   'hello mj',
+  'o mj',
   'ok mj',
   'okay mj',
   'mj assistant',
   'ei mj',
   'shuno mj',
   'mj shuno',
+  'suno mj',
   'sun mj',
   // Bangla
   'হেই এমজে',
   'হে এমজে',
   'হাই এমজে',
   'হ্যালো এমজে',
+  'ও এমজে',
+  'ওহ এমজে',
+  'ওহে এমজে',
   'ওকে এমজে',
   'শুনো এমজে',
   'এই এমজে',
@@ -43,6 +48,7 @@ export const DEFAULT_WAKE_PHRASES: readonly string[] = [
   'हे एमजे',
   'हाय एमजे',
   'हेलो एमजे',
+  'ओ एमजे',
   'नमस्ते एमजे',
   'ओके एमजे',
   'सुनो एमजे',
@@ -59,21 +65,26 @@ export function resolveWakeWordLanguages(options?: {
   }
   switch (options?.languageMode) {
     case 'bn':
-      return ['bn-BD', 'en-US', 'hi-IN'];
-    case 'en':
+      return ['bn-BD', 'en-IN', 'en-US'];
+    case 'hi':
+      return ['hi-IN', 'en-IN', 'en-US'];
     case 'banglish':
-      return ['en-US', 'bn-BD', 'hi-IN'];
+      return ['en-IN', 'bn-BD', 'en-US'];
+    case 'hinglish':
+      return ['en-IN', 'hi-IN', 'en-US'];
+    case 'en':
+      return ['en-US', 'en-IN'];
     case 'auto':
     default: {
       const browserLang =
         typeof navigator !== 'undefined' ? navigator.language.toLowerCase() : '';
       if (browserLang.startsWith('bn')) {
-        return ['bn-BD', 'en-US', 'hi-IN'];
+        return ['bn-BD', 'en-US', 'hi-IN', 'en-IN'];
       }
       if (browserLang.startsWith('hi')) {
-        return ['hi-IN', 'en-US', 'bn-BD'];
+        return ['hi-IN', 'en-US', 'bn-BD', 'en-IN'];
       }
-      return ['en-US', 'bn-BD', 'hi-IN'];
+      return ['en-US', 'bn-BD', 'hi-IN', 'en-IN'];
     }
   }
 }
@@ -82,12 +93,30 @@ export function normalizeWakeTranscript(raw: string): string {
   return raw
     .toLowerCase()
     .replace(/\bm\.?\s*j\.?\b/g, 'mj')
-    .replace(/\b(?:em\s+jay|emjay)\b/g, 'mj')
-    .replace(/এম\s*জে/g, 'এমজে')
-    .replace(/एम\s*जे/g, 'एमजे')
+    .replace(/\b(?:em\s*jay|emjay|mj\s*ay)\b/g, 'mj')
+    .replace(/এম[\s.]*জে/g, 'এমজে')
+    .replace(/एम[\s.]*जे/g, 'एमजे')
     .replace(/[.,!?।,:;'"()[\]{}]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function levenshteinDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  const prev = new Array<number>(b.length + 1);
+  const curr = new Array<number>(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(curr[j - 1]! + 1, prev[j]! + 1, prev[j - 1]! + cost);
+    }
+    for (let j = 0; j <= b.length; j++) prev[j] = curr[j]!;
+  }
+  return prev[b.length]!;
 }
 
 export function matchWakePhrase(
@@ -98,11 +127,44 @@ export function matchWakePhrase(
   if (!normalizedTranscript) return null;
   const paddedTranscript = ` ${normalizedTranscript} `;
 
-  for (const phrase of phrases) {
-    const normalizedPhrase = normalizeWakeTranscript(phrase);
-    if (!normalizedPhrase) continue;
+  const normalizedPhrases = phrases
+    .map((p) => normalizeWakeTranscript(p))
+    .filter(Boolean);
+
+  for (const normalizedPhrase of normalizedPhrases) {
     if (paddedTranscript.includes(` ${normalizedPhrase} `)) {
       return normalizedPhrase;
+    }
+  }
+
+  // Fuzzy match on multi-word phrases (e.g. "Hay MJ", "Hey NJ", "Sunno MJ", "ओ एम जे")
+  const tokens = normalizedTranscript.split(' ').filter(Boolean);
+  for (const normalizedPhrase of normalizedPhrases) {
+    const phraseTokens = normalizedPhrase.split(' ').filter(Boolean);
+    if (phraseTokens.length < 2) continue;
+
+    const joinedPhrase = phraseTokens.join('');
+    if (joinedPhrase.length < 4) continue;
+    const maxDist = joinedPhrase.length >= 8 ? 2 : 1;
+
+    for (let start = 0; start < tokens.length; start++) {
+      for (let len = 1; len <= Math.min(3, tokens.length - start); len++) {
+        const candidateJoined = tokens.slice(start, start + len).join('');
+        if (Math.abs(candidateJoined.length - joinedPhrase.length) > maxDist) continue;
+        // Require trailing identity overlap or greeting-token proximity to avoid false triggers
+        const dist = levenshteinDistance(candidateJoined, joinedPhrase);
+        if (dist <= maxDist) {
+          const phraseTail = phraseTokens[phraseTokens.length - 1]!;
+          const candidateTail = tokens[start + len - 1]!;
+          const sameTailOrSingleEdit =
+            candidateJoined.endsWith(phraseTail) ||
+            (levenshteinDistance(candidateTail, phraseTail) <= 1 &&
+              tokens[start]![0] === phraseTokens[0]![0]);
+          if (sameTailOrSingleEdit) {
+            return normalizedPhrase;
+          }
+        }
+      }
     }
   }
   return null;

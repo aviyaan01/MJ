@@ -225,6 +225,8 @@ describe('Frontend React Views & Responsive UI Coverage (Sections 16 & 17)', () 
     expect(homeHtml).toContain('Spend vs Budget');
     expect(homeHtml).toContain('WebSocket');
     expect(homeHtml).toContain('Desktop');
+    expect(homeHtml).toContain('हिन्दी');
+    expect(homeHtml).toContain('Hinglish');
 
     const sidebarHtml = renderToStaticMarkup(
       <Sidebar
@@ -604,5 +606,7 @@ describe('Frontend React Views & Responsive UI Coverage (Sections 16 & 17)', () 
     expect(settingsVoiceHtml).toContain('Auto-Listen Follow-Up');
     expect(settingsVoiceHtml).toContain('Follow-Up Listen Window');
     expect(settingsVoiceHtml).toContain('Barge-In RMS Threshold (16-bit PCM)');
+    expect(settingsVoiceHtml).toContain('हिन्दी (Hindi)');
+    expect(settingsVoiceHtml).toContain('Hinglish preference');
   });
 });

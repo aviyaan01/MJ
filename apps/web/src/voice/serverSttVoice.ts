@@ -31,6 +31,15 @@ export const SERVER_STT_MAX_BASE64_CHARS = 12_000_000;
 export const SERVER_STT_MAX_RAW_BYTES = 8_900_000;
 export const SERVER_STT_FALLBACK_NOTICE =
   'Browser speech unavailable, using server transcription';
+export const AUTO_LANGUAGE_SERVER_STT_NOTICE =
+  'Auto language detection active — using server transcription';
+
+export function shouldPreferServerSttForAuto(
+  languageMode: LanguageMode,
+  externalWebServices: boolean,
+): boolean {
+  return languageMode === 'auto' && externalWebServices;
+}
 
 const PREFERRED_MIME_TYPES = [
   'audio/webm;codecs=opus',

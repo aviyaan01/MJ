@@ -42,7 +42,8 @@ function normalizeBaseUrl(baseUrl: string): string {
 function mapLanguageHint(mode: LanguageMode | undefined): string | undefined {
   if (mode === 'en') return 'en';
   if (mode === 'bn') return 'bn';
-  // For 'auto' and 'banglish', let xAI auto-detect across Bengali/English
+  if (mode === 'hi') return 'hi';
+  // For 'auto', 'banglish', and 'hinglish', allow automatic multilingual speech detection
   return undefined;
 }
 
@@ -621,9 +622,15 @@ export async function transcribeSpeechWithGemini(
   const langHint =
     params.languageMode === 'bn'
       ? 'Bengali (বাংলা)'
-      : params.languageMode === 'en'
-        ? 'English'
-        : 'English, Bengali, or Banglish';
+      : params.languageMode === 'hi'
+        ? 'Hindi (हिन्दी)'
+        : params.languageMode === 'en'
+          ? 'English'
+          : params.languageMode === 'banglish'
+            ? 'Banglish (Bengali written in Latin letters with English technical terms)'
+            : params.languageMode === 'hinglish'
+              ? 'Hinglish (Hindi written in Latin letters with English technical terms)'
+              : 'English, Bengali (বাংলা), Hindi (हिन्दी), Banglish, or Hinglish—preserve the exact language and script spoken without translating';
   const audioBase64 = Buffer.from(params.audioBytes).toString('base64');
 
   let response: Response;
@@ -679,7 +686,7 @@ export async function transcribeSpeechWithGemini(
 
   return {
     text,
-    ...(params.languageMode === 'bn' || params.languageMode === 'en'
+    ...(params.languageMode === 'bn' || params.languageMode === 'en' || params.languageMode === 'hi'
       ? { language: params.languageMode }
       : {}),
     modelUsed: sttModel,

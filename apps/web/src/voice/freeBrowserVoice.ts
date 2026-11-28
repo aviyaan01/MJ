@@ -173,9 +173,14 @@ export function startMicBargeInMonitor(params: {
   return { stop };
 }
 
+interface BrowserSpeechRecognitionAlternative {
+  transcript?: string;
+  confidence?: number;
+}
+
 interface BrowserSpeechRecognitionResult {
   isFinal: boolean;
-  0?: { transcript?: string };
+  0?: BrowserSpeechRecognitionAlternative;
 }
 
 interface BrowserSpeechRecognitionEvent {
@@ -212,12 +217,57 @@ export function isFreeBrowserVoiceSupported(): boolean {
   return getSpeechRecognitionCtor() !== null;
 }
 
+export const LOW_CONFIDENCE_THRESHOLD = 0.45;
+
 export function resolveFreeVoiceLanguages(languageMode: LanguageMode): string[] {
-  if (languageMode === 'bn') return ['bn-BD', 'en-US'];
   if (languageMode === 'en') return ['en-US'];
+  if (languageMode === 'bn') return ['bn-BD', 'en-IN', 'en-US'];
+  if (languageMode === 'hi') return ['hi-IN', 'en-IN', 'en-US'];
+  if (languageMode === 'banglish') return ['en-IN', 'bn-BD', 'en-US'];
+  if (languageMode === 'hinglish') return ['en-IN', 'hi-IN', 'en-US'];
   const browserLang =
     typeof navigator !== 'undefined' ? navigator.language.toLowerCase() : '';
-  return browserLang.startsWith('bn') ? ['bn-BD', 'en-US'] : ['en-US', 'bn-BD'];
+  if (browserLang.startsWith('bn')) {
+    return ['bn-BD', 'en-IN', 'hi-IN', 'en-US'];
+  }
+  if (browserLang.startsWith('hi')) {
+    return ['hi-IN', 'en-IN', 'bn-BD', 'en-US'];
+  }
+  return ['en-IN', 'bn-BD', 'hi-IN', 'en-US'];
+}
+
+/**
+ * Detects spoken TTS BCP-47 tag from actual text script first (Bengali, Devanagari, Latin),
+ * falling back to configured `languageMode` for Romanized / pure Latin text.
+ */
+export function detectTtsLanguageForText(text: string, languageMode: LanguageMode): string {
+  const bengaliCount = (text.match(/[\u0980-\u09FF]/g) ?? []).length;
+  const devanagariCount = (text.match(/[\u0900-\u097F]/g) ?? []).length;
+
+  if (bengaliCount > 0 || devanagariCount > 0) {
+    return bengaliCount >= devanagariCount ? 'bn-BD' : 'hi-IN';
+  }
+  if (languageMode === 'bn') return 'bn-BD';
+  if (languageMode === 'hi') return 'hi-IN';
+  if (languageMode === 'banglish' || languageMode === 'hinglish') return 'en-IN';
+  return 'en-US';
+}
+
+export function selectBestSpeechSynthesisVoice<
+  T extends { lang: string; default?: boolean; name?: string },
+>(voices: readonly T[], targetLang: string): T | undefined {
+  if (voices.length === 0) return undefined;
+  const normalizedTarget = targetLang.toLowerCase();
+  const basePrefix = normalizedTarget.split('-')[0]!;
+
+  const exact = voices.find((v) => v.lang.toLowerCase() === normalizedTarget);
+  if (exact) return exact;
+
+  const sameLang = voices.find((v) => {
+    const l = v.lang.toLowerCase();
+    return l === basePrefix || l.startsWith(`${basePrefix}-`) || l.startsWith(`${basePrefix}_`);
+  });
+  return sameLang;
 }
 
 export function speakWithBrowserSpeechSynthesis(
@@ -259,8 +309,7 @@ export function speakWithBrowserSpeechSynthesis(
 
   window.speechSynthesis.cancel();
   const utterance = new UtteranceCtor(trimmed.slice(0, 1200));
-  const hasBengaliScript = /[\u0980-\u09FF]/.test(trimmed);
-  utterance.lang = hasBengaliScript || options.languageMode === 'bn' ? 'bn-BD' : 'en-US';
+  utterance.lang = detectTtsLanguageForText(trimmed, options.languageMode);
   utterance.volume = Math.max(0, Math.min(1, options.volume));
   utterance.rate = Math.max(0.7, Math.min(1.6, options.speakingRate));
 
@@ -268,8 +317,7 @@ export function speakWithBrowserSpeechSynthesis(
     typeof window.speechSynthesis.getVoices === 'function'
       ? window.speechSynthesis.getVoices()
       : [];
-  const prefix = utterance.lang.split('-')[0]!.toLowerCase();
-  const matchedVoice = voices.find((v) => v.lang.toLowerCase().startsWith(prefix));
+  const matchedVoice = selectBestSpeechSynthesisVoice(voices, utterance.lang);
   if (matchedVoice) {
     utterance.voice = matchedVoice;
   }
@@ -435,6 +483,7 @@ export function startFreeBrowserVoiceSession(params: {
   let activeTurnIsFollowup = false;
   const candidateLangs = resolveFreeVoiceLanguages(params.languageMode);
   let langIdx = 0;
+  let weakFallbackCandidate: { text: string; confidence: number } | null = null;
   let recognition: BrowserSpeechRecognition | null = null;
   let followupTimer: ReturnType<typeof setTimeout> | null = null;
   let restartTimer: ReturnType<typeof setTimeout> | null = null;
@@ -533,24 +582,68 @@ export function startFreeBrowserVoiceSession(params: {
       if (stopped || followupExpired || recognition !== rec) return;
       let transcript = '';
       let isFinal = false;
+      let confSum = 0;
+      let confCount = 0;
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const item = event.results[i];
-        if (item?.[0]?.transcript) {
-          transcript += item[0].transcript;
+        const alt = item?.[0];
+        if (alt?.transcript) {
+          transcript += alt.transcript;
+        }
+        if (typeof alt?.confidence === 'number' && Number.isFinite(alt.confidence)) {
+          confSum += alt.confidence;
+          confCount += 1;
         }
         if (item?.isFinal) isFinal = true;
       }
       const trimmed = transcript.trim();
-      if (!trimmed) return;
+      const confidence = confCount > 0 ? confSum / confCount : undefined;
 
-      // Cancel the follow-up countdown as soon as the user starts speaking.
-      if (!heardSpeechInFollowup) {
+      // Cancel the follow-up countdown as soon as non-empty speech arrives.
+      if (trimmed && !heardSpeechInFollowup) {
         heardSpeechInFollowup = true;
         cancelFollowupTimer();
       }
-      params.onTranscriptPreview(trimmed);
+      if (trimmed) {
+        params.onTranscriptPreview(trimmed);
+      }
 
       if (isFinal && !handledFinal) {
+        const isEmptyOrLowConfidence =
+          trimmed.length === 0 ||
+          (confidence !== undefined && confidence < LOW_CONFIDENCE_THRESHOLD);
+
+        if (isEmptyOrLowConfidence && langIdx + 1 < candidateLangs.length) {
+          if (
+            trimmed.length > 0 &&
+            (!weakFallbackCandidate || (confidence ?? 0) > weakFallbackCandidate.confidence)
+          ) {
+            weakFallbackCandidate = { text: trimmed, confidence: confidence ?? 0 };
+          }
+          handledFinal = true;
+          recognition = null;
+          try {
+            rec.abort();
+          } catch {
+            // ignore abort race
+          }
+          langIdx += 1;
+          startRecognitionPass(isFollowup, deadlineMs);
+          return;
+        }
+
+        const chosenText =
+          trimmed ||
+          weakFallbackCandidate?.text ||
+          '';
+        weakFallbackCandidate = null;
+        if (!chosenText) {
+          handledFinal = true;
+          recognition = null;
+          finishWithIdle(isFollowup ? IDLE_WAKE_STATUS_MESSAGE : 'No speech detected.');
+          return;
+        }
+
         handledFinal = true;
         cancelFollowupTimer();
         recognition = null;
@@ -565,7 +658,7 @@ export function startFreeBrowserVoiceSession(params: {
         );
         void (async () => {
           try {
-            const replyText = await params.onSubmitTranscript(trimmed);
+            const replyText = await params.onSubmitTranscript(chosenText);
             if (stopped) return;
             speaking = true;
             let bargeInTriggered = false;
@@ -589,6 +682,8 @@ export function startFreeBrowserVoiceSession(params: {
                 onBargeIn: () => {
                   speaking = false;
                   clearBargeInSpeechHandler = null;
+                  langIdx = 0;
+                  weakFallbackCandidate = null;
                   if (!stopped && canContinueVoice()) {
                     startRecognitionPass(false);
                   } else {
@@ -599,6 +694,8 @@ export function startFreeBrowserVoiceSession(params: {
               onFinish: () => {
                 speaking = false;
                 clearBargeInSpeechHandler = null;
+                langIdx = 0;
+                weakFallbackCandidate = null;
                 if (stopped || bargeInTriggered) return;
                 if (autoListenEnabled && canContinueVoice()) {
                   startRecognitionPass(true);
@@ -693,6 +790,15 @@ export function startFreeBrowserVoiceSession(params: {
     rec.onend = () => {
       if (stopped || followupExpired || handledFinal || recognition !== rec) return;
       recognition = null;
+      if (!heardSpeechInFollowup && langIdx + 1 < candidateLangs.length && canContinueVoice()) {
+        langIdx += 1;
+        if (isFollowup && deadlineMs !== undefined && deadlineMs - Date.now() <= 300) {
+          finishWithIdle(IDLE_WAKE_STATUS_MESSAGE);
+          return;
+        }
+        startRecognitionPass(isFollowup, deadlineMs);
+        return;
+      }
       if (isFollowup && deadlineMs !== undefined && !heardSpeechInFollowup) {
         const remaining = deadlineMs - Date.now();
         if (remaining > 300 && canContinueVoice()) {

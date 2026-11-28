@@ -110,7 +110,9 @@ const LANGUAGE_OPTIONS: Array<{ id: LanguageMode; label: string }> = [
   { id: 'auto', label: 'AUTO' },
   { id: 'en', label: 'English' },
   { id: 'bn', label: 'বাংলা' },
+  { id: 'hi', label: 'हिन्दी' },
   { id: 'banglish', label: 'Banglish' },
+  { id: 'hinglish', label: 'Hinglish' },
 ];
 
 export function HomeDashboard({
@@ -353,8 +355,8 @@ export function HomeDashboard({
                   providers: settings?.providers,
                 });
                 return interactionMode === 'voice'
-                  ? `Speak naturally in English, বাংলা, or Banglish with ${display.voiceLiveLabel}.`
-                  : `Type in English, বাংলা, or Banglish with ${display.textEngineLabel}.`;
+                  ? `Speak naturally in English, বাংলা, हिन्दी, Banglish, or Hinglish with ${display.voiceLiveLabel}.`
+                  : `Type in English, বাংলা, हिन्दी, Banglish, or Hinglish with ${display.textEngineLabel}.`;
               })()}
             </p>
 

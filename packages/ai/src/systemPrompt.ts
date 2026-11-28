@@ -6,7 +6,7 @@ export interface SystemPromptOptions {
   languageMode?: LanguageMode;
 }
 
-function getLanguageDirective(mode: LanguageMode): string {
+export function getLanguageDirective(mode: LanguageMode): string {
   switch (mode) {
     case 'en':
       return '- Language preference: Respond in clear, natural English unless the user explicitly asks for another language.';
@@ -14,11 +14,16 @@ function getLanguageDirective(mode: LanguageMode): string {
       return '- Language preference: Respond naturally in Bengali script (বাংলা), keeping English technical or programming terms intact where helpful.';
     case 'banglish':
       return '- Language preference: Respond naturally in conversational Banglish (Bengali written in Latin script), keeping technical terms intact.';
+    case 'hi':
+      return '- Language preference: Respond naturally in Hindi Devanagari script (हिन्दी), keeping English technical or programming terms intact where helpful.';
+    case 'hinglish':
+      return '- Language preference: Respond naturally in conversational Hinglish (Hindi-English mix written in Latin script), keeping technical terms intact.';
     case 'auto':
     default:
       return [
-        '- Automatically detect and match the user’s language and style across English, Bengali (বাংলা), Banglish (Bengali in Latin letters), and mixed Bengali-English.',
-        '- Do not translate unnecessarily when the user speaks or writes in Bangla or Banglish; preserve programming and technical terminology naturally.',
+        '- Automatically detect the language and script style of each user turn individually across English, Bengali (বাংলা), Hindi (हिन्दी), Banglish (Romanized Bengali), and Hinglish (Romanized Hindi).',
+        '- Always reply in the exact same language and script style the user used in that turn (e.g., Bangla script -> Bangla script, Devanagari Hindi -> Devanagari Hindi, Banglish -> Banglish, Hinglish -> Hinglish, English -> English), even when switching languages mid-conversation.',
+        '- Never translate into another language or script unless the user explicitly asks you to translate; preserve programming and technical terminology naturally.',
       ].join('\n');
   }
 }

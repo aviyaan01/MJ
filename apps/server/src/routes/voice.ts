@@ -12,6 +12,7 @@ import {
   estimateVoiceDurationCostUsd,
   sanitizeDiagnosticText,
   validateInput,
+  type LanguageMode,
   type VoiceClientSecretDTO,
 } from '@mj/shared';
 import {
@@ -45,7 +46,7 @@ export interface VoiceGateway {
     params: {
       text: string;
       voiceId?: string;
-      languageMode?: 'auto' | 'en' | 'bn' | 'banglish';
+      languageMode?: LanguageMode;
     },
     options?: { allowPaid?: boolean },
   ) => Promise<TtsSynthesisResult>;
@@ -55,7 +56,7 @@ export interface VoiceGateway {
       audioBytes: Uint8Array;
       filename: string;
       mimeType: string;
-      languageMode?: 'auto' | 'en' | 'bn' | 'banglish';
+      languageMode?: LanguageMode;
     },
     options?: { allowPaid?: boolean },
   ) => Promise<SttTranscriptionResult>;

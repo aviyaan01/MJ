@@ -6,7 +6,7 @@ export type MessageStatus = 'streaming' | 'completed' | 'aborted' | 'error';
 export type MessageChannel = 'text' | 'voice';
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 export type ResponseStyle = 'balanced' | 'concise' | 'detailed';
-export type LanguageMode = 'auto' | 'en' | 'bn' | 'banglish';
+export type LanguageMode = 'auto' | 'en' | 'bn' | 'banglish' | 'hi' | 'hinglish';
 export type EngineStatus = 'ready' | 'unconfigured' | 'degraded' | 'error';
 
 export const VoiceStates = {
