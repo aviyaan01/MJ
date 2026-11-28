@@ -54,10 +54,11 @@ mj-assistant/
    cp .env.example .env
    ```
    Edit `.env` and configure:
-   - **Primary Provider & Auto Routing**:
-     - `AI_PROVIDER=auto` (routes **Google Gemini** first, fails over to free/local **Ollama** & **Groq**, then optional paid **xAI Grok**; puts `401`/`403` failing providers into a temporary cooldown)
+   - **Primary Provider & Strict Free-Only Mode**:
+     - `FREE_ONLY_MODE=true` (enabled by default: guarantees zero paid API calls — blocks xAI, OpenRouter, and paid tiers even during failover; set `FREE_ONLY_MODE=false` only if you intentionally enable paid billing)
+     - `AI_PROVIDER=auto` (active free chain: **Google Gemini Free Tier** (`gemini-2.5-flash` / `gemini-2.5-flash-lite`) -> **Ollama (Local)** (`qwen2.5:7b`) -> **Groq Free Tier** (`llama-3.3-70b-versatile`))
      - `GEMINI_API_KEY=<your-google-ai-studio-key>`
-     - `GEMINI_MODEL=gemini-2.5-flash` (or `gemini-2.5-pro`)
+     - `GEMINI_MODEL=gemini-2.5-flash` (or `gemini-2.5-flash-lite` / `gemini-2.5-pro`)
    - **Zero-Cost Fallbacks (Ollama / Groq)**:
      - `OLLAMA_ENABLED=true`, `OLLAMA_BASE_URL=http://127.0.0.1:11434/v1`, `OLLAMA_MODEL=qwen2.5:7b`
      - `GROQ_API_KEY=<your-groq-free-key>`, `GROQ_MODEL=llama-3.3-70b-versatile`

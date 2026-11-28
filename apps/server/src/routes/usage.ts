@@ -45,7 +45,9 @@ export function registerUsageRoutes(
       const checkedAt = new Date().toISOString();
       const anyConfigured = deps.providerRouter
         ? deps.providerRouter.hasAnyConfiguredProvider()
-        : deps.config.apiKeyConfigured;
+        : deps.config.freeOnlyMode
+          ? false
+          : deps.config.apiKeyConfigured;
 
       if (!anyConfigured) {
         return {
@@ -65,7 +67,9 @@ export function registerUsageRoutes(
             message: 'API key invalid',
             retryable: false,
           },
-          note: 'Configure XAI_API_KEY, a free-tier provider key (Groq/Gemini/OpenRouter/Cerebras), or run Ollama locally.',
+          note: deps.config.freeOnlyMode
+            ? 'FREE_ONLY_MODE=true: configure GEMINI_API_KEY, GROQ_API_KEY, or run Ollama locally.'
+            : 'Configure XAI_API_KEY, a free-tier provider key (Groq/Gemini/OpenRouter/Cerebras), or run Ollama locally.',
         };
       }
 
@@ -73,15 +77,17 @@ export function registerUsageRoutes(
         const probeResult = deps.providerRouter
           ? await deps.providerRouter.probeProvider(settings.activeProvider ?? 'auto', 10000)
           : {
-              providerId: 'xai' as const,
-              providerName: 'xAI Grok',
-              modelChecked: settings.activeModel,
-              ...(await deps.xaiClient.listAvailableModelIds(10000)),
-            };
+            providerId: 'xai' as const,
+            providerName: 'xAI Grok',
+            modelChecked: settings.activeModel,
+            ...(await deps.xaiClient.listAvailableModelIds(10000)),
+          };
         const voices =
-          deps.config.apiKeyConfigured
+          !deps.config.freeOnlyMode && deps.config.apiKeyConfigured
             ? await deps.voiceGateway.listVoices().catch(() => null)
-            : null;
+            : deps.config.freeOnlyMode
+              ? await deps.voiceGateway.listVoices().catch(() => null)
+              : null;
 
         const targetModel =
           probeResult.providerId === 'xai' ? settings.activeModel : probeResult.modelChecked;
@@ -111,11 +117,11 @@ export function registerUsageRoutes(
           err instanceof AppError
             ? err
             : new AppError({
-                code: ErrorCodes.NETWORK_DISCONNECTED,
-                category: 'network',
-                statusCode: 503,
-                cause: err,
-              });
+              code: ErrorCodes.NETWORK_DISCONNECTED,
+              category: 'network',
+              statusCode: 503,
+              cause: err,
+            });
 
         request.log.error(
           {

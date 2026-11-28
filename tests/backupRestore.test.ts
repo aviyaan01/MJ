@@ -44,7 +44,7 @@ describe('Encrypted Daily Database Backup & Verified Restore', () => {
 
     const conv = await repo.createConversation({
       title: 'Memory Backup Verification Thread',
-      model: 'grok-4.7',
+      model: 'gemini-2.5-flash',
     });
     await repo.addMessage({
       conversationId: conv.id,
@@ -59,7 +59,7 @@ describe('Encrypted Daily Database Backup & Verified Restore', () => {
       status: 'completed',
     });
     await settingsStore.updateSettings({
-      activeModel: 'grok-4-1-fast',
+      activeModel: 'gemini-2.5-flash-lite',
       budget: { dailyCapUsd: 4.5, softCapUsd: 15 },
     });
     await permissionsStore.setSinglePermission('fileRead', true, 'web');
@@ -81,7 +81,7 @@ describe('Encrypted Daily Database Backup & Verified Restore', () => {
     expect(rawArchive).toContain('"cipher": "aes-256-gcm"');
     expect(rawArchive).not.toContain('Memory Backup Verification Thread');
     expect(rawArchive).not.toContain('Project deadline Friday 5pm');
-    expect(rawArchive).not.toContain('grok-4-1-fast');
+    expect(rawArchive).not.toContain('gemini-2.5-flash-lite');
 
     // 3. Reject wrong key & tampered ciphertext
     expect(() =>
@@ -136,7 +136,7 @@ describe('Encrypted Daily Database Backup & Verified Restore', () => {
     expect(detail?.messages[0]?.content).toContain('আমার জরুরি বাংলা নোট মনে রাখো');
 
     const loadedSettings = await verifySettings.getPublicSettings();
-    expect(loadedSettings.activeModel).toBe('grok-4-1-fast');
+    expect(loadedSettings.activeModel).toBe('gemini-2.5-flash-lite');
     expect(loadedSettings.budget.dailyCapUsd).toBe(4.5);
 
     const loadedPerms = await verifyPermissions.getPermissions();

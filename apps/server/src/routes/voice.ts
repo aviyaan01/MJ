@@ -40,18 +40,24 @@ export interface VoiceGateway {
     expiresAfterSeconds?: number,
     requestedModel?: string,
   ) => Promise<EphemeralSecretResult>;
-  synthesizeSpeech: (params: {
-    text: string;
-    voiceId?: string;
-    languageMode?: 'auto' | 'en' | 'bn' | 'banglish';
-  }) => Promise<TtsSynthesisResult>;
+  synthesizeSpeech: (
+    params: {
+      text: string;
+      voiceId?: string;
+      languageMode?: 'auto' | 'en' | 'bn' | 'banglish';
+    },
+    options?: { allowPaid?: boolean },
+  ) => Promise<TtsSynthesisResult>;
   listVoices: () => Promise<Array<{ id: string; label: string; description: string }>>;
-  transcribeSpeech: (params: {
-    audioBytes: Uint8Array;
-    filename: string;
-    mimeType: string;
-    languageMode?: 'auto' | 'en' | 'bn' | 'banglish';
-  }) => Promise<SttTranscriptionResult>;
+  transcribeSpeech: (
+    params: {
+      audioBytes: Uint8Array;
+      filename: string;
+      mimeType: string;
+      languageMode?: 'auto' | 'en' | 'bn' | 'banglish';
+    },
+    options?: { allowPaid?: boolean },
+  ) => Promise<SttTranscriptionResult>;
 }
 
 export function isFreeVoiceModel(model: string, config: ServerConfig): boolean {
@@ -111,7 +117,9 @@ export function createDefaultVoiceGateway(
   };
 
   const groqKey = config.aiProviders.groq.apiKey;
-  const preferXaiOnly = config.aiProviders.defaultProvider === 'xai';
+  const freeOnly = config.freeOnlyMode;
+  const geminiIsFree = Boolean(geminiKey) && !config.aiProviders.gemini.paidTier;
+  const preferXaiOnly = !freeOnly && config.aiProviders.defaultProvider === 'xai';
 
   const makeFreeBrowserFallback = (): EphemeralSecretResult => ({
     token: 'free-browser-voice',
@@ -124,7 +132,7 @@ export function createDefaultVoiceGateway(
   return {
     createClientSecret: async (expiresAfterSeconds = 300, requestedModel?: string) => {
       const explicitGrokVoice = Boolean(requestedModel?.trim().toLowerCase().startsWith('grok-'));
-      if (preferXaiOnly || (explicitGrokVoice && config.apiKeyConfigured)) {
+      if (!freeOnly && (preferXaiOnly || (explicitGrokVoice && config.apiKeyConfigured))) {
         const secret = await createRealtimeClientSecret(xaiApiConfig, expiresAfterSeconds);
         return {
           ...secret,
@@ -134,7 +142,7 @@ export function createDefaultVoiceGateway(
         };
       }
 
-      if (geminiKey) {
+      if (geminiKey && (!freeOnly || !config.aiProviders.gemini.paidTier)) {
         try {
           const liveModel =
             requestedModel && requestedModel.startsWith('gemini-')
@@ -158,19 +166,20 @@ export function createDefaultVoiceGateway(
       return makeFreeBrowserFallback();
     },
 
-    synthesizeSpeech: async (params) => {
-      if (!preferXaiOnly && geminiKey) {
+    synthesizeSpeech: async (params, options) => {
+      const allowPaid = (options?.allowPaid ?? true) && !freeOnly;
+      if (geminiIsFree || (!preferXaiOnly && geminiKey && allowPaid)) {
         try {
           return await synthesizeSpeechWithGemini(
             { ...geminiVoiceConfig, model: GEMINI_TTS_DEFAULT_MODEL },
             params,
           );
         } catch (err) {
-          if (!config.apiKeyConfigured) throw err;
+          if (!allowPaid || !config.apiKeyConfigured) throw err;
         }
       }
 
-      if (config.apiKeyConfigured) {
+      if (allowPaid && config.apiKeyConfigured) {
         try {
           const res = await synthesizeSpeech(xaiApiConfig, params);
           return { ...res, modelUsed: 'xai-tts', isFree: false };
@@ -185,6 +194,15 @@ export function createDefaultVoiceGateway(
         }
       }
 
+      if (freeOnly && (config.apiKeyConfigured || config.aiProviders.gemini.paidTier)) {
+        throw new AppError({
+          code: ErrorCodes.PERMISSION_DENIED,
+          category: 'privacy',
+          statusCode: 403,
+          message: 'Paid TTS is blocked while FREE_ONLY_MODE=true. Configure a free GEMINI_API_KEY or use browser SpeechSynthesis.',
+        });
+      }
+
       throw new AppError({
         code: ErrorCodes.INVALID_API_KEY,
         category: 'api',
@@ -193,7 +211,7 @@ export function createDefaultVoiceGateway(
     },
 
     listVoices: async () => {
-      if (!preferXaiOnly && !config.apiKeyConfigured) {
+      if (freeOnly || (!preferXaiOnly && !config.apiKeyConfigured)) {
         return [
           { id: 'ara', label: 'Ara (Aoede)', description: 'Warm conversational Gemini Live voice' },
           { id: 'sal', label: 'Sal (Charon)', description: 'Balanced informative Gemini Live voice' },
@@ -205,8 +223,9 @@ export function createDefaultVoiceGateway(
       return fetchAvailableVoices(xaiApiConfig);
     },
 
-    transcribeSpeech: async (params) => {
-      if (!preferXaiOnly && geminiKey) {
+    transcribeSpeech: async (params, options) => {
+      const allowPaid = (options?.allowPaid ?? true) && !freeOnly;
+      if (geminiIsFree || (!preferXaiOnly && geminiKey && allowPaid)) {
         try {
           return await transcribeSpeechWithGemini(
             { ...geminiVoiceConfig, model: config.aiProviders.gemini.model },
@@ -223,11 +242,11 @@ export function createDefaultVoiceGateway(
               params,
             );
           }
-          if (!config.apiKeyConfigured) throw err;
+          if (!allowPaid || !config.apiKeyConfigured) throw err;
         }
       }
 
-      if (!config.apiKeyConfigured && groqKey) {
+      if (groqKey && (freeOnly || !config.apiKeyConfigured || !allowPaid)) {
         return transcribeSpeechWithGroqFree(
           {
             apiKey: groqKey,
@@ -236,6 +255,22 @@ export function createDefaultVoiceGateway(
           },
           params,
         );
+      }
+
+      if (!allowPaid) {
+        if (freeOnly && (config.apiKeyConfigured || config.aiProviders.gemini.paidTier)) {
+          throw new AppError({
+            code: ErrorCodes.PERMISSION_DENIED,
+            category: 'privacy',
+            statusCode: 403,
+            message: 'Paid STT is blocked while FREE_ONLY_MODE=true. Configure a free GEMINI_API_KEY or GROQ_API_KEY.',
+          });
+        }
+        throw new AppError({
+          code: ErrorCodes.BUDGET_EXCEEDED,
+          category: 'budget',
+          statusCode: 429,
+        });
       }
 
       try {
@@ -373,7 +408,13 @@ export function registerVoiceRoutes(
       }
 
       const settings = await deps.settingsStore.getPublicSettings();
-      const targetVoiceModel = settings.voice.voiceModel;
+      const rawVoiceModel = settings.voice.voiceModel;
+      const targetVoiceModel =
+        deps.config.freeOnlyMode && !isFreeVoiceModel(rawVoiceModel, deps.config)
+          ? deps.config.aiProviders.gemini.apiKey && !deps.config.aiProviders.gemini.paidTier
+            ? deps.config.geminiLiveModel
+            : 'free-browser-voice'
+          : rawVoiceModel;
       const usageSummary = await deps.repo.getUsageSummary(settings.budget);
       if (
         usageSummary.budgetStatus.level === 'hard_cap_reached' &&
@@ -416,7 +457,7 @@ export function registerVoiceRoutes(
       const resolvedRealtimeUrl =
         ephemeralSecret.realtimeUrl ??
         (ephemeralSecret.protocol === 'gemini-live' ||
-        (deps.config.aiProviders.gemini.apiKey && !resolvedModel.startsWith('grok-'))
+          (deps.config.aiProviders.gemini.apiKey && !resolvedModel.startsWith('grok-'))
           ? deps.config.geminiRealtimeUrl
           : deps.config.xaiRealtimeUrl);
 
@@ -467,6 +508,33 @@ export function registerVoiceRoutes(
       });
     }
 
+    const hasFreeGeminiTts =
+      Boolean(deps.config.aiProviders.gemini.apiKey) &&
+      !deps.config.aiProviders.gemini.paidTier;
+    const isFreeGeminiTtsAvailable =
+      hasFreeGeminiTts &&
+      (deps.config.freeOnlyMode || deps.config.aiProviders.defaultProvider !== 'xai');
+
+    if (deps.config.freeOnlyMode && !hasFreeGeminiTts) {
+      throw new AppError({
+        code:
+          deps.config.apiKeyConfigured || deps.config.aiProviders.gemini.paidTier
+            ? ErrorCodes.PERMISSION_DENIED
+            : ErrorCodes.INVALID_API_KEY,
+        category:
+          deps.config.apiKeyConfigured || deps.config.aiProviders.gemini.paidTier
+            ? 'privacy'
+            : 'api',
+        statusCode:
+          deps.config.apiKeyConfigured || deps.config.aiProviders.gemini.paidTier ? 403 : 502,
+        requestId: request.id,
+        message:
+          deps.config.apiKeyConfigured || deps.config.aiProviders.gemini.paidTier
+            ? 'Paid TTS is blocked while FREE_ONLY_MODE=true. Configure a free GEMINI_API_KEY or use browser SpeechSynthesis.'
+            : 'API key invalid',
+      });
+    }
+
     if (!deps.config.apiKeyConfigured && !deps.config.aiProviders.gemini.apiKey) {
       throw new AppError({
         code: ErrorCodes.INVALID_API_KEY,
@@ -477,12 +545,9 @@ export function registerVoiceRoutes(
     }
 
     const settings = await deps.settingsStore.getPublicSettings();
-    const isFreeGeminiTtsAvailable =
-      Boolean(deps.config.aiProviders.gemini.apiKey) &&
-      !deps.config.aiProviders.gemini.paidTier &&
-      deps.config.aiProviders.defaultProvider !== 'xai';
     const usageSummary = await deps.repo.getUsageSummary(settings.budget);
-    if (usageSummary.budgetStatus.level === 'hard_cap_reached' && !isFreeGeminiTtsAvailable) {
+    const hardCapReached = usageSummary.budgetStatus.level === 'hard_cap_reached';
+    if (hardCapReached && !isFreeGeminiTtsAvailable) {
       throw new AppError({
         code: ErrorCodes.BUDGET_EXCEEDED,
         category: 'budget',
@@ -492,22 +557,27 @@ export function registerVoiceRoutes(
     }
 
     const expectedTtsModel = isFreeGeminiTtsAvailable ? GEMINI_TTS_DEFAULT_MODEL : 'xai-tts';
+    const allowPaidTts = !deps.config.freeOnlyMode && !hardCapReached;
     const { value: ttsAudio, latencyMs } = await runTrackedVoiceOp(
       request,
       { kind: 'tts', model: expectedTtsModel },
       () =>
-        deps.voiceGateway.synthesizeSpeech({
-          text: body.text,
-          voiceId: body.voiceId ?? settings.voice.voiceId,
-          languageMode: body.languageMode ?? settings.voice.languageMode,
-        }),
+        deps.voiceGateway.synthesizeSpeech(
+          {
+            text: body.text,
+            voiceId: body.voiceId ?? settings.voice.voiceId,
+            languageMode: body.languageMode ?? settings.voice.languageMode,
+          },
+          { allowPaid: allowPaidTts },
+        ),
     );
 
     const actualTtsModel = ttsAudio.modelUsed ?? expectedTtsModel;
     const isFreeTts = ttsAudio.isFree ?? isFreeVoiceModel(actualTtsModel, deps.config);
-    const costUsd = isFreeTts
-      ? 0
-      : estimateTtsCostUsd(body.text.length, settings.budget.ttsRatePerMillionCharsUsd);
+    const costUsd =
+      isFreeTts || deps.config.freeOnlyMode
+        ? 0
+        : estimateTtsCostUsd(body.text.length, settings.budget.ttsRatePerMillionCharsUsd);
 
     await deps.repo.recordUsageLog({
       kind: 'tts',
@@ -544,6 +614,25 @@ export function registerVoiceRoutes(
         });
       }
 
+      const hasFreeGeminiStt =
+        Boolean(deps.config.aiProviders.gemini.apiKey) && !deps.config.aiProviders.gemini.paidTier;
+      const hasFreeGroqStt = Boolean(deps.config.aiProviders.groq.apiKey);
+      const hasFreeStt = hasFreeGeminiStt || hasFreeGroqStt;
+
+      if (deps.config.freeOnlyMode && !hasFreeStt) {
+        const hasPaidOnly =
+          deps.config.apiKeyConfigured || deps.config.aiProviders.gemini.paidTier;
+        throw new AppError({
+          code: hasPaidOnly ? ErrorCodes.PERMISSION_DENIED : ErrorCodes.INVALID_API_KEY,
+          category: hasPaidOnly ? 'privacy' : 'api',
+          statusCode: hasPaidOnly ? 403 : 502,
+          requestId: request.id,
+          message: hasPaidOnly
+            ? 'Paid STT is blocked while FREE_ONLY_MODE=true. Configure a free GEMINI_API_KEY or GROQ_API_KEY (Whisper free tier).'
+            : 'API key invalid',
+        });
+      }
+
       if (
         !deps.config.apiKeyConfigured &&
         !deps.config.aiProviders.groq.apiKey &&
@@ -558,24 +647,38 @@ export function registerVoiceRoutes(
       }
 
       const settings = await deps.settingsStore.getPublicSettings();
-      const audioBytes = new Uint8Array(Buffer.from(body.audioBase64, 'base64'));
-      const defaultSttModel =
-        deps.config.aiProviders.defaultProvider !== 'xai' && deps.config.aiProviders.gemini.apiKey
-          ? deps.config.aiProviders.gemini.model
-          : deps.config.aiProviders.groq.apiKey && !deps.config.apiKeyConfigured
-            ? 'whisper-large-v3-turbo'
-            : 'grok-voice-transcribe-2.0';
+      const usageSummary = await deps.repo.getUsageSummary(settings.budget);
+      const hardCapReached = usageSummary.budgetStatus.level === 'hard_cap_reached';
+      if (hardCapReached && !hasFreeStt) {
+        throw new AppError({
+          code: ErrorCodes.BUDGET_EXCEEDED,
+          category: 'budget',
+          statusCode: 429,
+          requestId: request.id,
+        });
+      }
 
+      const audioBytes = new Uint8Array(Buffer.from(body.audioBase64, 'base64'));
+      const defaultSttModel = hasFreeGeminiStt
+        ? deps.config.aiProviders.gemini.model
+        : hasFreeGroqStt
+          ? 'whisper-large-v3-turbo'
+          : 'grok-voice-transcribe-2.0';
+
+      const allowPaidStt = !deps.config.freeOnlyMode && !hardCapReached;
       const { value: sttResult, latencyMs } = await runTrackedVoiceOp(
         request,
         { kind: 'stt', model: defaultSttModel },
         () =>
-          deps.voiceGateway.transcribeSpeech({
-            audioBytes,
-            filename: body.filename ?? 'audio.webm',
-            mimeType: body.mimeType ?? 'audio/webm',
-            languageMode: body.languageMode ?? settings.voice.languageMode,
-          }),
+          deps.voiceGateway.transcribeSpeech(
+            {
+              audioBytes,
+              filename: body.filename ?? 'audio.webm',
+              mimeType: body.mimeType ?? 'audio/webm',
+              languageMode: body.languageMode ?? settings.voice.languageMode,
+            },
+            { allowPaid: allowPaidStt },
+          ),
       );
 
       const durationSec = body.durationSeconds ?? 0;
@@ -583,9 +686,10 @@ export function registerVoiceRoutes(
       const isFreeStt =
         sttResult.isFree ??
         (sttResult.modelUsed !== undefined ? isFreeVoiceModel(sttResult.modelUsed, deps.config) : false);
-      const sttCost = isFreeStt
-        ? 0
-        : estimateSttCostUsd(durationSec, settings.budget.sttRatePerHourUsd);
+      const sttCost =
+        isFreeStt || deps.config.freeOnlyMode
+          ? 0
+          : estimateSttCostUsd(durationSec, settings.budget.sttRatePerHourUsd);
 
       await deps.repo.recordUsageLog({
         kind: 'stt',
@@ -608,13 +712,13 @@ export function registerVoiceRoutes(
   app.post('/api/voice/usage', { preHandler: deps.requireSession }, async (request) => {
     const body = validateInput(RecordVoiceUsageSchema, request.body ?? {});
     const settings = await deps.settingsStore.getPublicSettings();
-    const isFree = isFreeVoiceModel(body.model, deps.config);
+    const isFree = isFreeVoiceModel(body.model, deps.config) || deps.config.freeOnlyMode;
     const estimatedCostUsd = isFree
       ? 0
       : estimateVoiceDurationCostUsd(
-          body.durationSeconds,
-          settings.budget.voiceRatePerMinuteUsd,
-        );
+        body.durationSeconds,
+        settings.budget.voiceRatePerMinuteUsd,
+      );
 
     await deps.repo.recordUsageLog({
       conversationId: body.conversationId,

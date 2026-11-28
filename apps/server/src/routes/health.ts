@@ -83,8 +83,15 @@ export function registerHealthRoutes(app: FastifyInstance, deps: HealthRouteDeps
         ? 'ready'
         : 'degraded';
 
+    const freeVoiceReady =
+      settings.voice.voiceModel === 'free-browser-voice' ||
+      Boolean(
+        (deps.config.aiProviders.gemini.apiKey && !deps.config.aiProviders.gemini.paidTier) ||
+          deps.config.aiProviders.groq.apiKey,
+      );
+
     const voiceEngineState: SystemHealthDTO['voiceEngine'] =
-      !deps.config.apiKeyConfigured && settings.voice.voiceModel !== 'free-browser-voice'
+      !(deps.config.freeOnlyMode ? freeVoiceReady : deps.config.apiKeyConfigured || freeVoiceReady)
         ? 'unconfigured'
         : dbOk
           ? 'ready'
@@ -97,10 +104,11 @@ export function registerHealthRoutes(app: FastifyInstance, deps: HealthRouteDeps
       database: dbOk ? 'healthy' : 'unavailable',
       aiEngine: aiEngineState,
       voiceEngine: voiceEngineState,
+      freeOnlyMode: deps.config.freeOnlyMode,
       activeProvider: settings.activeProvider,
       activeModel: settings.activeModel,
       activeVoiceModel: settings.voice.voiceModel,
-      apiBaseHost: deps.config.xaiBaseHost,
+      apiBaseHost: settings.apiBaseHost,
       uptimeSeconds: Math.floor((Date.now() - deps.startedAtMs) / 1000),
       appEnv: deps.config.appEnv,
       timestamp: new Date().toISOString(),

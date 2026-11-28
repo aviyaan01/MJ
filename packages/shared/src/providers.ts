@@ -65,7 +65,7 @@ export const AI_PROVIDER_CATALOG: readonly ProviderCatalogDefinition[] = [
     freeTier: true,
     requiresKey: true,
     defaultModel: 'gemini-2.5-flash',
-    suggestedModels: ['gemini-2.5-flash', 'gemini-2.5-pro'],
+    suggestedModels: ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro'],
     costNote: '$0.00 Google AI Studio free tier (rate-limited)',
   },
   {

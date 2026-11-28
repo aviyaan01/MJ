@@ -186,11 +186,40 @@ export function parseOpenAiChatStreamFrame(frame: RawSseFrame): ParsedSseEvent[]
     const errMsg =
       typeof payload.error.message === 'string' ? payload.error.message : 'Upstream stream error.';
     const rawCode = typeof payload.error.code === 'string' ? payload.error.code.toLowerCase() : '';
-    if (rawCode.includes('rate_limit')) {
+    const rawStatus =
+      typeof payload.error.status === 'string' ? payload.error.status.toLowerCase() : '';
+    const lowerMsg = errMsg.toLowerCase();
+
+    if (
+      rawCode.includes('rate_limit') ||
+      rawStatus.includes('resource_exhausted') ||
+      lowerMsg.includes('rate limit') ||
+      lowerMsg.includes('quota')
+    ) {
       throw new AppError({
         code: ErrorCodes.RATE_LIMITED,
         category: 'api',
         statusCode: 429,
+        upstreamDiagnostic: errMsg,
+      });
+    }
+    if (
+      rawCode.includes('invalid_api_key') ||
+      lowerMsg.includes('invalid api key') ||
+      lowerMsg.includes('api key not valid')
+    ) {
+      throw new AppError({
+        code: ErrorCodes.INVALID_API_KEY,
+        category: 'api',
+        statusCode: 401,
+        upstreamDiagnostic: errMsg,
+      });
+    }
+    if (rawCode.includes('insufficient') || lowerMsg.includes('credit')) {
+      throw new AppError({
+        code: ErrorCodes.INSUFFICIENT_CREDITS,
+        category: 'api',
+        statusCode: 402,
         upstreamDiagnostic: errMsg,
       });
     }
@@ -220,6 +249,15 @@ export function parseOpenAiChatStreamFrame(frame: RawSseFrame): ParsedSseEvent[]
         }
       }
       if (typeof choice.finish_reason === 'string' && choice.finish_reason.length > 0) {
+        if (choice.finish_reason.toLowerCase() === 'error') {
+          throw new AppError({
+            code: ErrorCodes.UPSTREAM_ERROR,
+            category: 'api',
+            statusCode: 502,
+            message: 'service unavailable',
+            upstreamDiagnostic: 'Upstream SSE stream aborted with finish_reason=error.',
+          });
+        }
         events.push({
           type: 'completed',
           ...(responseId ? { responseId } : {}),

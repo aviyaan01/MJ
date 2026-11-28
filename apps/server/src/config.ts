@@ -10,6 +10,7 @@ import type { BackupSchedulerConfig } from './backupScheduler.js';
 
 export interface ServerConfig {
   appEnv: 'development' | 'test' | 'production';
+  freeOnlyMode: boolean;
   host: string;
   port: number;
   corsOrigins: string[];
@@ -129,6 +130,19 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
     ? env.GEMINI_MODEL!.trim()
     : 'gemini-2.5-flash';
 
+  const geminiApiKey = cleanEnvSecret(env.GEMINI_API_KEY) ?? '';
+  const groqApiKey = cleanEnvSecret(env.GROQ_API_KEY) ?? '';
+  const rawFreeOnly = (env.FREE_ONLY_MODE ?? '').trim().toLowerCase();
+  const isLegacyXaiOnlyTest =
+    appEnv === 'test' &&
+    apiKeyConfigured &&
+    !geminiApiKey &&
+    !groqApiKey &&
+    !env.AI_PROVIDER &&
+    rawFreeOnly === '';
+  const freeOnlyMode =
+    rawFreeOnly === 'false' ? false : rawFreeOnly === 'true' ? true : !isLegacyXaiOnlyTest;
+
   const xaiTextModel = !isPlaceholderValue(env.XAI_TEXT_MODEL)
     ? env.XAI_TEXT_MODEL!.trim()
     : 'grok-4.7';
@@ -139,23 +153,26 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
     .filter(Boolean);
 
   const availableModels = Array.from(
-    new Set([
-      geminiDefaultModel,
-      'gemini-2.5-pro',
-      xaiTextModel,
-      ...extraModels,
-      ...DEFAULT_SUGGESTED_MODELS,
-    ]),
+    new Set(
+      freeOnlyMode
+        ? [geminiDefaultModel, 'gemini-2.5-flash-lite', 'gemini-2.5-pro']
+        : [
+            geminiDefaultModel,
+            'gemini-2.5-flash-lite',
+            'gemini-2.5-pro',
+            xaiTextModel,
+            ...extraModels,
+            ...DEFAULT_SUGGESTED_MODELS,
+          ],
+    ),
   );
 
-  const geminiApiKey = cleanEnvSecret(env.GEMINI_API_KEY) ?? '';
   const geminiLiveModel = !isPlaceholderValue(env.GEMINI_LIVE_MODEL)
     ? env.GEMINI_LIVE_MODEL!.trim()
     : DEFAULT_GEMINI_LIVE_MODEL;
   const geminiRealtimeUrl =
     (env.GEMINI_REALTIME_URL ?? '').trim() || DEFAULT_GEMINI_REALTIME_URL;
 
-  const isLegacyXaiOnlyTest = appEnv === 'test' && apiKeyConfigured && !geminiApiKey && !env.AI_PROVIDER;
   const xaiVoiceModel = !isPlaceholderValue(env.XAI_VOICE_MODEL)
     ? env.XAI_VOICE_MODEL!.trim()
     : isLegacyXaiOnlyTest
@@ -163,7 +180,11 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
       : geminiLiveModel;
 
   const availableVoiceModels = Array.from(
-    new Set([geminiLiveModel, 'free-browser-voice', xaiVoiceModel, ...DEFAULT_VOICE_MODELS]),
+    new Set(
+      freeOnlyMode
+        ? [geminiLiveModel, 'free-browser-voice']
+        : [geminiLiveModel, 'free-browser-voice', xaiVoiceModel, ...DEFAULT_VOICE_MODELS],
+    ),
   );
 
   const rawDatabaseUrl = (env.DATABASE_URL ?? './data/mj-assistant.db').trim();
@@ -291,8 +312,7 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
   const geminiPaidTier = (env.GEMINI_PAID_TIER ?? '').trim().toLowerCase() === 'true';
 
   const rawDefaultProvider = (
-    env.AI_PROVIDER ??
-    (appEnv === 'test' && apiKeyConfigured && !geminiApiKey ? 'xai' : 'gemini')
+    env.AI_PROVIDER ?? (isLegacyXaiOnlyTest ? 'xai' : 'gemini')
   )
     .trim()
     .toLowerCase();
@@ -307,9 +327,12 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
     'mistral',
     'github',
   ]);
-  const defaultProvider: AiProviderId = validProviders.has(rawDefaultProvider as AiProviderId)
+  const strictFreeProviders = new Set<AiProviderId>(['auto', 'gemini', 'ollama', 'groq']);
+  const parsedProvider: AiProviderId = validProviders.has(rawDefaultProvider as AiProviderId)
     ? (rawDefaultProvider as AiProviderId)
     : 'gemini';
+  const defaultProvider: AiProviderId =
+    freeOnlyMode && !strictFreeProviders.has(parsedProvider) ? 'auto' : parsedProvider;
 
   const rawOllamaEnabled = (env.OLLAMA_ENABLED ?? '').trim().toLowerCase();
   const ollamaEnabled =
@@ -327,7 +350,7 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
       model: !isPlaceholderValue(env.OLLAMA_MODEL) ? env.OLLAMA_MODEL!.trim() : 'qwen2.5:7b',
     },
     groq: {
-      apiKey: cleanEnvSecret(env.GROQ_API_KEY) ?? '',
+      apiKey: groqApiKey,
       baseUrl: (env.GROQ_BASE_URL ?? 'https://api.groq.com/openai/v1').trim(),
       model: !isPlaceholderValue(env.GROQ_MODEL)
         ? env.GROQ_MODEL!.trim()
@@ -371,6 +394,7 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
 
   return {
     appEnv,
+    freeOnlyMode,
     host: (env.HOST ?? '127.0.0.1').trim(),
     port: Number.isFinite(portNum) && portNum > 0 ? portNum : 3001,
     corsOrigins,

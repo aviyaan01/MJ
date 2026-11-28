@@ -568,6 +568,7 @@ export function App() {
     const tempAssistantId = `temp-assistant-${Date.now()}`;
     let realAssistantId = tempAssistantId;
     let finalAssistantText = '';
+    let previousMessagesSnapshot: MessageDTO[] | null = null;
 
     if (options.mode === 'send' && options.promptText) {
       const nowIso = new Date().toISOString();
@@ -612,6 +613,7 @@ export function App() {
         createdAt: nowIso,
       };
       setMessages((prev) => {
+        previousMessagesSnapshot = prev;
         const copy = [...prev];
         if (copy[copy.length - 1]?.role === 'assistant') {
           copy.pop();
@@ -648,6 +650,31 @@ export function App() {
       } else if (event.type === 'status') {
         setStreamingState(event.phase === 'streaming' ? 'streaming' : 'connecting');
         setStreamStatusDetail(event.detail);
+      } else if (event.type === 'stream_reset') {
+        finalAssistantText = '';
+        setStreamingState('connecting');
+        setStreamStatusDetail(event.reason ?? 'Switching provider for clean retry…');
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === event.assistantMessageId ||
+            m.id === realAssistantId ||
+            m.id === tempAssistantId
+              ? { ...m, content: '', model: event.model, status: 'streaming' }
+              : m,
+          ),
+        );
+        if (options.fromHome) {
+          setLatestHomeExchange((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  assistantMessage: prev.assistantMessage
+                    ? { ...prev.assistantMessage, content: '', model: event.model }
+                    : prev.assistantMessage,
+                }
+              : prev,
+          );
+        }
       } else if (event.type === 'delta') {
         finalAssistantText += event.text;
         setStreamingState('streaming');
@@ -683,12 +710,15 @@ export function App() {
           );
         }
       } else if (event.type === 'done') {
+        previousMessagesSnapshot = null;
         setStreamingState('idle');
         setStreamStatusDetail('Standing by');
         setMessages((prev) =>
-          prev.map((m) =>
-            m.id === event.message.id || m.id === tempAssistantId ? event.message : m,
-          ),
+          prev
+            .filter((m) => !event.replacedMessageId || m.id !== event.replacedMessageId)
+            .map((m) =>
+              m.id === event.message.id || m.id === tempAssistantId ? event.message : m,
+            ),
         );
         setActiveConversation(event.conversation);
         setConversations((prev) => {
@@ -719,7 +749,9 @@ export function App() {
         setStreamingState('error');
         setStreamStatusDetail('Connection interrupted');
         setActiveError(event.error);
-        if (event.partialMessage) {
+        if (previousMessagesSnapshot) {
+          setMessages(previousMessagesSnapshot);
+        } else if (event.partialMessage) {
           setMessages((prev) =>
             prev.map((m) =>
               m.id === event.partialMessage!.id || m.id === tempAssistantId
@@ -751,19 +783,26 @@ export function App() {
       if (abortController.signal.aborted) {
         setStreamingState('idle');
         setStreamStatusDetail('Generation stopped');
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === realAssistantId || m.id === tempAssistantId
-              ? { ...m, status: 'aborted' }
-              : m,
-          ),
-        );
+        if (previousMessagesSnapshot) {
+          setMessages(previousMessagesSnapshot);
+        } else {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === realAssistantId || m.id === tempAssistantId
+                ? { ...m, status: 'aborted' }
+                : m,
+            ),
+          );
+        }
       }
       return finalAssistantText;
     } catch (err) {
       if (abortController.signal.aborted) {
         setStreamingState('idle');
         setStreamStatusDetail('Generation stopped');
+        if (previousMessagesSnapshot) {
+          setMessages(previousMessagesSnapshot);
+        }
         return finalAssistantText;
       }
 
@@ -782,9 +821,13 @@ export function App() {
       setStreamStatusDetail('Error encountered');
       setActiveError(payload);
 
-      setMessages((prev) =>
-        prev.filter((m) => m.id !== tempUserId && m.id !== tempAssistantId),
-      );
+      if (previousMessagesSnapshot) {
+        setMessages(previousMessagesSnapshot);
+      } else {
+        setMessages((prev) =>
+          prev.filter((m) => m.id !== tempUserId && m.id !== tempAssistantId),
+        );
+      }
       return '';
     } finally {
       try {

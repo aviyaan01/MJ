@@ -356,10 +356,12 @@ export class MjDatabaseRepository {
   public async getContextTurns(
     conversationId: string,
     maxTurns = 30,
+    options?: { excludeMessageIds?: string[] },
   ): Promise<Array<{ role: MessageRole; content: string }>> {
     try {
       const rows = await this.handle.db
         .select({
+          id: messages.id,
           role: messages.role,
           content: messages.content,
           status: messages.status,
@@ -368,8 +370,12 @@ export class MjDatabaseRepository {
         .where(eq(messages.conversationId, conversationId))
         .orderBy(asc(messages.createdAt));
 
+      const excluded = new Set(options?.excludeMessageIds ?? []);
       const completed = rows
-        .filter((row) => row.status === 'completed' && row.content.trim().length > 0)
+        .filter(
+          (row) =>
+            !excluded.has(row.id) && row.status === 'completed' && row.content.trim().length > 0,
+        )
         .map((row) => ({ role: row.role, content: row.content }));
 
       if (completed.length <= maxTurns) return completed;

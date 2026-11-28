@@ -75,6 +75,7 @@ export async function buildServer(options: BuildServerOptions = {}): Promise<MjS
   const providerRouter =
     options.providerRouter ??
     new ProviderRouterClient({
+    freeOnlyMode: config.freeOnlyMode,
     xai: {
       apiKey: config.xaiApiKey,
       baseUrl: config.xaiBaseUrl,

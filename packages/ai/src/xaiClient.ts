@@ -44,6 +44,7 @@ export interface CreateResponseParams {
   signal?: AbortSignal;
   onStatus?: (phase: 'connecting' | 'reasoning' | 'streaming', detail: string) => void;
   onDelta?: (delta: string) => void;
+  onReset?: () => void;
 }
 
 export interface CreateResponseResult {

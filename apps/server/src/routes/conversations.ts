@@ -129,7 +129,7 @@ async function prepareChatPreflight(params: {
     localOnly = true;
   }
 
-  let freeOnly = false;
+  let freeOnly = deps.config.freeOnlyMode;
   const usageSummary = await deps.repo.getUsageSummary(settings.budget);
   if (usageSummary.budgetStatus.level === 'hard_cap_reached') {
     const hasFreeEligible = preview
@@ -146,6 +146,31 @@ async function prepareChatPreflight(params: {
     freeOnly = true;
   }
 
+  if (deps.config.freeOnlyMode) {
+    const isBlockedExplicitProvider =
+      activeProvider !== 'auto' &&
+      !(['gemini', 'ollama', 'groq'].includes(activeProvider) &&
+        !(activeProvider === 'gemini' && deps.config.aiProviders.gemini.paidTier));
+    if (isBlockedExplicitProvider) {
+      await deps.repo.recordAuditLog({
+        capability: 'externalWebServices',
+        action: `Blocked paid AI provider "${activeProvider}" in FREE_ONLY_MODE`,
+        target: targetEndpoint,
+        outcome: 'denied',
+        source: 'server',
+        detail: 'Paid providers (xAI, OpenRouter, or paid tiers) are disabled when FREE_ONLY_MODE=true.',
+      });
+      throw new AppError({
+        code: ErrorCodes.PERMISSION_DENIED,
+        category: 'privacy',
+        statusCode: 403,
+        requestId,
+        message: 'Paid providers (xAI, OpenRouter, or paid tiers) are disabled while FREE_ONLY_MODE=true.',
+      });
+    }
+    freeOnly = true;
+  }
+
   return { activeProvider, activeModel, freeOnly, localOnly };
 }
 
@@ -155,6 +180,7 @@ async function streamAssistantTurn(params: {
   deps: ConversationRouteDeps;
   conversationId: string;
   userMessageId: string;
+  replaceAssistantMessageId?: string;
   modelOverride?: string;
   providerOverride?: AiProviderId;
   freeOnly?: boolean;
@@ -176,7 +202,13 @@ async function streamAssistantTurn(params: {
     model: activeModel,
   });
 
-  const contextTurns = await deps.repo.getContextTurns(conversationId, 30);
+  const contextTurns = await deps.repo.getContextTurns(
+    conversationId,
+    30,
+    params.replaceAssistantMessageId
+      ? { excludeMessageIds: [params.replaceAssistantMessageId] }
+      : undefined,
+  );
   const instructions = buildMjSystemPrompt({
     assistantName: settings.assistantName,
     responseStyle: settings.responseStyle,
@@ -204,6 +236,7 @@ async function streamAssistantTurn(params: {
   });
 
   let accumulated = '';
+  let currentModel = activeModel;
   const startedAt = Date.now();
 
   try {
@@ -217,7 +250,7 @@ async function streamAssistantTurn(params: {
           maxOutputTokens: settings.maxOutputTokens,
           stream: useStreaming,
           timeoutMs: settings.timeoutMs,
-          freeOnly: params.freeOnly,
+          freeOnly: params.freeOnly || deps.config.freeOnlyMode,
           localOnly: params.localOnly,
           signal: abortController.signal,
           onStatus: (phase, detail) => {
@@ -227,8 +260,39 @@ async function streamAssistantTurn(params: {
             accumulated += delta;
             writeSseEvent(reply, { type: 'delta', text: delta });
           },
+          onReset: async (info) => {
+            accumulated = '';
+            currentModel = info.nextModel;
+            await deps.repo.updateMessage(assistantPlaceholder.id, {
+              content: '',
+              model: info.nextModel,
+            });
+            writeSseEvent(reply, {
+              type: 'stream_reset',
+              conversationId,
+              assistantMessageId: assistantPlaceholder.id,
+              model: info.nextModel,
+              reason: info.reason,
+            });
+            writeSseEvent(reply, {
+              type: 'status',
+              phase: 'connecting',
+              detail: info.reason,
+            });
+          },
         })
-      : {
+      : (() => {
+          if (deps.config.freeOnlyMode && !isLoopbackBaseUrl(deps.config.xaiBaseUrl)) {
+            throw new AppError({
+              code: ErrorCodes.PERMISSION_DENIED,
+              category: 'privacy',
+              statusCode: 403,
+              requestId: request.id,
+              message: 'Paid xAI client is blocked while FREE_ONLY_MODE=true.',
+            });
+          }
+          return null;
+        })() ?? {
           ...(await deps.xaiClient.createResponse({
             model: activeModel,
             instructions,
@@ -250,7 +314,10 @@ async function streamAssistantTurn(params: {
         };
 
     const finalText = result.text || accumulated;
-    const costUsd = result.isFree ? 0 : estimateResponseCostUsd(result.usage, settings.budget);
+    const costUsd =
+      result.isFree || deps.config.freeOnlyMode
+        ? 0
+        : estimateResponseCostUsd(result.usage, settings.budget);
 
     const savedAssistant = await deps.repo.updateMessage(assistantPlaceholder.id, {
       content: finalText,
@@ -262,6 +329,11 @@ async function streamAssistantTurn(params: {
       estimatedCostUsd: costUsd,
       errorCode: null,
     });
+
+    // Safe Regenerate: delete the superseded assistant reply ONLY after the replacement succeeds.
+    if (params.replaceAssistantMessageId) {
+      await deps.repo.deleteMessage(params.replaceAssistantMessageId);
+    }
 
     await deps.repo.touchConversation(conversationId, { model: result.model });
 
@@ -299,6 +371,9 @@ async function streamAssistantTurn(params: {
         type: 'done',
         message: savedAssistant,
         conversation: detail.conversation,
+        ...(params.replaceAssistantMessageId
+          ? { replacedMessageId: params.replaceAssistantMessageId }
+          : {}),
       });
     }
 
@@ -316,18 +391,22 @@ async function streamAssistantTurn(params: {
     appErr.requestId = request.id;
 
     if (appErr.code === ErrorCodes.ABORTED) {
-      await deps.repo.updateMessage(assistantPlaceholder.id, {
-        content: accumulated,
-        status: 'aborted',
-        model: activeModel,
-        latencyMs,
-        errorCode: ErrorCodes.ABORTED,
-      });
+      if (params.replaceAssistantMessageId) {
+        await deps.repo.deleteMessage(assistantPlaceholder.id);
+      } else {
+        await deps.repo.updateMessage(assistantPlaceholder.id, {
+          content: accumulated,
+          status: 'aborted',
+          model: currentModel,
+          latencyMs,
+          errorCode: ErrorCodes.ABORTED,
+        });
+      }
 
       await deps.repo.recordUsageLog({
         conversationId,
-        messageId: assistantPlaceholder.id,
-        model: activeModel,
+        ...(params.replaceAssistantMessageId ? {} : { messageId: assistantPlaceholder.id }),
+        model: currentModel,
         status: 'aborted',
         latencyMs,
         errorCode: ErrorCodes.ABORTED,
@@ -346,21 +425,24 @@ async function streamAssistantTurn(params: {
         'Grok chat request failed',
       );
 
-      const savedPartial: MessageDTO | null = await deps.repo.updateMessage(
-        assistantPlaceholder.id,
-        {
+      let savedPartial: MessageDTO | null = null;
+      if (params.replaceAssistantMessageId) {
+        // Safe Regenerate failed: remove temporary placeholder so original answer stays intact.
+        await deps.repo.deleteMessage(assistantPlaceholder.id);
+      } else {
+        savedPartial = await deps.repo.updateMessage(assistantPlaceholder.id, {
           content: accumulated,
           status: 'error',
-          model: activeModel,
+          model: currentModel,
           latencyMs,
           errorCode: appErr.code,
-        },
-      );
+        });
+      }
 
       await deps.repo.recordUsageLog({
         conversationId,
-        messageId: assistantPlaceholder.id,
-        model: activeModel,
+        ...(params.replaceAssistantMessageId ? {} : { messageId: assistantPlaceholder.id }),
+        model: currentModel,
         status: 'error',
         latencyMs,
         errorCode: appErr.code,
@@ -372,6 +454,9 @@ async function streamAssistantTurn(params: {
         type: 'error',
         error: appErr.toPayload(),
         ...(savedPartial ? { partialMessage: savedPartial } : {}),
+        ...(params.replaceAssistantMessageId
+          ? { preservedMessageId: params.replaceAssistantMessageId }
+          : {}),
       });
     }
 
@@ -533,8 +618,9 @@ export function registerConversationRoutes(
       }
 
       let targetUserMessage = lastMsg.role === 'user' ? lastMsg : undefined;
+      let replaceAssistantMessageId: string | undefined;
       if (lastMsg.role === 'assistant') {
-        await deps.repo.deleteMessage(lastMsg.id);
+        replaceAssistantMessageId = lastMsg.id;
         targetUserMessage = [...msgs]
           .reverse()
           .find((m) => m.role === 'user' && m.id !== lastMsg.id);
@@ -555,6 +641,7 @@ export function registerConversationRoutes(
         deps,
         conversationId: id,
         userMessageId: targetUserMessage.id,
+        replaceAssistantMessageId,
         modelOverride: preflight.activeModel,
         providerOverride: preflight.activeProvider,
         freeOnly: preflight.freeOnly,

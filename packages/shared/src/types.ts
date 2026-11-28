@@ -93,6 +93,7 @@ export interface VoiceSettings {
 
 export interface PublicSettingsDTO {
   assistantName: string;
+  freeOnlyMode?: boolean;
   activeProvider?: AiProviderId;
   providers?: ProviderInfoDTO[];
   activeModel: string;
@@ -212,6 +213,7 @@ export interface SystemHealthDTO {
   database: 'healthy' | 'unavailable';
   aiEngine: EngineStatus;
   voiceEngine: EngineStatus;
+  freeOnlyMode?: boolean;
   activeProvider?: AiProviderId;
   activeModel: string;
   activeVoiceModel: string;
@@ -265,6 +267,13 @@ export type ChatStreamEvent =
       detail: string;
     }
   | {
+      type: 'stream_reset';
+      conversationId: string;
+      assistantMessageId: string;
+      model: string;
+      reason?: string;
+    }
+  | {
       type: 'delta';
       text: string;
     }
@@ -279,9 +288,11 @@ export type ChatStreamEvent =
       type: 'done';
       message: MessageDTO;
       conversation: ConversationDTO;
+      replacedMessageId?: string;
     }
   | {
       type: 'error';
       error: StructuredErrorPayload;
       partialMessage?: MessageDTO;
+      preservedMessageId?: string;
     };

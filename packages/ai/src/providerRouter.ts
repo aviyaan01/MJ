@@ -13,6 +13,7 @@ import {
 } from './xaiClient.js';
 
 export interface ProviderEndpointConfig {
+  freeOnlyMode?: boolean;
   xai: { apiKey: string; baseUrl: string; model: string; models: string[] };
   ollama: { enabled: boolean; baseUrl: string; model: string };
   groq: { apiKey: string; baseUrl: string; model: string };
@@ -88,6 +89,8 @@ const AUTO_PROVIDER_PRIORITY: readonly ConcreteAiProviderId[] = [
   'xai',
 ];
 
+const STRICT_FREE_ONLY_PROVIDERS = new Set<ConcreteAiProviderId>(['gemini', 'ollama', 'groq']);
+
 const COOLDOWN_ERROR_CODES = new Set<string>([
   ErrorCodes.INVALID_API_KEY,
   ErrorCodes.UNAUTHORIZED,
@@ -111,12 +114,14 @@ export class ProviderRouterClient {
   private readonly fetchImpl: typeof fetch;
   private readonly cooldownMs: number;
   private readonly nowMs: () => number;
+  private readonly freeOnlyMode: boolean;
   private lastOllamaProbeMs = 0;
 
   constructor(private readonly cfg: ProviderEndpointConfig) {
     this.fetchImpl = cfg.fetchImpl ?? fetch;
     this.cooldownMs = Math.max(0, cfg.cooldownMs ?? DEFAULT_PROVIDER_COOLDOWN_MS);
     this.nowMs = cfg.nowMs ?? (() => Date.now());
+    this.freeOnlyMode = cfg.freeOnlyMode ?? false;
     const defMap = new Map(AI_PROVIDER_CATALOG.map((d) => [d.id, d]));
 
     const registerOpenAiProvider = (
@@ -276,9 +281,16 @@ export class ProviderRouterClient {
     }
   }
 
+  public isProviderAllowedInCurrentMode(id: ConcreteAiProviderId): boolean {
+    if (!this.freeOnlyMode) return true;
+    if (!STRICT_FREE_ONLY_PROVIDERS.has(id)) return false;
+    if (id === 'gemini' && (this.cfg.gemini.paidTier ?? false)) return false;
+    return true;
+  }
+
   public hasAnyConfiguredProvider(): boolean {
     for (const entry of this.entries.values()) {
-      if (entry.configured) return true;
+      if (entry.configured && this.isProviderAllowedInCurrentMode(entry.id)) return true;
     }
     return false;
   }
@@ -287,16 +299,20 @@ export class ProviderRouterClient {
     return AUTO_PROVIDER_PRIORITY
       .map((id) => this.entries.get(id))
       .filter((e): e is InternalProviderEntry => Boolean(e))
+      .filter((e) => !this.freeOnlyMode || STRICT_FREE_ONLY_PROVIDERS.has(e.id))
       .map((e) => ({
         id: e.id,
         name: e.name,
         baseUrl: e.baseUrl,
-        configured: e.configured,
+        configured: e.configured && this.isProviderAllowedInCurrentMode(e.id),
         freeTier: e.freeTier,
         requiresKey: e.requiresKey,
         defaultModel: e.defaultModel,
         models: [...e.models],
-        costNote: e.costNote,
+        costNote:
+          this.freeOnlyMode && !this.isProviderAllowedInCurrentMode(e.id)
+            ? 'Blocked while FREE_ONLY_MODE=true'
+            : e.costNote,
       }));
   }
 
@@ -362,6 +378,7 @@ export class ProviderRouterClient {
   private isEntryFreeForModel(entry: InternalProviderEntry, requestedModel?: string): boolean {
     if (entry.id === 'xai') return false;
     if (entry.id === 'gemini') return entry.freeTier;
+    if (this.freeOnlyMode && !STRICT_FREE_ONLY_PROVIDERS.has(entry.id)) return false;
     if (entry.id === 'openrouter') {
       const m = (requestedModel?.trim() || entry.defaultModel).toLowerCase();
       return m === 'openrouter/free' || m.endsWith(':free');
@@ -427,10 +444,14 @@ export class ProviderRouterClient {
       allowUnconfiguredExplicit?: boolean;
     } = {},
   ): InternalProviderEntry[] {
+    const enforceStrictFree = this.freeOnlyMode;
     const matchesFilters = (entry: InternalProviderEntry, checkConfigured: boolean): boolean => {
+      if (enforceStrictFree && !this.isProviderAllowedInCurrentMode(entry.id)) return false;
       if (checkConfigured && !entry.configured) return false;
       if (filters.localOnly && !isLoopbackBaseUrl(entry.baseUrl)) return false;
-      if (filters.freeOnly && !this.isEntryFreeForModel(entry, requestedModel)) return false;
+      if ((filters.freeOnly || enforceStrictFree) && !this.isEntryFreeForModel(entry, requestedModel)) {
+        return false;
+      }
       if (filters.excludeCooldown && this.isInCooldown(entry.id)) return false;
       return true;
     };
@@ -466,36 +487,59 @@ export class ProviderRouterClient {
   }
 
   public async createResponse(
-    params: CreateResponseParams & {
+    params: Omit<CreateResponseParams, 'onReset'> & {
       provider?: AiProviderId;
       freeOnly?: boolean;
       localOnly?: boolean;
+      onReset?: (info: {
+        previousProvider: ConcreteAiProviderId;
+        nextProvider: ConcreteAiProviderId;
+        nextModel: string;
+        reason: string;
+      }) => void | Promise<void>;
     },
   ): Promise<RoutedResponseResult> {
     await this.refreshLocalOllamaModels(false);
 
     const requestedProvider = params.provider ?? 'auto';
+    if (requestedProvider !== 'auto' && this.freeOnlyMode && !this.isProviderAllowedInCurrentMode(requestedProvider)) {
+      throw new AppError({
+        code: ErrorCodes.PERMISSION_DENIED,
+        category: 'privacy',
+        statusCode: 403,
+        message: 'Paid providers (xAI, OpenRouter, or paid tiers) are blocked while FREE_ONLY_MODE=true.',
+      });
+    }
+
     const eligibleNoCooldown = this.buildCandidateOrder(requestedProvider, params.model, {
-      freeOnly: params.freeOnly,
+      freeOnly: params.freeOnly || this.freeOnlyMode,
       localOnly: params.localOnly,
       excludeCooldown: false,
       allowUnconfiguredExplicit: requestedProvider !== 'auto',
     });
 
     if (eligibleNoCooldown.length === 0) {
-      if (params.freeOnly) {
-        throw new AppError({
-          code: ErrorCodes.BUDGET_EXCEEDED,
-          category: 'budget',
-          statusCode: 429,
-        });
-      }
       if (params.localOnly) {
         throw new AppError({
           code: ErrorCodes.PERMISSION_DENIED,
           category: 'privacy',
           statusCode: 403,
           message: 'External AI requests are disabled in Privacy & Permissions.',
+        });
+      }
+      if (this.freeOnlyMode) {
+        throw new AppError({
+          code: ErrorCodes.INVALID_API_KEY,
+          category: 'api',
+          statusCode: 502,
+          message: 'No free AI provider is ready. Configure GEMINI_API_KEY, run Ollama locally, or set GROQ_API_KEY.',
+        });
+      }
+      if (params.freeOnly) {
+        throw new AppError({
+          code: ErrorCodes.BUDGET_EXCEEDED,
+          category: 'budget',
+          statusCode: 429,
         });
       }
       throw new AppError({
@@ -519,6 +563,7 @@ export class ProviderRouterClient {
     }
 
     let lastError: AppError | undefined;
+    let emittedPartialInPreviousAttempt = false;
 
     for (let i = 0; i < candidates.length; i++) {
       const candidate = candidates[i]!;
@@ -531,9 +576,15 @@ export class ProviderRouterClient {
           ? params.model?.trim() || candidate.defaultModel
           : candidate.defaultModel;
 
+      let attemptEmittedDelta = false;
       try {
         const result = await candidate.client.createResponse({
           ...params,
+          onReset: undefined,
+          onDelta: (delta) => {
+            attemptEmittedDelta = true;
+            params.onDelta?.(delta);
+          },
           model: effectiveModel,
         });
         this.clearCooldown(candidate.id);
@@ -543,6 +594,9 @@ export class ProviderRouterClient {
           isFree: this.isEntryFreeForModel(candidate, effectiveModel),
         };
       } catch (err) {
+        if (attemptEmittedDelta) {
+          emittedPartialInPreviousAttempt = true;
+        }
         const appErr =
           err instanceof AppError
             ? err
@@ -555,13 +609,30 @@ export class ProviderRouterClient {
         this.recordCooldown(candidate.id, appErr);
         lastError = appErr;
 
-        const hasNext = i < candidates.length - 1;
+        const nextCandidate = candidates[i + 1];
         if (
           requestedProvider === 'auto' &&
-          hasNext &&
+          nextCandidate &&
           FAILOVER_ELIGIBLE_CODES.has(appErr.code) &&
           appErr.code !== ErrorCodes.ABORTED
         ) {
+          const nextModelMatches =
+            params.model &&
+            (nextCandidate.models.includes(params.model) ||
+              this.inferProviderForModel(params.model) === nextCandidate.id);
+          const nextEffectiveModel = nextModelMatches
+            ? params.model!.trim() || nextCandidate.defaultModel
+            : nextCandidate.defaultModel;
+
+          if (emittedPartialInPreviousAttempt) {
+            await params.onReset?.({
+              previousProvider: candidate.id,
+              nextProvider: nextCandidate.id,
+              nextModel: nextEffectiveModel,
+              reason: `${candidate.name} interrupted mid-stream; failing over cleanly to ${nextCandidate.name}…`,
+            });
+            emittedPartialInPreviousAttempt = false;
+          }
           continue;
         }
         throw appErr;
@@ -590,10 +661,26 @@ export class ProviderRouterClient {
   }> {
     await this.refreshLocalOllamaModels(true);
     const candidates = this.buildCandidateOrder(requestedProvider, undefined, {
+      freeOnly: this.freeOnlyMode,
       excludeCooldown: true,
       allowUnconfiguredExplicit: requestedProvider !== 'auto',
     });
-    const list = candidates.length > 0 ? candidates : [this.entries.get('xai')!];
+    const list =
+      candidates.length > 0
+        ? candidates
+        : !this.freeOnlyMode && this.entries.get('xai')?.configured
+          ? [this.entries.get('xai')!]
+          : [];
+    if (list.length === 0) {
+      throw new AppError({
+        code: this.freeOnlyMode ? ErrorCodes.PERMISSION_DENIED : ErrorCodes.INVALID_API_KEY,
+        category: this.freeOnlyMode ? 'privacy' : 'api',
+        statusCode: this.freeOnlyMode ? 403 : 502,
+        message: this.freeOnlyMode
+          ? 'No free AI provider configured for connectivity check while FREE_ONLY_MODE=true.'
+          : 'API key invalid',
+      });
+    }
     let lastError: AppError | undefined;
 
     for (let i = 0; i < list.length; i++) {

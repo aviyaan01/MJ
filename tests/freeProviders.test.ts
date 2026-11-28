@@ -882,4 +882,446 @@ describe('Free / $0 AI Providers & Failover Routing', () => {
     expect(retryBodies[1]?.stream_options).toBeUndefined();
     expect(retryRes.text).toBe('Recovered after stripping stream_options');
   });
+
+  it('enforces FREE_ONLY_MODE=true by default across config, settingsStore, providerRouter failover, conversations, and voice STT/TTS', async () => {
+    // 1. Default FREE_ONLY_MODE is true
+    const defaultDev = loadServerConfig({ APP_ENV: 'development' });
+    expect(defaultDev.freeOnlyMode).toBe(true);
+    expect(defaultDev.availableModels).toContain('gemini-2.5-flash');
+    expect(defaultDev.availableModels).toContain('gemini-2.5-flash-lite');
+    expect(defaultDev.availableModels.some((m) => m.startsWith('grok-'))).toBe(false);
+
+    // 2. ProviderRouterClient with freeOnlyMode=true allows ONLY gemini (free tier) -> ollama -> groq,
+    // and never calls xAI or OpenRouter even when keys exist and primary fails
+    const seenUrls: string[] = [];
+    const strictRouter = new ProviderRouterClient({
+      freeOnlyMode: true,
+      xai: { apiKey: 'xai-paid-key', baseUrl: 'https://api.x.ai/v1', model: 'grok-4.7', models: ['grok-4.7'] },
+      ollama: { enabled: true, baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen2.5:7b' },
+      groq: { apiKey: 'gsk_free_key', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile' },
+      gemini: {
+        apiKey: 'AIza-free-key-1234567890123456789012345',
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+        model: 'gemini-2.5-flash-lite',
+        paidTier: false,
+      },
+      openrouter: { apiKey: 'or-key-should-be-blocked', baseUrl: 'https://openrouter.ai/api/v1', model: 'openrouter/free' },
+      cerebras: { apiKey: 'cer-key', baseUrl: 'https://api.cerebras.ai/v1', model: 'llama-3.3-70b' },
+      mistral: { apiKey: 'mis-key', baseUrl: 'https://api.mistral.ai/v1', model: 'mistral-small-latest' },
+      github: { apiKey: 'ghp-key', baseUrl: 'https://models.inference.ai.azure.com', model: 'gpt-4o-mini' },
+      timeoutMs: 5000,
+      maxRetries: 0,
+      fetchImpl: async (input) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.endsWith('/api/tags')) {
+          return new Response(JSON.stringify({ models: [{ name: 'qwen2.5:7b' }] }), { status: 200 });
+        }
+        seenUrls.push(url);
+        if (url.includes('generativelanguage.googleapis.com') || url.includes('127.0.0.1:11434')) {
+          return new Response(JSON.stringify({ error: { message: 'Temporary outage' } }), { status: 503 });
+        }
+        return createOpenAiChatSseResponse('Groq free failover reply');
+      },
+    });
+
+    // Catalog in FREE_ONLY_MODE exposes only Gemini, Ollama, Groq
+    const strictCatalog = strictRouter.listProviderCatalog().map((p) => p.id);
+    expect(strictCatalog).toEqual(['gemini', 'ollama', 'groq']);
+
+    // Auto failover goes Gemini -> Ollama -> Groq and never touches xAI or OpenRouter
+    const autoFreeRes = await strictRouter.createResponse({
+      provider: 'auto',
+      instructions: 'Be concise.',
+      input: [{ role: 'user', content: 'Test free failover' }],
+      stream: true,
+    });
+    expect(autoFreeRes.providerId).toBe('groq');
+    expect(autoFreeRes.isFree).toBe(true);
+    expect(autoFreeRes.text).toBe('Groq free failover reply');
+    expect(seenUrls.some((u) => u.includes('api.x.ai') || u.includes('openrouter.ai'))).toBe(false);
+
+    // Explicit xAI or OpenRouter rejected in strict mode
+    await expect(
+      strictRouter.createResponse({
+        provider: 'xai',
+        instructions: 'Hi',
+        input: [{ role: 'user', content: 'Hi' }],
+        stream: true,
+      }),
+    ).rejects.toMatchObject({ statusCode: 403 });
+
+    await expect(
+      strictRouter.createResponse({
+        provider: 'openrouter',
+        instructions: 'Hi',
+        input: [{ role: 'user', content: 'Hi' }],
+        stream: true,
+      }),
+    ).rejects.toMatchObject({ statusCode: 403 });
+
+    // Server enforcement: FREE_ONLY_MODE=true rejects paid xAI/OpenRouter in settings & chat
+    const strictServerCfg = loadServerConfig({
+      APP_ENV: 'test',
+      FREE_ONLY_MODE: 'true',
+      AI_PROVIDER: 'auto',
+      XAI_API_KEY: 'xai-paid-ignored-in-free-mode',
+      OPENROUTER_API_KEY: 'or-ignored-in-free-mode',
+      GEMINI_API_KEY: 'AIza-free-key-1234567890123456789012345',
+      GROQ_API_KEY: 'gsk_free_key',
+      DATABASE_URL: ':memory:',
+      AUTH_SECRET: 'test-signing-secret-must-be-at-least-32-bytes-long',
+      CORS_ORIGIN: 'http://localhost:5173',
+    });
+    const ctx = await buildServer({ config: strictServerCfg, providerRouter: strictRouter });
+    contexts.push(ctx);
+    const loginRes = await ctx.app.inject({ method: 'POST', url: '/api/auth/login', payload: {} });
+    const cookie = String(loginRes.headers['set-cookie']).split(';')[0]!;
+
+    const settingsGet = await ctx.app.inject({ method: 'GET', url: '/api/settings', headers: { cookie } });
+    expect(settingsGet.json().freeOnlyMode).toBe(true);
+    expect(settingsGet.json().providers.map((p: { id: string }) => p.id)).toEqual(['gemini', 'ollama', 'groq']);
+
+    const rejectSettings = await ctx.app.inject({
+      method: 'PATCH',
+      url: '/api/settings',
+      headers: { cookie },
+      payload: { activeProvider: 'xai' },
+    });
+    expect(rejectSettings.statusCode).toBe(403);
+
+    const convRes = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/conversations',
+      headers: { cookie },
+      payload: { title: 'Strict Free Check' },
+    });
+    const convId = convRes.json().conversation.id as string;
+
+    const blockedXaiChat = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/conversations/${convId}/messages`,
+      headers: { cookie },
+      payload: { content: 'Try paid', provider: 'xai' },
+    });
+    expect(blockedXaiChat.statusCode).toBe(403);
+
+    // 3. Voice STT & TTS under FREE_ONLY_MODE=true when ONLY paid XAI_API_KEY exists -> blocked with 403
+    const paidOnlyFreeModeCfg = loadServerConfig({
+      APP_ENV: 'test',
+      FREE_ONLY_MODE: 'true',
+      XAI_API_KEY: 'xai-paid-only-key',
+      DATABASE_URL: ':memory:',
+      AUTH_SECRET: 'test-signing-secret-must-be-at-least-32-bytes-long',
+      CORS_ORIGIN: 'http://localhost:5173',
+    });
+    const paidVoiceCtx = await buildServer({ config: paidOnlyFreeModeCfg });
+    contexts.push(paidVoiceCtx);
+    const l2 = await paidVoiceCtx.app.inject({ method: 'POST', url: '/api/auth/login', payload: {} });
+    const c2 = String(l2.headers['set-cookie']).split(';')[0]!;
+
+    const blockedPaidStt = await paidVoiceCtx.app.inject({
+      method: 'POST',
+      url: '/api/voice/stt',
+      headers: { cookie: c2 },
+      payload: { audioBase64: Buffer.from('abc').toString('base64'), durationSeconds: 60 },
+    });
+    expect(blockedPaidStt.statusCode).toBe(403);
+    expect(blockedPaidStt.json().error.code).toBe('PERMISSION_DENIED');
+
+    const blockedPaidTts = await paidVoiceCtx.app.inject({
+      method: 'POST',
+      url: '/api/voice/tts',
+      headers: { cookie: c2 },
+      payload: { text: 'Test paid TTS blocked' },
+    });
+    expect(blockedPaidTts.statusCode).toBe(403);
+    expect(blockedPaidTts.json().error.code).toBe('PERMISSION_DENIED');
+
+    // Client secret in FREE_ONLY_MODE never calls xAI and gracefully uses free-browser-voice when Gemini key absent
+    const freeSecretRes = await paidVoiceCtx.app.inject({
+      method: 'POST',
+      url: '/api/voice/client-secret',
+      headers: { cookie: c2 },
+      payload: {},
+    });
+    expect(freeSecretRes.statusCode).toBe(200);
+    expect(freeSecretRes.json().protocol).toBe('free-browser');
+    expect(freeSecretRes.json().model).toBe('free-browser-voice');
+
+    // 4. /api/voice/stt hard_cap_reached check (blocks paid STT with 429 BUDGET_EXCEEDED when FREE_ONLY_MODE=false)
+    const paidCapCfg = loadServerConfig({
+      APP_ENV: 'test',
+      FREE_ONLY_MODE: 'false',
+      XAI_API_KEY: 'xai-paid-stt-cap-test',
+      DATABASE_URL: ':memory:',
+      AUTH_SECRET: 'test-signing-secret-must-be-at-least-32-bytes-long',
+      CORS_ORIGIN: 'http://localhost:5173',
+    });
+    const capCtx = await buildServer({ config: paidCapCfg });
+    contexts.push(capCtx);
+    const l3 = await capCtx.app.inject({ method: 'POST', url: '/api/auth/login', payload: {} });
+    const c3 = String(l3.headers['set-cookie']).split(';')[0]!;
+    await capCtx.repo.recordUsageLog({
+      kind: 'stt',
+      model: 'grok-voice-transcribe-2.0',
+      status: 'success',
+      estimatedCostUsd: 0.5,
+      latencyMs: 50,
+    });
+    await capCtx.app.inject({
+      method: 'PATCH',
+      url: '/api/settings',
+      headers: { cookie: c3 },
+      payload: { budget: { hardCapUsd: 0.01 } },
+    });
+    const capBlockedStt = await capCtx.app.inject({
+      method: 'POST',
+      url: '/api/voice/stt',
+      headers: { cookie: c3 },
+      payload: { audioBase64: Buffer.from('abc').toString('base64'), durationSeconds: 60 },
+    });
+    expect(capBlockedStt.statusCode).toBe(429);
+    expect(capBlockedStt.json().error.code).toBe('BUDGET_EXCEEDED');
+
+    // 5. Free Groq Whisper STT still succeeds under FREE_ONLY_MODE=true + hard_cap_reached and logs $0.00
+    const freeSttCfg = loadServerConfig({
+      APP_ENV: 'test',
+      FREE_ONLY_MODE: 'true',
+      GROQ_API_KEY: 'gsk-free-stt-test-1234',
+      DATABASE_URL: ':memory:',
+      AUTH_SECRET: 'test-signing-secret-must-be-at-least-32-bytes-long',
+      CORS_ORIGIN: 'http://localhost:5173',
+    });
+    const freeSttCtx = await buildServer({
+      config: freeSttCfg,
+      voiceGateway: createDefaultVoiceGateway(freeSttCfg, async () =>
+        new Response(JSON.stringify({ text: 'Groq free STT under cap', language: 'en' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    });
+    contexts.push(freeSttCtx);
+    const l4 = await freeSttCtx.app.inject({ method: 'POST', url: '/api/auth/login', payload: {} });
+    const c4 = String(l4.headers['set-cookie']).split(';')[0]!;
+    await freeSttCtx.repo.recordUsageLog({
+      kind: 'text',
+      model: 'grok-4.7',
+      status: 'success',
+      estimatedCostUsd: 1.0,
+      latencyMs: 50,
+    });
+    await freeSttCtx.app.inject({
+      method: 'PATCH',
+      url: '/api/settings',
+      headers: { cookie: c4 },
+      payload: { budget: { hardCapUsd: 0.01 } },
+    });
+    const freeSttRes = await freeSttCtx.app.inject({
+      method: 'POST',
+      url: '/api/voice/stt',
+      headers: { cookie: c4 },
+      payload: { audioBase64: Buffer.from('abc').toString('base64'), durationSeconds: 3600 },
+    });
+    expect(freeSttRes.statusCode).toBe(200);
+    expect(freeSttRes.json().text).toBe('Groq free STT under cap');
+
+    const usageAfterFreeStt = await freeSttCtx.app.inject({
+      method: 'GET',
+      url: '/api/usage',
+      headers: { cookie: c4 },
+    });
+    expect(usageAfterFreeStt.json().month.estimatedCostUsd).toBeCloseTo(1.0, 5);
+    expect(
+      usageAfterFreeStt.json().recentEvents.some(
+        (e: { kind: string; model: string; estimatedCostUsd: number }) =>
+          e.kind === 'stt' && e.model === 'whisper-large-v3-turbo' && e.estimatedCostUsd === 0,
+      ),
+    ).toBe(true);
+  });
+
+  it('resets partial stream chunks with stream_reset on mid-stream failover and preserves old answer on failed regenerate', async () => {
+    // 1. Mid-stream finish_reason=error parser check
+    expect(() =>
+      parseOpenAiChatStreamFrame({
+        data: JSON.stringify({
+          id: 'err_finish',
+          choices: [{ index: 0, delta: {}, finish_reason: 'error' }],
+        }),
+      }),
+    ).toThrow();
+
+    let mode: 'failover_mid_stream' | 'all_fail' | 'clean_ok' = 'failover_mid_stream';
+    const capturedMessagesPerRequest: Array<Array<{ role: string; content: string }>> = [];
+
+    const encoder = new TextEncoder();
+    const makeMidStreamFailSse = () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({
+                  id: 'gem_partial',
+                  choices: [{ index: 0, delta: { content: 'Half broken Gemini text ' }, finish_reason: null }],
+                })}\n\n`,
+              ),
+            );
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({
+                  error: { message: 'Mid-stream backend disconnect' },
+                })}\n\n`,
+              ),
+            );
+            controller.close();
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+      );
+
+    const config = loadServerConfig({
+      APP_ENV: 'test',
+      FREE_ONLY_MODE: 'true',
+      AI_PROVIDER: 'auto',
+      GEMINI_API_KEY: 'AIza-stream-reset-test-key-1234567890',
+      OLLAMA_ENABLED: 'true',
+      OLLAMA_BASE_URL: 'http://127.0.0.1:11434/v1',
+      OLLAMA_MODEL: 'qwen2.5:7b',
+      DATABASE_URL: ':memory:',
+      AUTH_SECRET: 'test-signing-secret-must-be-at-least-32-bytes-long',
+      CORS_ORIGIN: 'http://localhost:5173',
+    });
+
+    const router = new ProviderRouterClient({
+      freeOnlyMode: true,
+      xai: { apiKey: '', baseUrl: 'https://api.x.ai/v1', model: 'grok-4.7', models: ['grok-4.7'] },
+      ollama: config.aiProviders.ollama,
+      groq: config.aiProviders.groq,
+      gemini: config.aiProviders.gemini,
+      openrouter: config.aiProviders.openrouter,
+      cerebras: config.aiProviders.cerebras,
+      mistral: config.aiProviders.mistral,
+      github: config.aiProviders.github,
+      timeoutMs: 5000,
+      maxRetries: 0,
+      fetchImpl: async (input, init) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.endsWith('/api/tags')) {
+          return new Response(JSON.stringify({ models: [{ name: 'qwen2.5:7b' }] }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (init?.body) {
+          const parsedBody = JSON.parse(String(init.body)) as {
+            messages?: Array<{ role: string; content: string }>;
+          };
+          if (parsedBody.messages) {
+            capturedMessagesPerRequest.push(parsedBody.messages);
+          }
+        }
+        if (mode === 'all_fail') {
+          return new Response(JSON.stringify({ error: { message: 'Temporary total outage' } }), { status: 503 });
+        }
+        if (url.includes('generativelanguage.googleapis.com')) {
+          if (mode === 'failover_mid_stream') {
+            return makeMidStreamFailSse();
+          }
+          return createOpenAiChatSseResponse('Fresh clean answer from Gemini');
+        }
+        return createOpenAiChatSseResponse('Fresh clean answer from Ollama');
+      },
+    });
+
+    const ctx = await buildServer({ config, providerRouter: router });
+    contexts.push(ctx);
+    const loginRes = await ctx.app.inject({ method: 'POST', url: '/api/auth/login', payload: {} });
+    const cookie = String(loginRes.headers['set-cookie']).split(';')[0]!;
+
+    const convRes = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/conversations',
+      headers: { cookie },
+      payload: { title: 'Stream Reset & Safe Regen' },
+    });
+    const convId = convRes.json().conversation.id as string;
+
+    // 2. Clean stream failover: Gemini streams partial chunk -> mid-stream error -> stream_reset -> Ollama clean response
+    const chatRes = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/conversations/${convId}/messages`,
+      headers: { cookie },
+      payload: { content: 'Explain zero-downtime failover.' },
+    });
+    expect(chatRes.statusCode).toBe(200);
+    expect(chatRes.body).toContain('event: stream_reset');
+    expect(chatRes.body).toContain('Fresh clean answer from Ollama');
+
+    const afterFailoverDetail = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/conversations/${convId}`,
+      headers: { cookie },
+    });
+    const msgs1 = afterFailoverDetail.json().messages as Array<{ id: string; role: string; content: string; status: string }>;
+    expect(msgs1).toHaveLength(2);
+    const originalAssistant = msgs1[1]!;
+    expect(originalAssistant.role).toBe('assistant');
+    expect(originalAssistant.content).toBe('Fresh clean answer from Ollama');
+    expect(originalAssistant.content).not.toContain('Half broken Gemini text');
+
+    // 3. Safe Regenerate when ALL providers fail: original assistant message MUST stay intact
+    mode = 'all_fail';
+    const failedRegenRes = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/conversations/${convId}/regenerate`,
+      headers: { cookie },
+      payload: {},
+    });
+    expect(failedRegenRes.statusCode).toBe(200);
+    expect(failedRegenRes.body).toContain('event: error');
+    expect(failedRegenRes.body).toContain(`"preservedMessageId":"${originalAssistant.id}"`);
+
+    const afterFailedRegen = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/conversations/${convId}`,
+      headers: { cookie },
+    });
+    const msgsAfterFail = afterFailedRegen.json().messages as Array<{ id: string; role: string; content: string; status: string }>;
+    expect(msgsAfterFail).toHaveLength(2);
+    expect(msgsAfterFail[1]!.id).toBe(originalAssistant.id);
+    expect(msgsAfterFail[1]!.content).toBe('Fresh clean answer from Ollama');
+    expect(msgsAfterFail[1]!.status).toBe('completed');
+
+    // 4. Safe Regenerate when replacement succeeds: old message deleted ONLY after replacement succeeds,
+    // and contextTurns sent to model excluded old assistant reply
+    mode = 'clean_ok';
+    capturedMessagesPerRequest.length = 0;
+    const okRegenRes = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/conversations/${convId}/regenerate`,
+      headers: { cookie },
+      payload: { provider: 'ollama' },
+    });
+    expect(okRegenRes.statusCode).toBe(200);
+    expect(okRegenRes.body).toContain(`"replacedMessageId":"${originalAssistant.id}"`);
+    expect(okRegenRes.body).toContain('Fresh clean answer from Ollama');
+
+    // Confirm old assistant turn was NOT fed back into regeneration prompt context
+    expect(
+      capturedMessagesPerRequest.some((turns) =>
+        turns.some((t) => t.role === 'assistant'),
+      ),
+    ).toBe(false);
+
+    const afterOkRegen = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/conversations/${convId}`,
+      headers: { cookie },
+    });
+    const finalMsgs = afterOkRegen.json().messages as Array<{ id: string; role: string; content: string }>;
+    expect(finalMsgs).toHaveLength(2);
+    expect(finalMsgs[1]!.id).not.toBe(originalAssistant.id);
+    expect(finalMsgs[1]!.content).toBe('Fresh clean answer from Ollama');
+  });
 });

@@ -1,5 +1,8 @@
 import {
+  AppError,
   DEFAULT_BUDGET_SETTINGS,
+  ErrorCodes,
+  resolveProviderDisplay,
   type AiProviderId,
   type BudgetSettings,
   type LanguageMode,
@@ -43,6 +46,15 @@ export interface PersistedSettingsPatch {
   };
 }
 
+const STRICT_FREE_ONLY_SET = new Set<AiProviderId>(['auto', 'gemini', 'ollama', 'groq']);
+
+function isAllowedInFreeOnly(providerId: AiProviderId, config: ServerConfig): boolean {
+  if (!config.freeOnlyMode) return true;
+  if (!STRICT_FREE_ONLY_SET.has(providerId)) return false;
+  if (providerId === 'gemini' && config.aiProviders.gemini.paidTier) return false;
+  return true;
+}
+
 export class RuntimeSettingsStore {
   private cachedSaved: PersistedSettingsPatch | null = null;
 
@@ -65,8 +77,15 @@ export class RuntimeSettingsStore {
   public async getPublicSettings(): Promise<PublicSettingsDTO> {
     await this.providerRouter?.refreshLocalOllamaModels(false);
     const saved = await this.loadSavedPatch();
-    const providers = this.providerRouter?.listProviderCatalog() ?? [];
-    const activeProvider = saved.activeProvider ?? this.config.aiProviders.defaultProvider;
+    const rawProviders = this.providerRouter?.listProviderCatalog() ?? [];
+    const providers = this.config.freeOnlyMode
+      ? rawProviders.filter((p) => isAllowedInFreeOnly(p.id, this.config))
+      : rawProviders;
+
+    const savedProvider = saved.activeProvider ?? this.config.aiProviders.defaultProvider;
+    const activeProvider = isAllowedInFreeOnly(savedProvider, this.config)
+      ? savedProvider
+      : this.config.aiProviders.defaultProvider;
 
     const configuredProviderModels = providers
       .filter((p) => p.configured)
@@ -78,29 +97,62 @@ export class RuntimeSettingsStore {
       providers.find((p) => p.id === 'gemini') ??
       providers.find((p) => p.configured);
 
+    const savedModel = saved.activeModel?.trim();
+    const safeSavedModel =
+      this.config.freeOnlyMode && savedModel?.toLowerCase().startsWith('grok-')
+        ? undefined
+        : savedModel;
+
     const activeModel =
-      saved.activeModel?.trim() ||
+      safeSavedModel ||
       (activeProvider !== 'auto'
         ? providers.find((p) => p.id === activeProvider)?.defaultModel
         : autoDefaultProvider?.defaultModel) ||
       this.config.aiProviders.gemini.model ||
-      this.config.xaiTextModel;
+      (this.config.freeOnlyMode ? 'gemini-2.5-flash' : this.config.xaiTextModel);
 
     const availableModels = Array.from(
       new Set([activeModel, ...configuredProviderModels, ...this.config.availableModels]),
-    );
+    ).filter((m) => !this.config.freeOnlyMode || !m.toLowerCase().startsWith('grok-'));
 
-    const voiceModel = saved.voice?.voiceModel?.trim() || this.config.xaiVoiceModel;
+    const savedVoiceModel = saved.voice?.voiceModel?.trim();
+    const safeSavedVoice =
+      this.config.freeOnlyMode && savedVoiceModel?.toLowerCase().startsWith('grok-')
+        ? undefined
+        : savedVoiceModel;
+    const voiceModel =
+      safeSavedVoice ||
+      (this.config.freeOnlyMode
+        ? this.config.aiProviders.gemini.apiKey && !this.config.aiProviders.gemini.paidTier
+          ? this.config.geminiLiveModel
+          : 'free-browser-voice'
+        : this.config.xaiVoiceModel);
     const availableVoiceModels = Array.from(
       new Set([voiceModel, 'free-browser-voice', ...this.config.availableVoiceModels]),
-    );
+    ).filter((m) => !this.config.freeOnlyMode || !m.toLowerCase().startsWith('grok-'));
 
     const anyProviderConfigured = this.providerRouter
       ? this.providerRouter.hasAnyConfiguredProvider()
-      : this.config.apiKeyConfigured;
+      : this.config.freeOnlyMode
+        ? Boolean(
+            (this.config.aiProviders.gemini.apiKey && !this.config.aiProviders.gemini.paidTier) ||
+              this.config.aiProviders.groq.apiKey ||
+              this.config.aiProviders.ollama.enabled,
+          )
+        : this.config.apiKeyConfigured;
+
+    const apiBaseHost = this.config.freeOnlyMode
+      ? resolveProviderDisplay({
+          activeProvider,
+          activeModel,
+          activeVoiceModel: voiceModel,
+          providers,
+        }).hostLabel
+      : this.config.xaiBaseHost;
 
     return {
       assistantName: 'MJ Assistant',
+      freeOnlyMode: this.config.freeOnlyMode,
       activeProvider,
       ...(providers.length > 0 ? { providers } : {}),
       activeModel,
@@ -112,7 +164,7 @@ export class RuntimeSettingsStore {
       streamResponses: saved.streamResponses ?? true,
       reducedMotionOverride: saved.reducedMotionOverride ?? 'system',
       compactDensity: saved.compactDensity ?? false,
-      apiBaseHost: this.config.xaiBaseHost,
+      apiBaseHost,
       apiKeyConfigured: anyProviderConfigured,
       appEnv: this.config.appEnv,
       budget: {
@@ -134,6 +186,33 @@ export class RuntimeSettingsStore {
   }
 
   public async updateSettings(patch: PersistedSettingsPatch): Promise<PublicSettingsDTO> {
+    if (this.config.freeOnlyMode) {
+      if (patch.activeProvider !== undefined && !isAllowedInFreeOnly(patch.activeProvider, this.config)) {
+        throw new AppError({
+          code: ErrorCodes.PERMISSION_DENIED,
+          category: 'privacy',
+          statusCode: 403,
+          message: 'Paid providers (xAI, OpenRouter, or paid tiers) are disabled while FREE_ONLY_MODE=true.',
+        });
+      }
+      if (patch.activeModel?.trim().toLowerCase().startsWith('grok-')) {
+        throw new AppError({
+          code: ErrorCodes.PERMISSION_DENIED,
+          category: 'privacy',
+          statusCode: 403,
+          message: 'Paid xAI models are disabled while FREE_ONLY_MODE=true.',
+        });
+      }
+      if (patch.voice?.voiceModel?.trim().toLowerCase().startsWith('grok-')) {
+        throw new AppError({
+          code: ErrorCodes.PERMISSION_DENIED,
+          category: 'privacy',
+          statusCode: 403,
+          message: 'Paid xAI voice models are disabled while FREE_ONLY_MODE=true.',
+        });
+      }
+    }
+
     const existing = await this.loadSavedPatch();
 
     const merged: PersistedSettingsPatch = {
