@@ -39,8 +39,9 @@ If you already terminate TLS with Nginx on Ubuntu/Debian:
    ```
 3. Verify critical proxy directives remain intact inside the `api.yourdomain.com` block:
    - `proxy_http_version 1.1;`
+   - `proxy_set_header X-Forwarded-For $remote_addr;` (overwrites client-spoofed `X-Forwarded-For` headers so Fastify `trustProxy: true` cannot be bypassed)
    - `proxy_set_header X-Forwarded-Proto https;`
-   - `proxy_buffering off;` and `proxy_cache off;` (prevents buffered/stalled Grok SSE responses)
+   - `proxy_buffering off;` and `proxy_cache off;` (prevents buffered/stalled SSE responses)
    - `proxy_read_timeout 180s;`
 4. Test and reload Nginx:
    ```bash

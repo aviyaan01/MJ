@@ -120,13 +120,7 @@ export class RuntimeSettingsStore {
       this.config.freeOnlyMode && savedVoiceModel?.toLowerCase().startsWith('grok-')
         ? undefined
         : savedVoiceModel;
-    const voiceModel =
-      safeSavedVoice ||
-      (this.config.freeOnlyMode
-        ? this.config.aiProviders.gemini.apiKey && !this.config.aiProviders.gemini.paidTier
-          ? this.config.geminiLiveModel
-          : 'free-browser-voice'
-        : this.config.xaiVoiceModel);
+    const voiceModel = safeSavedVoice || this.config.voiceModel;
     const availableVoiceModels = Array.from(
       new Set([voiceModel, 'free-browser-voice', ...this.config.availableVoiceModels]),
     ).filter((m) => !this.config.freeOnlyMode || !m.toLowerCase().startsWith('grok-'));

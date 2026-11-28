@@ -4,16 +4,21 @@ import { createEncryptedDatabaseBackup } from './backup.js';
 
 function resolveKeyFromEnv(): string {
   const explicit = (process.env.BACKUP_ENCRYPTION_KEY ?? '').trim();
-  if (explicit && !explicit.startsWith('your_') && !explicit.startsWith('replace_with')) {
-    return explicit;
-  }
   const auth = (process.env.AUTH_SECRET ?? '').trim();
-  if (auth && !auth.startsWith('your_') && !auth.startsWith('replace_with')) {
-    return auth;
+  if (!explicit || explicit.startsWith('your_') || explicit.startsWith('replace_with')) {
+    throw new Error(
+      'Set a dedicated BACKUP_ENCRYPTION_KEY (>= 16 chars, distinct from AUTH_SECRET) in .env/environment before running db:backup. AUTH_SECRET fallback is disabled.',
+    );
   }
-  throw new Error(
-    'Set BACKUP_ENCRYPTION_KEY (recommended, >= 16 chars) or AUTH_SECRET in .env/environment before running db:backup.',
-  );
+  if (explicit.length < 16) {
+    throw new Error('BACKUP_ENCRYPTION_KEY must be at least 16 characters.');
+  }
+  if (auth && explicit === auth) {
+    throw new Error(
+      'BACKUP_ENCRYPTION_KEY must not reuse AUTH_SECRET. Configure a separate backup passphrase.',
+    );
+  }
+  return explicit;
 }
 
 const rootDir = loadRootEnvIntoProcess();

@@ -7,8 +7,8 @@ Covers local development, single-server production hosting, local-first SQLite o
 ## 1. Pre-Deployment Verification Checklist (Section 17 & Appendix A)
 
 Before every release or deployment:
-1. **Re-verify xAI model identifiers & billing rates** at [docs.x.ai](https://docs.x.ai) and [console.x.ai](https://console.x.ai).
-   - Especially `XAI_VOICE_MODEL` (`grok-voice-latest` is a moving alias; pin an exact versioned voice model if deterministic behavior is required).
+1. **Re-verify Gemini / optional provider model identifiers** in `.env`:
+   - Configure `VOICE_MODEL` / `GEMINI_VOICE_MODEL` (e.g. `gemini-2.5-flash-native-audio-preview-12-2025` or `free-browser-voice`) for free voice, and keep `XAI_VOICE_MODEL` only if explicitly enabling paid xAI (`FREE_ONLY_MODE=false`).
 2. Confirm `XAI_API_KEY` is valid with active credits/billing on [console.x.ai](https://console.x.ai).
 3. Ensure `.env` stays out of version control (gitignored) and `.env.example` contains placeholders only.
 4. Ensure all OS-level capability classes remain defaulted OFF cleanly across fresh installs.

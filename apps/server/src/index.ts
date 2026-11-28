@@ -53,9 +53,11 @@ async function main() {
   });
 
   backupScheduler.start();
-  if (config.backup.enabled && !backupScheduler.isConfigured()) {
+  if (config.backupKeyWarning) {
+    console.warn(`[MJ Backup] ${config.backupKeyWarning}`);
+  } else if (config.backup.enabled && !backupScheduler.isConfigured()) {
     console.warn(
-      '[MJ Backup] Automatic daily backup is inactive (configure BACKUP_ENCRYPTION_KEY >= 16 chars or persistent AUTH_SECRET with file-backed DATABASE_URL).',
+      '[MJ Backup] Automatic daily backup is inactive (configure dedicated BACKUP_ENCRYPTION_KEY >= 16 chars with file-backed DATABASE_URL).',
     );
   }
 

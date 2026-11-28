@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -192,5 +192,89 @@ describe('Encrypted Daily Database Backup & Verified Restore', () => {
 
     scheduler.stop();
     handle.close();
+  });
+
+  it('checkpoints uncheckpointed WAL transactions before pre-restore copy and refuses BACKUP_ENCRYPTION_KEY -> AUTH_SECRET fallback', async () => {
+    const workDir = mkdtempSync(join(tmpdir(), 'mj-wal-restore-test-'));
+    tempDirs.push(workDir);
+    const sourceDbPath = join(workDir, 'source.db');
+    const targetDbPath = join(workDir, 'live-wal-target.db');
+    const backupDir = join(workDir, 'backups');
+    const encryptionKey = 'dedicated-backup-key-separate-2026';
+
+    // 1. Refuse fallback from BACKUP_ENCRYPTION_KEY -> AUTH_SECRET & warn cleanly
+    const authOnlyConfig = loadServerConfig({
+      APP_ENV: 'production',
+      AUTH_SECRET: 'production-session-signing-secret-minimum-32-chars',
+      APP_ACCESS_PASSCODE: 'prod-pass-1234',
+      DATABASE_URL: sourceDbPath,
+      CORS_ORIGIN: 'https://app.example.com',
+    });
+    expect(authOnlyConfig.backup.encryptionKey).toBeUndefined();
+    expect(authOnlyConfig.backupKeyWarning).toMatch(/AUTH_SECRET fallback/i);
+
+    const reusedKeyConfig = loadServerConfig({
+      APP_ENV: 'production',
+      AUTH_SECRET: 'same-secret-key-at-least-32-chars-long-value',
+      BACKUP_ENCRYPTION_KEY: 'same-secret-key-at-least-32-chars-long-value',
+      APP_ACCESS_PASSCODE: 'prod-pass-1234',
+      DATABASE_URL: sourceDbPath,
+      CORS_ORIGIN: 'https://app.example.com',
+    });
+    expect(reusedKeyConfig.backup.encryptionKey).toBeUndefined();
+    expect(reusedKeyConfig.backupKeyWarning).toMatch(/must not match AUTH_SECRET/i);
+
+    // 2. Create clean backup BEFORE uncheckpointed WAL row is written
+    const h1 = createDatabase(sourceDbPath);
+    const repo1 = new MjDatabaseRepository(h1);
+    const baselineConv = await repo1.createConversation({
+      title: 'Baseline Backup Conversation',
+      model: 'gemini-2.5-flash',
+    });
+    const backup = createEncryptedDatabaseBackup({
+      sqlite: h1.sqlite,
+      backupDir,
+      encryptionKey,
+    });
+
+    // Write a new conversation with wal_autocheckpoint = 0 so the row sits ONLY in -wal
+    h1.sqlite.exec('PRAGMA wal_autocheckpoint = 0;');
+    const walConv = await repo1.createConversation({
+      title: 'Uncheckpointed WAL Recovery Check',
+      model: 'gemini-2.5-flash',
+    });
+
+    // Snapshot .db + -wal + -shm onto targetDbPath before closing h1 (simulates uncheckpointed DB state without open lock)
+    copyFileSync(sourceDbPath, targetDbPath);
+    if (existsSync(`${sourceDbPath}-wal`)) {
+      copyFileSync(`${sourceDbPath}-wal`, `${targetDbPath}-wal`);
+    }
+    if (existsSync(`${sourceDbPath}-shm`)) {
+      copyFileSync(`${sourceDbPath}-shm`, `${targetDbPath}-shm`);
+    }
+    h1.close();
+
+    // 3. Restore baseline backup onto targetDbPath -> pre-restore safety copy MUST contain the WAL row!
+    const restored = restoreEncryptedDatabaseBackup({
+      backupFilePath: backup.filePath,
+      targetDatabaseUrl: targetDbPath,
+      encryptionKey,
+      createPreRestoreSafetyCopy: true,
+    });
+    expect(restored.preRestoreBackupPath).toBeTruthy();
+
+    const safetyHandle = createDatabase(restored.preRestoreBackupPath!);
+    const safetyRepo = new MjDatabaseRepository(safetyHandle);
+    const recoveredWalConv = await safetyRepo.getConversationDetail(walConv.id);
+    expect(recoveredWalConv?.conversation.title).toBe('Uncheckpointed WAL Recovery Check');
+    safetyHandle.close();
+
+    const restoredHandle = createDatabase(targetDbPath);
+    const restoredRepo = new MjDatabaseRepository(restoredHandle);
+    expect((await restoredRepo.getConversationDetail(baselineConv.id))?.conversation.title).toBe(
+      'Baseline Backup Conversation',
+    );
+    expect(await restoredRepo.getConversationDetail(walConv.id)).toBeNull();
+    restoredHandle.close();
   });
 });

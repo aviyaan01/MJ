@@ -1324,4 +1324,95 @@ describe('Free / $0 AI Providers & Failover Routing', () => {
     expect(finalMsgs[1]!.id).not.toBe(originalAssistant.id);
     expect(finalMsgs[1]!.content).toBe('Fresh clean answer from Ollama');
   });
+
+  it('hardens /health and /api/health unauthenticated output, FREE_ONLY voiceEngine readiness, VOICE_MODEL/GEMINI_VOICE_MODEL, and nginx X-Forwarded-For', async () => {
+    const config = loadServerConfig({
+      APP_ENV: 'test',
+      AI_PROVIDER: 'auto',
+      GEMINI_API_KEY: '',
+      GROQ_API_KEY: '',
+      OLLAMA_ENABLED: 'true',
+      VOICE_MODEL: 'free-browser-voice',
+      GEMINI_VOICE_MODEL: 'gemini-2.5-flash-preview-custom',
+      DATABASE_URL: ':memory:',
+      AUTH_SECRET: 'test-signing-secret-must-be-at-least-32-bytes-long',
+      APP_ACCESS_PASSCODE: 'mj-health-lock',
+      CORS_ORIGIN: 'http://localhost:5173',
+    });
+
+    // Leftover XAI_VOICE_MODEL is separated from Gemini / general VOICE_MODEL
+    expect(config.xaiVoiceModel).toBe('grok-voice-latest');
+    expect(config.geminiVoiceModel).toBe('gemini-2.5-flash-preview-custom');
+    expect(config.voiceModel).toBe('free-browser-voice');
+
+    const ctx = await buildServer({ config });
+    contexts.push(ctx);
+
+    // Unauthenticated /health & /api/health return minimal { status: 'ok' } with zero internal leaks
+    const unauthHealth = await ctx.app.inject({ method: 'GET', url: '/health' });
+    expect(unauthHealth.statusCode).toBe(200);
+    expect(unauthHealth.json()).toEqual({ status: 'ok' });
+
+    const unauthApiHealth = await ctx.app.inject({ method: 'GET', url: '/api/health' });
+    expect(unauthApiHealth.statusCode).toBe(200);
+    expect(unauthApiHealth.json()).toEqual({ status: 'ok' });
+
+    // Authenticated health returns full SystemHealthDTO with voiceEngine='ready' even without XAI_API_KEY
+    const loginRes = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { passcode: 'mj-health-lock' },
+    });
+    const cookie = String(loginRes.headers['set-cookie']).split(';')[0]!;
+
+    const authApiHealth = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/health',
+      headers: { cookie },
+    });
+    expect(authApiHealth.statusCode).toBe(200);
+    const dto = authApiHealth.json() as {
+      status: string;
+      database: string;
+      voiceEngine: string;
+      activeVoiceModel: string;
+    };
+    expect(dto.status).toBe('online');
+    expect(dto.database).toBe('healthy');
+    expect(dto.voiceEngine).toBe('ready');
+    expect(dto.activeVoiceModel).toBe('free-browser-voice');
+
+    // Also ensure voiceEngine stays 'ready' even when OLLAMA_ENABLED=false in FREE_ONLY_MODE
+    const browserOnlyConfig = loadServerConfig({
+      APP_ENV: 'test',
+      AI_PROVIDER: 'gemini',
+      GEMINI_API_KEY: '',
+      GROQ_API_KEY: '',
+      OLLAMA_ENABLED: 'false',
+      DATABASE_URL: ':memory:',
+      AUTH_SECRET: 'test-signing-secret-must-be-at-least-32-bytes-long',
+      APP_ACCESS_PASSCODE: 'mj-browser-only',
+      CORS_ORIGIN: 'http://localhost:5173',
+    });
+    const browserCtx = await buildServer({ config: browserOnlyConfig });
+    contexts.push(browserCtx);
+    const browserLogin = await browserCtx.app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { passcode: 'mj-browser-only' },
+    });
+    const browserCookie = String(browserLogin.headers['set-cookie']).split(';')[0]!;
+    const browserHealth = await browserCtx.app.inject({
+      method: 'GET',
+      url: '/api/health',
+      headers: { cookie: browserCookie },
+    });
+    expect(browserHealth.json().voiceEngine).toBe('ready');
+
+    // Nginx proxy config overwrites spoofed X-Forwarded-For with $remote_addr
+    const rootDir = resolve(process.cwd());
+    const nginxHttps = readFileSync(resolve(rootDir, 'deploy/nginx-https.conf'), 'utf8');
+    expect(nginxHttps).toContain('proxy_set_header X-Forwarded-For $remote_addr;');
+    expect(nginxHttps).not.toContain('$proxy_add_x_forwarded_for');
+  });
 });

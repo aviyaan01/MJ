@@ -16,7 +16,7 @@ describe('Split Production Deployment Readiness', () => {
     }
   });
 
-  it('exposes /health with 200 when database is healthy and 503 when database ping fails, without leaking secrets', async () => {
+  it('exposes minimal /health for unauthenticated callers and full health details only when authenticated', async () => {
     const secretKey = 'xai-deploy-health-check-secret-999';
     const config = loadServerConfig({
       APP_ENV: 'test',
@@ -30,7 +30,29 @@ describe('Split Production Deployment Readiness', () => {
     const ctx = await buildServer({ config });
     contexts.push(ctx);
 
-    const okRes = await ctx.app.inject({ method: 'GET', url: '/health' });
+    // Unauthenticated probes expose ONLY minimal status
+    const unauthHealthRes = await ctx.app.inject({ method: 'GET', url: '/health' });
+    expect(unauthHealthRes.statusCode).toBe(200);
+    expect(unauthHealthRes.body).not.toContain(secretKey);
+    expect(unauthHealthRes.json()).toEqual({ status: 'ok' });
+
+    const unauthApiHealthRes = await ctx.app.inject({ method: 'GET', url: '/api/health' });
+    expect(unauthApiHealthRes.statusCode).toBe(200);
+    expect(unauthApiHealthRes.json()).toEqual({ status: 'ok' });
+
+    // Authenticated session receives full SystemHealthDTO
+    const loginRes = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { passcode: 'mj-deploy-pass' },
+    });
+    const cookie = String(loginRes.headers['set-cookie']).split(';')[0]!;
+
+    const okRes = await ctx.app.inject({
+      method: 'GET',
+      url: '/health',
+      headers: { cookie },
+    });
     expect(okRes.statusCode).toBe(200);
     expect(okRes.body).not.toContain(secretKey);
     const okPayload = okRes.json() as Record<string, unknown>;
@@ -40,14 +62,26 @@ describe('Split Production Deployment Readiness', () => {
     expect(okPayload.aiEngine).toBe('ready');
     expect(okPayload.voiceEngine).toBe('ready');
 
-    const apiOkRes = await ctx.app.inject({ method: 'GET', url: '/api/health' });
+    const apiOkRes = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/health',
+      headers: { cookie },
+    });
     expect(apiOkRes.statusCode).toBe(200);
     expect(apiOkRes.json()).toMatchObject({ status: 'online', database: 'healthy' });
 
     const originalPing = ctx.dbHandle.ping;
     ctx.dbHandle.ping = () => false;
     try {
-      const degradedRes = await ctx.app.inject({ method: 'GET', url: '/health' });
+      const unauthDegradedRes = await ctx.app.inject({ method: 'GET', url: '/health' });
+      expect(unauthDegradedRes.statusCode).toBe(503);
+      expect(unauthDegradedRes.json()).toEqual({ status: 'error' });
+
+      const degradedRes = await ctx.app.inject({
+        method: 'GET',
+        url: '/health',
+        headers: { cookie },
+      });
       expect(degradedRes.statusCode).toBe(503);
       expect(degradedRes.body).not.toContain(secretKey);
       expect(degradedRes.json()).toMatchObject({

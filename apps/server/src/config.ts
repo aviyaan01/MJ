@@ -22,10 +22,13 @@ export interface ServerConfig {
   xaiBaseHost: string;
   xaiTextModel: string;
   availableModels: string[];
+  voiceModel: string;
+  geminiVoiceModel: string;
   xaiVoiceModel: string;
   availableVoiceModels: string[];
   geminiRealtimeUrl: string;
   geminiLiveModel: string;
+  backupKeyWarning?: string;
   xaiTimeoutMs: number;
   xaiMaxOutputTokens: number;
   xaiReasoningEffort: ReasoningEffort;
@@ -167,25 +170,19 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
     ),
   );
 
-  const geminiLiveModel = !isPlaceholderValue(env.GEMINI_LIVE_MODEL)
-    ? env.GEMINI_LIVE_MODEL!.trim()
-    : DEFAULT_GEMINI_LIVE_MODEL;
+  const requestedVoiceModel = cleanEnvSecret(env.VOICE_MODEL);
+  const geminiVoiceModel =
+    cleanEnvSecret(env.GEMINI_VOICE_MODEL) ??
+    cleanEnvSecret(env.GEMINI_LIVE_MODEL) ??
+    (requestedVoiceModel && !requestedVoiceModel.toLowerCase().startsWith('grok-')
+      ? requestedVoiceModel
+      : undefined) ??
+    DEFAULT_GEMINI_LIVE_MODEL;
+  const geminiLiveModel = geminiVoiceModel;
   const geminiRealtimeUrl =
     (env.GEMINI_REALTIME_URL ?? '').trim() || DEFAULT_GEMINI_REALTIME_URL;
 
-  const xaiVoiceModel = !isPlaceholderValue(env.XAI_VOICE_MODEL)
-    ? env.XAI_VOICE_MODEL!.trim()
-    : isLegacyXaiOnlyTest
-      ? 'grok-voice-latest'
-      : geminiLiveModel;
-
-  const availableVoiceModels = Array.from(
-    new Set(
-      freeOnlyMode
-        ? [geminiLiveModel, 'free-browser-voice']
-        : [geminiLiveModel, 'free-browser-voice', xaiVoiceModel, ...DEFAULT_VOICE_MODELS],
-    ),
-  );
+  const xaiVoiceModel = cleanEnvSecret(env.XAI_VOICE_MODEL) ?? 'grok-voice-latest';
 
   const rawDatabaseUrl = (env.DATABASE_URL ?? './data/mj-assistant.db').trim();
   const databaseUrl = resolveSqlitePath(rawDatabaseUrl, rootDir);
@@ -294,12 +291,23 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
     rawBackupEnabled === 'false' ? false : rawBackupEnabled === 'true' ? true : appEnv !== 'test';
   const rawBackupDir = (env.BACKUP_DIR ?? './data/backups').trim() || './data/backups';
   const explicitBackupKey = cleanEnvSecret(env.BACKUP_ENCRYPTION_KEY);
-  const backupEncryptionKey =
-    explicitBackupKey && explicitBackupKey.length >= 16
-      ? explicitBackupKey
-      : !authSecretEphemeral && authSecret.length >= 16
-        ? authSecret
-        : undefined;
+  let backupEncryptionKey: string | undefined;
+  let backupKeyWarning: string | undefined;
+
+  if (!explicitBackupKey) {
+    if (backupEnabled) {
+      backupKeyWarning =
+        'Dedicated BACKUP_ENCRYPTION_KEY (>= 16 chars) is not set; refusing AUTH_SECRET fallback so session signing and backup keys remain separate.';
+    }
+  } else if (explicitBackupKey.length < 16) {
+    backupKeyWarning =
+      'BACKUP_ENCRYPTION_KEY must be at least 16 characters; encrypted backups remain inactive until configured.';
+  } else if (hasValidAuthSecret && explicitBackupKey === rawAuthSecret) {
+    backupKeyWarning =
+      'BACKUP_ENCRYPTION_KEY must not match AUTH_SECRET; encrypted backups remain inactive until a separate dedicated key is configured.';
+  } else {
+    backupEncryptionKey = explicitBackupKey;
+  }
 
   const backup: BackupSchedulerConfig = {
     enabled: backupEnabled,
@@ -333,6 +341,30 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
     : 'gemini';
   const defaultProvider: AiProviderId =
     freeOnlyMode && !strictFreeProviders.has(parsedProvider) ? 'auto' : parsedProvider;
+
+  const safeRequestedVoiceModel =
+    requestedVoiceModel && (!freeOnlyMode || !requestedVoiceModel.toLowerCase().startsWith('grok-'))
+      ? requestedVoiceModel
+      : undefined;
+  const voiceModel =
+    !freeOnlyMode && defaultProvider === 'xai'
+      ? (safeRequestedVoiceModel ?? cleanEnvSecret(env.XAI_VOICE_MODEL) ?? xaiVoiceModel)
+      : (safeRequestedVoiceModel ??
+          cleanEnvSecret(env.GEMINI_VOICE_MODEL) ??
+          cleanEnvSecret(env.GEMINI_LIVE_MODEL) ??
+          (geminiApiKey && (!freeOnlyMode || !geminiPaidTier)
+            ? geminiVoiceModel
+            : !freeOnlyMode && apiKeyConfigured
+              ? xaiVoiceModel
+              : 'free-browser-voice'));
+
+  const availableVoiceModels = Array.from(
+    new Set(
+      freeOnlyMode
+        ? [voiceModel, geminiVoiceModel, 'free-browser-voice']
+        : [voiceModel, geminiVoiceModel, 'free-browser-voice', xaiVoiceModel, ...DEFAULT_VOICE_MODELS],
+    ),
+  );
 
   const rawOllamaEnabled = (env.OLLAMA_ENABLED ?? '').trim().toLowerCase();
   const ollamaEnabled =
@@ -406,10 +438,13 @@ export function loadServerConfig(envOverrides?: Record<string, string | undefine
     xaiBaseHost,
     xaiTextModel,
     availableModels,
+    voiceModel,
+    geminiVoiceModel,
     xaiVoiceModel,
     availableVoiceModels,
     geminiRealtimeUrl,
     geminiLiveModel,
+    ...(backupKeyWarning ? { backupKeyWarning } : {}),
     xaiTimeoutMs: Number.isFinite(timeoutNum) && timeoutNum >= 5000 ? timeoutNum : 60000,
     xaiMaxOutputTokens: Number.isFinite(maxTokensNum) && maxTokensNum >= 128 ? maxTokensNum : 4096,
     xaiReasoningEffort,

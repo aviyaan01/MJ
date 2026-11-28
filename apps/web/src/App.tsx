@@ -335,7 +335,7 @@ export function App() {
     const started = performance.now();
     try {
       const h = await mjApi.getHealth();
-      setHealth(h);
+      setHealth('database' in h ? h : null);
       setBackendLatencyMs(Math.max(1, Math.round(performance.now() - started)));
     } catch {
       setHealth(null);
@@ -384,18 +384,31 @@ export function App() {
   }, []);
 
   const loadAuthenticatedWorkspace = useCallback(async () => {
-    const [settingsRes, usageRes, convRes, voicesRes, permRes, allowRes, auditRes, shortcutRes] =
-      await Promise.all([
-        mjApi.getSettings(),
-        mjApi.getUsage(),
-        mjApi.listConversations(),
-        mjApi.getAvailableVoices().catch(() => ({ voices: [] })),
-        mjApi.getPrivacyPermissions(),
-        mjApi.listAllowlist(),
-        mjApi.listAuditLogs(),
-        mjApi.listDesktopShortcuts(),
-      ]);
+    const [
+      settingsRes,
+      usageRes,
+      convRes,
+      voicesRes,
+      permRes,
+      allowRes,
+      auditRes,
+      shortcutRes,
+      healthRes,
+    ] = await Promise.all([
+      mjApi.getSettings(),
+      mjApi.getUsage(),
+      mjApi.listConversations(),
+      mjApi.getAvailableVoices().catch(() => ({ voices: [] })),
+      mjApi.getPrivacyPermissions(),
+      mjApi.listAllowlist(),
+      mjApi.listAuditLogs(),
+      mjApi.listDesktopShortcuts(),
+      mjApi.getHealth().catch(() => null),
+    ]);
     setSettings(settingsRes);
+    if (healthRes && 'database' in healthRes) {
+      setHealth(healthRes);
+    }
     setSelectedProviderOverride(settingsRes.activeProvider ?? 'auto');
     setSelectedModelOverride(settingsRes.activeModel);
     setUsage(usageRes);
@@ -491,6 +504,7 @@ export function App() {
     await voiceServiceRef.current?.stopSession('manual');
     const sess = await mjApi.logout();
     setSession(sess);
+    setHealth(null);
     setConversations([]);
     setActiveConversation(null);
     setMessages([]);

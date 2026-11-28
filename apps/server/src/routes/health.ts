@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { SystemHealthDTO } from '@mj/shared';
+import { SESSION_COOKIE_NAME, verifySessionToken } from '../auth.js';
 import type { ProviderRouterClient } from '@mj/ai';
 import type { MjDatabaseHandle } from '@mj/database';
 import type { AlertMonitor } from '../alerting.js';
@@ -67,11 +68,16 @@ export class HealthWatchdog {
 }
 
 export function registerHealthRoutes(app: FastifyInstance, deps: HealthRouteDeps): void {
-  const buildHealthPayload = async (): Promise<{ dbOk: boolean; payload: SystemHealthDTO }> => {
+  const checkDatabaseHealth = (): boolean => {
     const dbOk = deps.dbHandle.ping();
     if (!dbOk) {
       void deps.alertMonitor?.notifyUptimeDegraded('SQLite database ping failed on health check');
     }
+    return dbOk;
+  };
+
+  const buildHealthPayload = async (): Promise<{ dbOk: boolean; payload: SystemHealthDTO }> => {
+    const dbOk = checkDatabaseHealth();
     const settings = await deps.settingsStore.getPublicSettings();
     const anyAiReady = deps.providerRouter
       ? deps.providerRouter.hasAnyConfiguredProvider()
@@ -83,15 +89,19 @@ export function registerHealthRoutes(app: FastifyInstance, deps: HealthRouteDeps
         ? 'ready'
         : 'degraded';
 
+    const geminiVoiceReady = Boolean(
+      deps.config.aiProviders.gemini.apiKey &&
+      (!deps.config.freeOnlyMode || !deps.config.aiProviders.gemini.paidTier),
+    );
     const freeVoiceReady =
+      geminiVoiceReady ||
+      deps.config.aiProviders.ollama.enabled ||
+      Boolean(deps.config.aiProviders.groq.apiKey) ||
       settings.voice.voiceModel === 'free-browser-voice' ||
-      Boolean(
-        (deps.config.aiProviders.gemini.apiKey && !deps.config.aiProviders.gemini.paidTier) ||
-          deps.config.aiProviders.groq.apiKey,
-      );
+      deps.config.freeOnlyMode;
 
     const voiceEngineState: SystemHealthDTO['voiceEngine'] =
-      !(deps.config.freeOnlyMode ? freeVoiceReady : deps.config.apiKeyConfigured || freeVoiceReady)
+      !(deps.config.freeOnlyMode ? freeVoiceReady : freeVoiceReady || deps.config.apiKeyConfigured)
         ? 'unconfigured'
         : dbOk
           ? 'ready'
@@ -127,12 +137,23 @@ export function registerHealthRoutes(app: FastifyInstance, deps: HealthRouteDeps
     return { dbOk, payload };
   };
 
-  app.get('/health', async (_request, reply) => {
+  const hasAuthenticatedSession = (cookieToken: string | undefined): boolean =>
+    verifySessionToken(cookieToken, deps.config.authSecret) !== null;
+
+  app.get('/health', async (request, reply) => {
+    if (!hasAuthenticatedSession(request.cookies?.[SESSION_COOKIE_NAME])) {
+      const dbOk = checkDatabaseHealth();
+      return reply.status(dbOk ? 200 : 503).send({ status: dbOk ? 'ok' : 'error' });
+    }
     const { dbOk, payload } = await buildHealthPayload();
     return reply.status(dbOk ? 200 : 503).send(payload);
   });
 
-  app.get('/api/health', async () => {
+  app.get('/api/health', async (request, reply) => {
+    if (!hasAuthenticatedSession(request.cookies?.[SESSION_COOKIE_NAME])) {
+      const dbOk = checkDatabaseHealth();
+      return reply.status(dbOk ? 200 : 503).send({ status: dbOk ? 'ok' : 'error' });
+    }
     const { payload } = await buildHealthPayload();
     return payload;
   });

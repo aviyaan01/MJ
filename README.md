@@ -115,7 +115,7 @@ MJ Assistant monitors uptime, unhandled errors, elevated upstream error rates, a
 
 All conversations, runtime settings, privacy rules, allowlists, audit logs, and usage telemetry live in local SQLite (`./data/mj-assistant.db`). `@mj/server` runs `DailyBackupScheduler` (`BACKUP_ENABLED=true`) to write `AES-256-GCM` encrypted `*.mjbak` archives under `BACKUP_DIR=./data/backups`.
 
-Set `BACKUP_ENCRYPTION_KEY` (>= 16 characters; falls back to non-ephemeral `AUTH_SECRET` if unset) and manage backups from the project root:
+Set a dedicated `BACKUP_ENCRYPTION_KEY` (>= 16 characters, separate from `AUTH_SECRET` — `AUTH_SECRET` fallback is disabled) and manage backups from the project root:
 
 ```bash
 # Create an immediate encrypted .mjbak backup

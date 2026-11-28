@@ -328,8 +328,29 @@ export function restoreEncryptedDatabaseBackup(options: {
     const verified = inspectSqliteSnapshot(tempRestoredPath);
 
     if (options.createPreRestoreSafetyCopy !== false && existsSync(targetPath)) {
+      let checkpointDb: DatabaseSync | null = null;
+      try {
+        checkpointDb = new DatabaseSync(targetPath);
+        checkpointDb.exec('PRAGMA busy_timeout = 2000;');
+        checkpointDb.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+      } catch {
+        // Target database may be locked or partially corrupt; preserve sidecar WAL/SHM files below.
+      } finally {
+        try {
+          checkpointDb?.close();
+        } catch {
+          // ignore close failures
+        }
+      }
+
       const safetyPath = `${targetPath}.pre-restore-${formatBackupTimestamp(new Date())}.db`;
       copyFileSync(targetPath, safetyPath);
+      if (existsSync(`${targetPath}-wal`)) {
+        copyFileSync(`${targetPath}-wal`, `${safetyPath}-wal`);
+      }
+      if (existsSync(`${targetPath}-shm`)) {
+        copyFileSync(`${targetPath}-shm`, `${safetyPath}-shm`);
+      }
       preRestoreBackupPath = safetyPath;
     }
 

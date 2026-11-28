@@ -21,13 +21,13 @@ When `@mj/server` starts (`BACKUP_ENABLED=true`), `DailyBackupScheduler` checks 
 4. **Checksum Verification**: Records `sha256Plaintext` of the unencrypted SQLite snapshot inside the envelope and removes temporary plaintext snapshot files immediately in `finally`.
 5. **Retention**: Keeps the newest `BACKUP_RETENTION_COUNT` archives (default `14`) and prunes older `.mjbak` files automatically.
 
-> **Important Security Note:** Backup archives are ignored in Git (`*.mjbak`, `backups/`, `data/`). Store `BACKUP_ENCRYPTION_KEY` (or `AUTH_SECRET` if `BACKUP_ENCRYPTION_KEY` is omitted) safely in a password manager — **without the key, `.mjbak` files cannot be decrypted**.
+> **Important Security Note:** Backup archives are ignored in Git (`*.mjbak`, `backups/`, `data/`). Store your dedicated `BACKUP_ENCRYPTION_KEY` safely in a password manager — **without the key, `.mjbak` files cannot be decrypted**.
 
 ---
 
 ## 2. Configure Encryption Key & Manual On-Demand Backup
 
-Set a dedicated backup passphrase (>= 16 chars) in `.env` (or your server secret manager):
+Set a dedicated backup passphrase (>= 16 chars, distinct from `AUTH_SECRET`) in `.env` (or your server secret manager):
 
 ```env
 BACKUP_ENABLED=true
@@ -37,7 +37,7 @@ BACKUP_INTERVAL_HOURS=24
 BACKUP_RETENTION_COUNT=14
 ```
 
-> If `BACKUP_ENCRYPTION_KEY` is unset, MJ Assistant automatically uses `AUTH_SECRET` (provided it is configured and not a placeholder). Using a separate `BACKUP_ENCRYPTION_KEY` allows rotating your session cookie `AUTH_SECRET` without breaking older backups.
+> Automatic fallback from `BACKUP_ENCRYPTION_KEY` to `AUTH_SECRET` is disabled so cookie-signing and database-backup keys remain cleanly separated. If `BACKUP_ENCRYPTION_KEY` is missing or matches `AUTH_SECRET`, `@mj/server` logs a warning and keeps scheduled backups inactive until a dedicated passphrase is configured.
 
 Run a manual encrypted backup anytime:
 
@@ -62,7 +62,7 @@ ls -lh ./data/backups/mj-backup-*.mjbak
 ```
 
 ### Step 3: Ensure Decryption Key is Available
-Confirm `BACKUP_ENCRYPTION_KEY` (or the `AUTH_SECRET` used when the backup was created) is set in `.env` or your shell environment:
+Confirm your dedicated `BACKUP_ENCRYPTION_KEY` is set in `.env` or your shell environment:
 
 ```bash
 export BACKUP_ENCRYPTION_KEY="<key-used-during-backup>"
@@ -123,5 +123,5 @@ Open MJ Assistant in the browser and confirm saved conversations, custom setting
 ## 5. Rollback & Troubleshooting
 
 - **Rollback a restore**: Stop the server and rename `<target>.pre-restore-<timestamp>.db` back to `mj-assistant.db` (deleting any `-wal` / `-shm` sidecars created after the restore).
-- **`Backup decryption or authentication failed`**: Ensure `BACKUP_ENCRYPTION_KEY` (or legacy `AUTH_SECRET`) exactly matches the key active when that `.mjbak` file was generated. Never edit `.mjbak` bytes; GCM authentication rejects any alteration.
+- **`Backup decryption or authentication failed`**: Ensure your dedicated `BACKUP_ENCRYPTION_KEY` (or the legacy key active when older `.mjbak` archives were generated) matches cleanly. Never edit `.mjbak` bytes; GCM authentication rejects any alteration.
 - **Database locked (`EBUSY` / `SQLITE_BUSY`) on Windows**: Stop all running Node/Vite/`tsx` processes accessing `mj-assistant.db` before running `db:restore`.
