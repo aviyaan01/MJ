@@ -27,6 +27,7 @@ export class PermissionsStore {
     const resolved: PermissionsStateDTO = {
       ...DEFAULT_PERMISSIONS_STATE,
       appOpening: Boolean(saved.appOpening ?? false),
+      appClosing: Boolean(saved.appClosing ?? false),
       fileRead: Boolean(saved.fileRead ?? false),
       fileWrite: Boolean(saved.fileWrite ?? false),
       systemMonitoring: Boolean(saved.systemMonitoring ?? false),
@@ -35,6 +36,17 @@ export class PermissionsStore {
       webLaunch: Boolean(saved.webLaunch ?? false),
       wakeWordStandby: Boolean(saved.wakeWordStandby ?? false),
       configurableShortcuts: Boolean(saved.configurableShortcuts ?? false),
+      volumeControl: Boolean(saved.volumeControl ?? false),
+      brightnessControl: Boolean(saved.brightnessControl ?? false),
+      lockScreen: Boolean(saved.lockScreen ?? false),
+      sleepDisplay: Boolean(saved.sleepDisplay ?? false),
+      windowControl: Boolean(saved.windowControl ?? false),
+      textTyping: Boolean(saved.textTyping ?? false),
+      shortcutPress: Boolean(saved.shortcutPress ?? false),
+      pcShutdown: Boolean(saved.pcShutdown ?? false),
+      pcRestart: Boolean(saved.pcRestart ?? false),
+      pcSleep: Boolean(saved.pcSleep ?? false),
+      pcLogoff: Boolean(saved.pcLogoff ?? false),
       microphoneAccess:
         saved.microphoneAccess !== undefined
           ? Boolean(saved.microphoneAccess)

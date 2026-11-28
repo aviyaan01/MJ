@@ -15,6 +15,7 @@ import {
   type ShortcutActionKind,
   type ConversationDTO,
   type ConversationDetailDTO,
+  type DesktopClientAction,
   type HostTelemetryDTO,
   type LanguageMode,
   type MessageDTO,
@@ -277,14 +278,14 @@ export const mjApi = {
 
   validateDesktopAction: (payload: {
     capability:
-      | 'appOpening'
-      | 'fileRead'
-      | 'fileWrite'
-      | 'systemMonitoring'
-      | 'notifications'
-      | 'clipboardWrite'
-      | 'webLaunch'
-      | 'configurableShortcuts';
+    | 'appOpening'
+    | 'fileRead'
+    | 'fileWrite'
+    | 'systemMonitoring'
+    | 'notifications'
+    | 'clipboardWrite'
+    | 'webLaunch'
+    | 'configurableShortcuts';
     action: string;
     target: string;
     confirmed?: boolean;
@@ -365,19 +366,16 @@ export const mjApi = {
       ok: boolean;
       toolName: string;
       status:
-        | 'executed'
-        | 'denied'
-        | 'cancelled'
-        | 'timed_out'
-        | 'confirmation_required'
-        | 'error';
+      | 'executed'
+      | 'denied'
+      | 'cancelled'
+      | 'timed_out'
+      | 'confirmation_required'
+      | 'error';
       result?: Record<string, unknown>;
       errorCode?: string;
       error?: string;
-      clientAction?: {
-        kind: 'open_approved_url' | 'open_approved_app';
-        target: string;
-      };
+      clientAction?: DesktopClientAction;
       pendingConfirmation?: PendingToolConfirmationDTO;
     }>('/api/voice/tools/execute', {
       method: 'POST',
@@ -393,21 +391,18 @@ export const mjApi = {
       ok: boolean;
       toolName?: string;
       status:
-        | 'executed'
-        | 'approved'
-        | 'denied'
-        | 'cancelled'
-        | 'timed_out'
-        | 'confirmation_required'
-        | 'error';
+      | 'executed'
+      | 'approved'
+      | 'denied'
+      | 'cancelled'
+      | 'timed_out'
+      | 'confirmation_required'
+      | 'error';
       result?: Record<string, unknown>;
       pendingConfirmation?: PendingToolConfirmationDTO;
       errorCode?: string;
       error?: string;
-      clientAction?: {
-        kind: 'open_approved_url' | 'open_approved_app';
-        target: string;
-      };
+      clientAction?: DesktopClientAction;
     }>('/api/tools/confirm', {
       method: 'POST',
       body: JSON.stringify(payload),

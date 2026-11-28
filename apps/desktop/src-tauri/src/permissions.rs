@@ -5,9 +5,10 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct DesktopPermissions {
     pub app_opening: bool,
+    pub app_closing: bool,
     pub file_read: bool,
     pub file_write: bool,
     pub system_monitoring: bool,
@@ -16,6 +17,17 @@ pub struct DesktopPermissions {
     pub web_launch: bool,
     pub wake_word_standby: bool,
     pub configurable_shortcuts: bool,
+    pub volume_control: bool,
+    pub brightness_control: bool,
+    pub lock_screen: bool,
+    pub sleep_display: bool,
+    pub window_control: bool,
+    pub text_typing: bool,
+    pub shortcut_press: bool,
+    pub pc_shutdown: bool,
+    pub pc_restart: bool,
+    pub pc_sleep: bool,
+    pub pc_logoff: bool,
 }
 
 impl Default for DesktopPermissions {
@@ -23,6 +35,7 @@ impl Default for DesktopPermissions {
         // Hardened defaults (Section 14): every OS-level capability ships OFF.
         Self {
             app_opening: false,
+            app_closing: false,
             file_read: false,
             file_write: false,
             system_monitoring: false,
@@ -31,6 +44,17 @@ impl Default for DesktopPermissions {
             web_launch: false,
             wake_word_standby: false,
             configurable_shortcuts: false,
+            volume_control: false,
+            brightness_control: false,
+            lock_screen: false,
+            sleep_display: false,
+            window_control: false,
+            text_typing: false,
+            shortcut_press: false,
+            pc_shutdown: false,
+            pc_restart: false,
+            pc_sleep: false,
+            pc_logoff: false,
         }
     }
 }
@@ -161,6 +185,7 @@ pub fn set_single_permission(
     let mut perms = load_permissions(app);
     match key {
         "appOpening" => perms.app_opening = enabled,
+        "appClosing" => perms.app_closing = enabled,
         "fileRead" => perms.file_read = enabled,
         "fileWrite" => perms.file_write = enabled,
         "systemMonitoring" => perms.system_monitoring = enabled,
@@ -169,6 +194,17 @@ pub fn set_single_permission(
         "webLaunch" => perms.web_launch = enabled,
         "wakeWordStandby" => perms.wake_word_standby = enabled,
         "configurableShortcuts" => perms.configurable_shortcuts = enabled,
+        "volumeControl" => perms.volume_control = enabled,
+        "brightnessControl" => perms.brightness_control = enabled,
+        "lockScreen" => perms.lock_screen = enabled,
+        "sleepDisplay" => perms.sleep_display = enabled,
+        "windowControl" => perms.window_control = enabled,
+        "textTyping" => perms.text_typing = enabled,
+        "shortcutPress" => perms.shortcut_press = enabled,
+        "pcShutdown" => perms.pc_shutdown = enabled,
+        "pcRestart" => perms.pc_restart = enabled,
+        "pcSleep" => perms.pc_sleep = enabled,
+        "pcLogoff" => perms.pc_logoff = enabled,
         _ => return Err(format!("Unknown or unsupported single permission key: {key}")),
     }
     save_permissions(app, &perms)?;
@@ -423,5 +459,23 @@ mod tests {
         assert_eq!(normalize_approved_domain("docs.x.ai@evil.com"), None);
         assert_eq!(normalize_approved_domain("evil.com\\.approved.com"), None);
         assert_eq!(normalize_approved_domain("*.approved.com"), None);
+    }
+
+    #[test]
+    fn desktop_permissions_default_ships_all_capabilities_off() {
+        let perms = DesktopPermissions::default();
+        assert!(!perms.app_opening);
+        assert!(!perms.app_closing);
+        assert!(!perms.volume_control);
+        assert!(!perms.brightness_control);
+        assert!(!perms.lock_screen);
+        assert!(!perms.sleep_display);
+        assert!(!perms.window_control);
+        assert!(!perms.text_typing);
+        assert!(!perms.shortcut_press);
+        assert!(!perms.pc_shutdown);
+        assert!(!perms.pc_restart);
+        assert!(!perms.pc_sleep);
+        assert!(!perms.pc_logoff);
     }
 }

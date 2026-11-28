@@ -82,6 +82,7 @@ export async function collectHostTelemetry(): Promise<HostTelemetryDTO> {
     cpuUsagePercent,
     memoryTotalBytes: totalMem,
     memoryUsedBytes: usedMem,
+    memoryAvailableBytes: freeMem,
     memoryUsagePercent: memPct,
     uptimeSeconds: Math.floor(os.uptime()),
     storage: readLocalStorageStats(),

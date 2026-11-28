@@ -53,6 +53,13 @@ const OS_CAPABILITY_ROWS: Array<{
     riskTag: 'OS Launch',
   },
   {
+    key: 'appClosing',
+    title: 'Close Approved Applications',
+    description:
+      'Close running processes matching your allowlisted applications cleanly via native PID matching. Ships OFF.',
+    riskTag: 'OS Process',
+  },
+  {
     key: 'fileRead',
     title: 'Desktop Search & File Read',
     description:
@@ -72,6 +79,55 @@ const OS_CAPABILITY_ROWS: Array<{
     description:
       'Read CPU, memory, storage, battery, and network metrics from the local host. Ships OFF.',
     riskTag: 'Telemetry',
+  },
+  {
+    key: 'volumeControl',
+    title: 'System Volume & Mute Control',
+    description:
+      'Adjust master Windows audio volume (0-100%) or mute via native Win32 input. Ships OFF.',
+    riskTag: 'Audio HW',
+  },
+  {
+    key: 'brightnessControl',
+    title: 'Display Brightness Control',
+    description:
+      'Adjust supported monitor brightness levels (0-100%) via native Win32 DDC/CI APIs. Ships OFF.',
+    riskTag: 'Display HW',
+  },
+  {
+    key: 'lockScreen',
+    title: 'Lock Screen Session',
+    description:
+      'Lock the Windows workstation immediately via Win32 LockWorkStation. Ships OFF.',
+    riskTag: 'Session Lock',
+  },
+  {
+    key: 'sleepDisplay',
+    title: 'Sleep Display Monitor',
+    description:
+      'Put the monitor into low-power standby without sleeping the PC. Ships OFF.',
+    riskTag: 'Display Power',
+  },
+  {
+    key: 'windowControl',
+    title: 'Desktop Window Actions',
+    description:
+      'Minimize all windows, maximize foreground window, switch windows, or close the active tab. Ships OFF.',
+    riskTag: 'Windows UI',
+  },
+  {
+    key: 'textTyping',
+    title: 'Controlled Desktop Text Typing',
+    description:
+      'Type printable text into the active window; always requires explicit confirmation. Ships OFF.',
+    riskTag: 'Confirm Input',
+  },
+  {
+    key: 'shortcutPress',
+    title: 'Allowlisted Keyboard Shortcuts',
+    description:
+      'Send only safe allowlisted shortcuts (e.g. Ctrl+C, Ctrl+W, Alt+Tab, Media keys). Ships OFF.',
+    riskTag: 'Safe Keys',
   },
   {
     key: 'notifications',
@@ -104,6 +160,34 @@ const OS_CAPABILITY_ROWS: Array<{
     description:
       'Bind validated keyboard hotkeys to approved MJ actions or allowlisted desktop targets. Ships OFF.',
     riskTag: 'Hotkeys',
+  },
+  {
+    key: 'pcSleep',
+    title: 'Power Action: Sleep PC',
+    description:
+      'Put this Windows PC to sleep via Win32 SetSuspendState; always requires spoken or clicked confirmation. Ships OFF.',
+    riskTag: 'Power Confirm',
+  },
+  {
+    key: 'pcLogoff',
+    title: 'Power Action: Log Off User',
+    description:
+      'Sign out of the current Windows session; always requires spoken or clicked confirmation. Ships OFF.',
+    riskTag: 'Power Confirm',
+  },
+  {
+    key: 'pcRestart',
+    title: 'Power Action: Restart PC',
+    description:
+      'Restart the Windows PC cleanly; always requires spoken or clicked confirmation. Ships OFF.',
+    riskTag: 'High Risk',
+  },
+  {
+    key: 'pcShutdown',
+    title: 'Power Action: Shut Down PC',
+    description:
+      'Shut down the Windows PC cleanly; always requires spoken or clicked confirmation. Ships OFF.',
+    riskTag: 'High Risk',
   },
 ];
 

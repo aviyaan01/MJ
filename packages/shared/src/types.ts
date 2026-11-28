@@ -224,6 +224,46 @@ export interface ConnectivityCheckDTO {
 
 export const MJ_ACTIVE_STAGE = 'Stages 1, 2, 4 & 5 Complete' as const;
 
+export const ALLOWLISTED_DESKTOP_SHORTCUTS = [
+  'Ctrl+C',
+  'Ctrl+V',
+  'Ctrl+X',
+  'Ctrl+Z',
+  'Ctrl+Y',
+  'Ctrl+A',
+  'Ctrl+S',
+  'Ctrl+W',
+  'Ctrl+Tab',
+  'Alt+Tab',
+  'Alt+Left',
+  'Alt+Right',
+  'Win+M',
+  'Win+D',
+  'MediaPlayPause',
+  'MediaNextTrack',
+  'MediaPreviousTrack',
+] as const;
+
+export type AllowlistedDesktopShortcut = (typeof ALLOWLISTED_DESKTOP_SHORTCUTS)[number];
+
+export type DesktopWindowActionKind = 'minimize_all' | 'maximize' | 'switch' | 'close_tab';
+
+export type DesktopPowerActionKind = 'shutdown' | 'restart' | 'sleep' | 'logoff';
+
+export type DesktopClientAction =
+  | { kind: 'open_approved_url'; target: string }
+  | { kind: 'open_approved_app'; target: string }
+  | { kind: 'close_approved_app'; target: string }
+  | { kind: 'volume_set'; level: number }
+  | { kind: 'volume_mute'; muted?: boolean }
+  | { kind: 'brightness_set'; level: number }
+  | { kind: 'lock_screen' }
+  | { kind: 'sleep_display' }
+  | { kind: 'window_action'; action: DesktopWindowActionKind }
+  | { kind: 'type_text'; text: string }
+  | { kind: 'press_shortcut'; shortcut: AllowlistedDesktopShortcut }
+  | { kind: 'power_action'; action: DesktopPowerActionKind };
+
 export type ToolRiskLevel = 'safe' | 'confirm' | 'blocked';
 
 export type ToolExecutionStatus =
@@ -325,10 +365,7 @@ export type ChatStreamEvent =
       status: 'calling' | ToolExecutionStatus;
       detail: string;
       confirmation?: PendingToolConfirmationDTO;
-      clientAction?: {
-        kind: 'open_approved_url' | 'open_approved_app';
-        target: string;
-      };
+      clientAction?: DesktopClientAction;
     }
   | {
       type: 'stream_reset';

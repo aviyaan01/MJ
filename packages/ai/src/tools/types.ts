@@ -6,6 +6,7 @@ import type {
   AuditSource,
   ControllablePermissionKey,
   ConversationDTO,
+  DesktopClientAction,
   HostTelemetryDTO,
   PermissionsStateDTO,
   ToolRiskLevel,
@@ -45,7 +46,7 @@ export interface ToolExecutionContext {
   getSystemTelemetry: () => Promise<HostTelemetryDTO>;
   requestConfirmation?: (req: ToolConfirmationRequest) => Promise<ToolConfirmDecision>;
   launchApprovedApp?: (target: string) => Promise<{ executed: boolean; detail?: string }>;
-  onClientAction?: (action: { kind: 'open_approved_url' | 'open_approved_app'; target: string }) => void;
+  onClientAction?: (action: DesktopClientAction) => void;
 }
 
 export interface MjToolDefinition<
@@ -77,8 +78,5 @@ export interface ToolExecutionResult {
   result?: Record<string, unknown>;
   errorCode?: string;
   error?: string;
-  clientAction?: {
-    kind: 'open_approved_url' | 'open_approved_app';
-    target: string;
-  };
+  clientAction?: DesktopClientAction;
 }

@@ -1,6 +1,7 @@
 mod audit;
 mod credentials;
 mod desktop_actions;
+mod desktop_controls;
 mod permissions;
 mod system_monitor;
 mod tray;
@@ -48,6 +49,17 @@ pub fn run() {
             desktop_actions::desktop_send_notification,
             desktop_actions::desktop_sync_mic_tray,
             desktop_actions::desktop_validate_shortcut_trigger,
+            desktop_controls::desktop_get_battery_cpu_ram_status,
+            desktop_controls::desktop_volume_set,
+            desktop_controls::desktop_volume_mute,
+            desktop_controls::desktop_brightness_set,
+            desktop_controls::desktop_lock_screen,
+            desktop_controls::desktop_sleep_display,
+            desktop_controls::desktop_window_action,
+            desktop_controls::desktop_close_app,
+            desktop_controls::desktop_type_text,
+            desktop_controls::desktop_press_shortcut,
+            desktop_controls::desktop_power_action,
             credentials::desktop_store_credential,
             credentials::desktop_get_credential,
             credentials::desktop_delete_credential,

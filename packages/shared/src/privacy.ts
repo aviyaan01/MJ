@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export type OsCapabilityKey =
   | 'appOpening'
+  | 'appClosing'
   | 'fileRead'
   | 'fileWrite'
   | 'systemMonitoring'
@@ -9,7 +10,18 @@ export type OsCapabilityKey =
   | 'clipboardWrite'
   | 'webLaunch'
   | 'wakeWordStandby'
-  | 'configurableShortcuts';
+  | 'configurableShortcuts'
+  | 'volumeControl'
+  | 'brightnessControl'
+  | 'lockScreen'
+  | 'sleepDisplay'
+  | 'windowControl'
+  | 'textTyping'
+  | 'shortcutPress'
+  | 'pcShutdown'
+  | 'pcRestart'
+  | 'pcSleep'
+  | 'pcLogoff';
 
 export type PrivacyControlKey =
   | 'microphoneAccess'
@@ -25,6 +37,7 @@ export type AuditSource = 'web' | 'server' | 'desktop-tauri';
 export interface PermissionsStateDTO {
   // OS-level capability classes (Section 14) — ALL ship OFF, enabled individually
   appOpening: boolean;
+  appClosing: boolean;
   fileRead: boolean;
   fileWrite: boolean;
   systemMonitoring: boolean;
@@ -33,6 +46,17 @@ export interface PermissionsStateDTO {
   webLaunch: boolean;
   wakeWordStandby: boolean;
   configurableShortcuts: boolean;
+  volumeControl: boolean;
+  brightnessControl: boolean;
+  lockScreen: boolean;
+  sleepDisplay: boolean;
+  windowControl: boolean;
+  textTyping: boolean;
+  shortcutPress: boolean;
+  pcShutdown: boolean;
+  pcRestart: boolean;
+  pcSleep: boolean;
+  pcLogoff: boolean;
 
   // Privacy & service controls (Section 15)
   microphoneAccess: boolean;
@@ -48,6 +72,7 @@ export interface PermissionsStateDTO {
 
 export const DEFAULT_PERMISSIONS_STATE: PermissionsStateDTO = {
   appOpening: false,
+  appClosing: false,
   fileRead: false,
   fileWrite: false,
   systemMonitoring: false,
@@ -56,6 +81,17 @@ export const DEFAULT_PERMISSIONS_STATE: PermissionsStateDTO = {
   webLaunch: false,
   wakeWordStandby: false,
   configurableShortcuts: false,
+  volumeControl: false,
+  brightnessControl: false,
+  lockScreen: false,
+  sleepDisplay: false,
+  windowControl: false,
+  textTyping: false,
+  shortcutPress: false,
+  pcShutdown: false,
+  pcRestart: false,
+  pcSleep: false,
+  pcLogoff: false,
   microphoneAccess: true,
   voiceSessionAccess: true,
   externalWebServices: true,
@@ -67,6 +103,7 @@ export const DEFAULT_PERMISSIONS_STATE: PermissionsStateDTO = {
 
 export const OS_CAPABILITY_KEYS: readonly OsCapabilityKey[] = [
   'appOpening',
+  'appClosing',
   'fileRead',
   'fileWrite',
   'systemMonitoring',
@@ -75,10 +112,22 @@ export const OS_CAPABILITY_KEYS: readonly OsCapabilityKey[] = [
   'webLaunch',
   'wakeWordStandby',
   'configurableShortcuts',
+  'volumeControl',
+  'brightnessControl',
+  'lockScreen',
+  'sleepDisplay',
+  'windowControl',
+  'textTyping',
+  'shortcutPress',
+  'pcShutdown',
+  'pcRestart',
+  'pcSleep',
+  'pcLogoff',
 ];
 
 export const ControllablePermissionKeySchema = z.enum([
   'appOpening',
+  'appClosing',
   'fileRead',
   'fileWrite',
   'systemMonitoring',
@@ -87,6 +136,17 @@ export const ControllablePermissionKeySchema = z.enum([
   'webLaunch',
   'wakeWordStandby',
   'configurableShortcuts',
+  'volumeControl',
+  'brightnessControl',
+  'lockScreen',
+  'sleepDisplay',
+  'windowControl',
+  'textTyping',
+  'shortcutPress',
+  'pcShutdown',
+  'pcRestart',
+  'pcSleep',
+  'pcLogoff',
   'microphoneAccess',
   'voiceSessionAccess',
   'externalWebServices',
@@ -280,8 +340,10 @@ export interface HostTelemetryDTO {
   cpuUsagePercent: number | null;
   memoryTotalBytes: number;
   memoryUsedBytes: number;
+  memoryAvailableBytes?: number;
   memoryUsagePercent: number;
   uptimeSeconds: number;
+  processCount?: number;
   storage: Array<{
     mount: string;
     totalBytes: number;
@@ -290,6 +352,8 @@ export interface HostTelemetryDTO {
   battery: {
     percent: number | null;
     charging: boolean | null;
+    remainingSeconds?: number | null;
+    batterySaverActive?: boolean | null;
     sourceNote: string;
   } | null;
   networkConnected: boolean | null;

@@ -19,6 +19,7 @@ import {
   type ConnectivityCheckDTO,
   type ControllablePermissionKey,
   type ConversationDTO,
+  type DesktopClientAction,
   type LanguageMode,
   type MessageDTO,
   type PendingToolConfirmationDTO,
@@ -40,12 +41,22 @@ import { nextRepeatedErrorState } from './components/VoiceStateBar.js';
 import {
   isTauriDesktop,
   syncTauriMicTray,
+  tauriCloseApprovedApp,
   tauriGetPermissions,
+  tauriLockScreen,
+  tauriMuteVolume,
   tauriOpenApprovedApp,
   tauriOpenApprovedUrl,
+  tauriPowerAction,
+  tauriPressShortcut,
   tauriRevokeAllPermissions,
+  tauriSetBrightness,
   tauriSetSinglePermission,
+  tauriSetVolume,
+  tauriSleepDisplay,
+  tauriTypeText,
   tauriValidateShortcutTrigger,
+  tauriWindowAction,
 } from './desktop/desktopBridge.js';
 import {
   BROWSER_CLICK_REQUIRED_MESSAGE,
@@ -183,26 +194,60 @@ export function App() {
     pendingToolConfirmationRef.current = pendingToolConfirmation;
   }, [pendingToolConfirmation]);
 
-  const executeToolClientAction = useCallback(
-    async (action: { kind: 'open_approved_url' | 'open_approved_app'; target: string }) => {
-      try {
-        if (action.kind === 'open_approved_url') {
-          if (isTauriDesktop()) {
-            await tauriOpenApprovedUrl(action.target);
-          } else {
-            window.open(action.target, '_blank', 'noopener,noreferrer');
-          }
-        } else if (action.kind === 'open_approved_app') {
-          if (isTauriDesktop()) {
-            await tauriOpenApprovedApp(action.target);
-          }
+  const executeToolClientAction = useCallback(async (action: DesktopClientAction) => {
+    try {
+      if (action.kind === 'open_approved_url') {
+        if (isTauriDesktop()) {
+          await tauriOpenApprovedUrl(action.target);
+        } else {
+          window.open(action.target, '_blank', 'noopener,noreferrer');
         }
-      } catch {
-        // Ignore blocked popup / client open error after server audit log
+        return;
       }
-    },
-    [],
-  );
+
+      if (!isTauriDesktop()) {
+        return;
+      }
+
+      switch (action.kind) {
+        case 'open_approved_app':
+          await tauriOpenApprovedApp(action.target);
+          break;
+        case 'close_approved_app':
+          await tauriCloseApprovedApp(action.target);
+          break;
+        case 'volume_set':
+          await tauriSetVolume(action.level);
+          break;
+        case 'volume_mute':
+          await tauriMuteVolume(action.muted);
+          break;
+        case 'brightness_set':
+          await tauriSetBrightness(action.level);
+          break;
+        case 'lock_screen':
+          await tauriLockScreen();
+          break;
+        case 'sleep_display':
+          await tauriSleepDisplay();
+          break;
+        case 'window_action':
+          await tauriWindowAction(action.action);
+          break;
+        case 'type_text':
+          await tauriTypeText(action.text, true);
+          break;
+        case 'press_shortcut':
+          await tauriPressShortcut(action.shortcut);
+          break;
+        case 'power_action':
+          await tauriPowerAction(action.action, true);
+          break;
+      }
+    } catch {
+      // Ignore client execution failure after server-side audit logging
+    }
+  }, []);
 
   const clearPendingToolConfirmation = useCallback((confirmationId?: string) => {
     if (confirmationId && pendingToolConfirmationRef.current?.confirmationId !== confirmationId) {

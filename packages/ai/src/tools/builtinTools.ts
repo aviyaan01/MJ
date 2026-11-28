@@ -1,12 +1,16 @@
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import {
+  ALLOWLISTED_DESKTOP_SHORTCUTS,
   ErrorCodes,
   isApprovedHttpsUrl,
   isForbiddenShellTarget,
   isProtectedSystemPath,
   isValidApprovedExecutablePath,
   z,
+  type AllowlistEntryDTO,
+  type ControllablePermissionKey,
+  type DesktopPowerActionKind,
 } from '@mj/shared';
 import { toGeminiLiveParametersSchema, zodToToolJsonSchema } from './schema.js';
 import type { MjToolDefinition, ToolExecutionContext } from './types.js';
@@ -360,6 +364,57 @@ export function createBuiltinTools(): Array<MjToolDefinition<any>> {
     },
   });
 
+function findMatchingApprovedApp(
+  rawTarget: string,
+  apps: AllowlistEntryDTO[],
+): AllowlistEntryDTO | undefined {
+  const normalized = rawTarget.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  return apps.find(
+    (entry) =>
+      entry.target.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() === normalized ||
+      entry.label.trim().toLowerCase() === normalized,
+  );
+}
+
+async function validateApprovedAppEntry(
+  rawTargetInput: string,
+  ctx: ToolExecutionContext,
+): Promise<
+  | { ok: true; match: AllowlistEntryDTO }
+  | { ok: false; errorCode: string; detail: string; target: string }
+> {
+  const rawTarget = rawTargetInput.trim();
+  if (isForbiddenShellTarget(rawTarget)) {
+    return {
+      ok: false,
+      errorCode: ErrorCodes.SHELL_EXECUTION_FORBIDDEN,
+      detail: 'Blocked arbitrary shell command or script interpreter.',
+      target: rawTarget,
+    };
+  }
+  const apps = await ctx.listAllowlist('app');
+  const match = findMatchingApprovedApp(rawTarget, apps);
+  if (!match || !isValidApprovedExecutablePath(match.target)) {
+    return {
+      ok: false,
+      errorCode: ErrorCodes.UNAPPROVED_TARGET,
+      detail: match
+        ? 'Approved entry failed strict .exe validation.'
+        : 'Application is not in the Privacy & Permissions allowlist.',
+      target: rawTarget,
+    };
+  }
+  return { ok: true, match };
+}
+
+function hasControlChars(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
   const openApprovedAppTool = defineTool({
     name: 'open_approved_app',
     description:
@@ -376,46 +431,15 @@ export function createBuiltinTools(): Array<MjToolDefinition<any>> {
     getTarget: (args) => args.target,
     summarizeAction: (args) => `Open approved application: ${args.target.trim()}`,
     validatePreflight: async (args, ctx) => {
-      const rawTarget = args.target.trim();
-      if (isForbiddenShellTarget(rawTarget)) {
-        return {
-          ok: false,
-          errorCode: ErrorCodes.SHELL_EXECUTION_FORBIDDEN,
-          detail: 'Blocked arbitrary shell command or script interpreter.',
-          target: rawTarget,
-        };
-      }
-      const apps = await ctx.listAllowlist('app');
-      const normalized = rawTarget.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-      const match = apps.find(
-        (entry) =>
-          entry.target.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() === normalized ||
-          entry.label.trim().toLowerCase() === normalized,
-      );
-      if (!match || !isValidApprovedExecutablePath(match.target)) {
-        return {
-          ok: false,
-          errorCode: ErrorCodes.UNAPPROVED_TARGET,
-          detail: match
-            ? 'Approved entry failed strict .exe validation.'
-            : 'Application is not in the Privacy & Permissions allowlist.',
-          target: rawTarget,
-        };
-      }
-      return { ok: true };
+      const check = await validateApprovedAppEntry(args.target, ctx);
+      return check.ok ? { ok: true } : check;
     },
     execute: async (args, ctx) => {
-      const rawTarget = args.target.trim();
-      const apps = await ctx.listAllowlist('app');
-      const normalized = rawTarget.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-      const match = apps.find(
-        (entry) =>
-          entry.target.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() === normalized ||
-          entry.label.trim().toLowerCase() === normalized,
-      );
-      if (!match || !isValidApprovedExecutablePath(match.target)) {
-        throw new Error('Application failed allowlist verification.');
+      const check = await validateApprovedAppEntry(args.target, ctx);
+      if (!check.ok) {
+        throw new Error(check.detail);
       }
+      const { match } = check;
       const launchRes = ctx.launchApprovedApp
         ? await ctx.launchApprovedApp(match.target)
         : { executed: false };
@@ -429,6 +453,331 @@ export function createBuiltinTools(): Array<MjToolDefinition<any>> {
       };
     },
   });
+
+  const closeApprovedAppTool = defineTool({
+    name: 'close_approved_app',
+    description:
+      'Closes running processes matching an allowlisted desktop application (no shell or taskkill strings). Requires appClosing permission.',
+    schema: z.object({
+      target: z
+        .string()
+        .min(1)
+        .max(300)
+        .describe('Label or executable path matching an allowlisted desktop application.'),
+    }),
+    risk: 'safe',
+    requiredPermission: 'appClosing',
+    getTarget: (args) => args.target,
+    summarizeAction: (args) => `Close approved application: ${args.target.trim()}`,
+    validatePreflight: async (args, ctx) => {
+      const check = await validateApprovedAppEntry(args.target, ctx);
+      return check.ok ? { ok: true } : check;
+    },
+    execute: async (args, ctx) => {
+      const check = await validateApprovedAppEntry(args.target, ctx);
+      if (!check.ok) {
+        throw new Error(check.detail);
+      }
+      const { match } = check;
+      ctx.onClientAction?.({ kind: 'close_approved_app', target: match.target });
+      return {
+        approved: true,
+        label: match.label,
+        target: match.target,
+        action: 'close_approved_app',
+      };
+    },
+  });
+
+  const getBatteryCpuRamTool = defineTool({
+    name: 'get_battery_cpu_ram_status',
+    description:
+      'Reads real CPU, RAM, and Windows battery metrics (when available via Desktop Companion). Requires systemMonitoring permission.',
+    schema: z.object({}),
+    risk: 'safe',
+    requiredPermission: 'systemMonitoring',
+    getTarget: () => 'battery_cpu_ram',
+    summarizeAction: () => 'Read local CPU, RAM, and battery status',
+    execute: async (_args, ctx) => {
+      const t = await ctx.getSystemTelemetry();
+      return {
+        source: t.source,
+        cpu: {
+          model: t.cpuModel,
+          cores: t.cpuCores,
+          usagePercent: t.cpuUsagePercent,
+        },
+        ram: {
+          totalBytes: t.memoryTotalBytes,
+          usedBytes: t.memoryUsedBytes,
+          availableBytes: t.memoryAvailableBytes ?? Math.max(0, t.memoryTotalBytes - t.memoryUsedBytes),
+          usagePercent: t.memoryUsagePercent,
+        },
+        battery: t.battery,
+        collectedAt: t.collectedAt,
+      };
+    },
+  });
+
+  const volumeSetTool = defineTool({
+    name: 'volume_set',
+    description:
+      'Sets Windows system master volume percentage (0-100) via Tauri Desktop Companion. Requires volumeControl permission.',
+    schema: z.object({
+      level: z.number().int().min(0).max(100).describe('Target system volume percentage from 0 to 100.'),
+    }),
+    risk: 'safe',
+    requiredPermission: 'volumeControl',
+    getTarget: (args) => `${args.level}%`,
+    summarizeAction: (args) => `Set system volume to ${args.level}%`,
+    execute: async (args, ctx) => {
+      ctx.onClientAction?.({ kind: 'volume_set', level: args.level });
+      return {
+        approved: true,
+        action: 'volume_set',
+        level: args.level,
+        requiresDesktopCompanion: true,
+      };
+    },
+  });
+
+  const volumeMuteTool = defineTool({
+    name: 'volume_mute',
+    description:
+      'Mutes or toggles Windows system audio via Tauri Desktop Companion. Requires volumeControl permission.',
+    schema: z.object({
+      muted: z.boolean().optional().describe('Optional desired mute state hint.'),
+    }),
+    risk: 'safe',
+    requiredPermission: 'volumeControl',
+    getTarget: (args) => (args.muted === undefined ? 'toggle_mute' : args.muted ? 'mute' : 'unmute'),
+    summarizeAction: () => 'Mute/toggle Windows system volume',
+    execute: async (args, ctx) => {
+      ctx.onClientAction?.({
+        kind: 'volume_mute',
+        ...(args.muted !== undefined ? { muted: args.muted } : {}),
+      });
+      return {
+        approved: true,
+        action: 'volume_mute',
+        ...(args.muted !== undefined ? { muted: args.muted } : {}),
+        requiresDesktopCompanion: true,
+      };
+    },
+  });
+
+  const brightnessSetTool = defineTool({
+    name: 'brightness_set',
+    description:
+      'Sets display brightness percentage (0-100) via Tauri Desktop Companion. Requires brightnessControl permission.',
+    schema: z.object({
+      level: z.number().int().min(0).max(100).describe('Target display brightness percentage from 0 to 100.'),
+    }),
+    risk: 'safe',
+    requiredPermission: 'brightnessControl',
+    getTarget: (args) => `${args.level}%`,
+    summarizeAction: (args) => `Set display brightness to ${args.level}%`,
+    execute: async (args, ctx) => {
+      ctx.onClientAction?.({ kind: 'brightness_set', level: args.level });
+      return {
+        approved: true,
+        action: 'brightness_set',
+        level: args.level,
+        requiresDesktopCompanion: true,
+      };
+    },
+  });
+
+  const lockScreenTool = defineTool({
+    name: 'lock_screen',
+    description:
+      'Locks the Windows workstation screen via Tauri Desktop Companion. Requires lockScreen permission.',
+    schema: z.object({}),
+    risk: 'safe',
+    requiredPermission: 'lockScreen',
+    getTarget: () => 'workstation',
+    summarizeAction: () => 'Lock Windows workstation screen',
+    execute: async (_args, ctx) => {
+      ctx.onClientAction?.({ kind: 'lock_screen' });
+      return {
+        approved: true,
+        action: 'lock_screen',
+        requiresDesktopCompanion: true,
+      };
+    },
+  });
+
+  const sleepDisplayTool = defineTool({
+    name: 'sleep_display',
+    description:
+      'Puts the display monitor into low-power standby via Tauri Desktop Companion without sleeping the PC. Requires sleepDisplay permission.',
+    schema: z.object({}),
+    risk: 'safe',
+    requiredPermission: 'sleepDisplay',
+    getTarget: () => 'display',
+    summarizeAction: () => 'Turn display monitor off (standby)',
+    execute: async (_args, ctx) => {
+      ctx.onClientAction?.({ kind: 'sleep_display' });
+      return {
+        approved: true,
+        action: 'sleep_display',
+        requiresDesktopCompanion: true,
+      };
+    },
+  });
+
+  const windowActionTool = defineTool({
+    name: 'window_action',
+    description:
+      'Performs an allowlisted desktop window action (minimize_all, maximize, switch, close_tab). Requires windowControl permission.',
+    schema: z.object({
+      action: z
+        .enum(['minimize_all', 'maximize', 'switch', 'close_tab'])
+        .describe('Allowed window action identifier.'),
+    }),
+    risk: 'safe',
+    requiredPermission: 'windowControl',
+    getTarget: (args) => args.action,
+    summarizeAction: (args) => `Run window action: ${args.action}`,
+    execute: async (args, ctx) => {
+      ctx.onClientAction?.({ kind: 'window_action', action: args.action });
+      return {
+        approved: true,
+        action: args.action,
+        requiresDesktopCompanion: true,
+      };
+    },
+  });
+
+  const typeTextTool = defineTool({
+    name: 'type_text',
+    description:
+      'Types Unicode text into the active desktop window (max 500 printable chars, no control keys). Requires textTyping permission and explicit confirmation.',
+    schema: z.object({
+      text: z
+        .string()
+        .min(1)
+        .max(500)
+        .describe('Plain printable text to type (no control keys or newlines).'),
+    }),
+    risk: 'confirm',
+    requiredPermission: 'textTyping',
+    getTarget: (args) => `${args.text.length} chars`,
+    summarizeAction: (args) =>
+      `Type ${args.text.length} characters into active desktop window: "${args.text.slice(0, 48)}${args.text.length > 48 ? '…' : ''}"`,
+    validatePreflight: async (args) => {
+      if (hasControlChars(args.text)) {
+        return {
+          ok: false,
+          errorCode: ErrorCodes.VALIDATION_ERROR,
+          detail: 'Control characters (including newlines, tabs, ESC, NUL) are forbidden in type_text.',
+          target: 'type_text',
+        };
+      }
+      return { ok: true };
+    },
+    execute: async (args, ctx) => {
+      ctx.onClientAction?.({ kind: 'type_text', text: args.text });
+      return {
+        approved: true,
+        action: 'type_text',
+        charCount: args.text.length,
+        requiresDesktopCompanion: true,
+      };
+    },
+  });
+
+  const pressShortcutTool = defineTool({
+    name: 'press_shortcut',
+    description:
+      'Presses a strictly allowlisted keyboard shortcut on desktop (e.g. Ctrl+C, Ctrl+V, Ctrl+W, Alt+Tab, MediaPlayPause). Requires shortcutPress permission.',
+    schema: z.object({
+      shortcut: z
+        .enum(ALLOWLISTED_DESKTOP_SHORTCUTS)
+        .describe('Allowlisted keyboard shortcut name.'),
+    }),
+    risk: 'safe',
+    requiredPermission: 'shortcutPress',
+    getTarget: (args) => args.shortcut,
+    summarizeAction: (args) => `Press allowlisted shortcut ${args.shortcut}`,
+    validatePreflight: async (args) => {
+      if (
+        isForbiddenShellTarget(args.shortcut) ||
+        !ALLOWLISTED_DESKTOP_SHORTCUTS.includes(args.shortcut)
+      ) {
+        return {
+          ok: false,
+          errorCode: ErrorCodes.UNAPPROVED_TARGET,
+          detail: 'Shortcut is not in the allowlisted desktop shortcut set.',
+          target: args.shortcut,
+        };
+      }
+      return { ok: true };
+    },
+    execute: async (args, ctx) => {
+      ctx.onClientAction?.({ kind: 'press_shortcut', shortcut: args.shortcut });
+      return {
+        approved: true,
+        action: 'press_shortcut',
+        shortcut: args.shortcut,
+        requiresDesktopCompanion: true,
+      };
+    },
+  });
+
+  const createPowerActionTool = (
+    name: string,
+    action: DesktopPowerActionKind,
+    requiredPermission: ControllablePermissionKey,
+    description: string,
+    summaryLabel: string,
+  ) =>
+    defineTool({
+      name,
+      description,
+      schema: z.object({}),
+      risk: 'confirm',
+      requiredPermission,
+      getTarget: () => action,
+      summarizeAction: () => summaryLabel,
+      execute: async (_args, ctx) => {
+        ctx.onClientAction?.({ kind: 'power_action', action });
+        return {
+          approved: true,
+          action,
+          requiresDesktopCompanion: true,
+        };
+      },
+    });
+
+  const pcShutdownTool = createPowerActionTool(
+    'pc_shutdown',
+    'shutdown',
+    'pcShutdown',
+    'Shuts down the Windows PC cleanly via Win32 ExitWindowsEx. Requires pcShutdown permission and explicit spoken or clicked confirmation.',
+    'Shut down the Windows PC',
+  );
+  const pcRestartTool = createPowerActionTool(
+    'pc_restart',
+    'restart',
+    'pcRestart',
+    'Restarts the Windows PC cleanly via Win32 ExitWindowsEx. Requires pcRestart permission and explicit spoken or clicked confirmation.',
+    'Restart the Windows PC',
+  );
+  const pcSleepTool = createPowerActionTool(
+    'pc_sleep',
+    'sleep',
+    'pcSleep',
+    'Puts the Windows PC into sleep/suspend via Win32 SetSuspendState. Requires pcSleep permission and explicit spoken or clicked confirmation.',
+    'Put the Windows PC to sleep',
+  );
+  const pcLogoffTool = createPowerActionTool(
+    'pc_logoff',
+    'logoff',
+    'pcLogoff',
+    'Signs out the current Windows user session via Win32 ExitWindowsEx. Requires pcLogoff permission and explicit spoken or clicked confirmation.',
+    'Log off the current Windows session',
+  );
 
   // Explicitly registered blocked tool: never advertised to models, always denied if invoked.
   const runShellCommandTool = defineTool({
@@ -451,12 +800,26 @@ export function createBuiltinTools(): Array<MjToolDefinition<any>> {
     getUsageSummaryTool,
     searchConversationsTool,
     getSystemStatusTool,
+    getBatteryCpuRamTool,
     listAllowlistTool,
     readApprovedFolderTool,
     readApprovedFileTool,
     writeApprovedNoteTool,
     openApprovedUrlTool,
     openApprovedAppTool,
+    closeApprovedAppTool,
+    volumeSetTool,
+    volumeMuteTool,
+    brightnessSetTool,
+    lockScreenTool,
+    sleepDisplayTool,
+    windowActionTool,
+    typeTextTool,
+    pressShortcutTool,
+    pcShutdownTool,
+    pcRestartTool,
+    pcSleepTool,
+    pcLogoffTool,
     runShellCommandTool,
   ];
 }

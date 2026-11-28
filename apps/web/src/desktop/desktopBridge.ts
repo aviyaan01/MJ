@@ -1,8 +1,12 @@
 import type {
+  AllowlistedDesktopShortcut,
   AllowlistKind,
   AuditOutcome,
   AuditSource,
+  DesktopPowerActionKind,
+  DesktopWindowActionKind,
   HostTelemetryDTO,
+  PermissionsStateDTO,
 } from '@mj/shared';
 
 interface TauriInternals {
@@ -52,16 +56,11 @@ export async function tauriSetSinglePermission(
   await tauri.invoke('desktop_set_permission', { key, enabled });
 }
 
-export async function tauriGetPermissions(): Promise<{
-  wakeWordStandby?: boolean;
-  microphoneAccess?: boolean;
-} | null> {
+export async function tauriGetPermissions(): Promise<Partial<PermissionsStateDTO> | null> {
   const tauri = getTauri();
   if (!tauri) return null;
   try {
-    return await tauri.invoke<{ wakeWordStandby?: boolean; microphoneAccess?: boolean }>(
-      'desktop_get_permissions',
-    );
+    return await tauri.invoke<Partial<PermissionsStateDTO>>('desktop_get_permissions');
   } catch {
     return null;
   }
@@ -149,6 +148,61 @@ export async function tauriValidateShortcutTrigger(
   action: string,
 ): Promise<void> {
   await invokeTauri('desktop_validate_shortcut_trigger', { accelerator, action });
+}
+
+export async function tauriGetBatteryCpuRamStatus(): Promise<Record<string, unknown> | null> {
+  const tauri = getTauri();
+  if (!tauri) return null;
+  return tauri.invoke<Record<string, unknown>>('desktop_get_battery_cpu_ram_status');
+}
+
+export async function tauriSetVolume(level: number): Promise<number> {
+  return invokeTauri<number>('desktop_volume_set', { level });
+}
+
+export async function tauriMuteVolume(muted?: boolean): Promise<void> {
+  await invokeTauri('desktop_volume_mute', muted !== undefined ? { muted } : {});
+}
+
+export async function tauriSetBrightness(level: number): Promise<number> {
+  return invokeTauri<number>('desktop_brightness_set', { level });
+}
+
+export async function tauriLockScreen(): Promise<void> {
+  await invokeTauri('desktop_lock_screen');
+}
+
+export async function tauriSleepDisplay(): Promise<void> {
+  await invokeTauri('desktop_sleep_display');
+}
+
+export async function tauriWindowAction(action: DesktopWindowActionKind): Promise<string> {
+  return invokeTauri<string>('desktop_window_action', { action });
+}
+
+export async function tauriCloseApprovedApp(
+  executablePath: string,
+): Promise<{ target: string; closedCount: number }> {
+  return invokeTauri<{ target: string; closedCount: number }>('desktop_close_app', {
+    executablePath,
+  });
+}
+
+export async function tauriTypeText(text: string, confirmed: boolean): Promise<number> {
+  return invokeTauri<number>('desktop_type_text', { text, confirmed });
+}
+
+export async function tauriPressShortcut(
+  shortcut: AllowlistedDesktopShortcut,
+): Promise<string> {
+  return invokeTauri<string>('desktop_press_shortcut', { shortcut });
+}
+
+export async function tauriPowerAction(
+  action: DesktopPowerActionKind,
+  confirmed: boolean,
+): Promise<string> {
+  return invokeTauri<string>('desktop_power_action', { action, confirmed });
 }
 
 export interface BrowserTelemetrySnapshot {
